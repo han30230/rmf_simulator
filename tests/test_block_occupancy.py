@@ -60,6 +60,100 @@ def state(x: float, *, last_node: str = "", driving: bool = True) -> dict:
 
 
 class BlockOccupancyTests(unittest.TestCase):
+    def test_unreserved_robot_at_holding_bay_wins_over_overlapping_block(self) -> None:
+        registry = CorridorRegistry.from_dict(
+            {
+                "holding_bays": {
+                    "HB_SAFE": {
+                        "node_id": "SAFE",
+                        "capacity": 1,
+                        "geometry": {
+                            "circle": {"x": 5.0, "y": 0.0, "radius": 0.5}
+                        },
+                    },
+                    "HB_END": {"node_id": "END", "capacity": 1},
+                },
+                "blocks": [
+                    {
+                        "id": "OVERLAP",
+                        "entry_a": "HB_SAFE",
+                        "entry_b": "HB_END",
+                        "geometry": {
+                            "bounds": {
+                                "min_x": 1.0,
+                                "max_x": 9.0,
+                                "min_y": -1.0,
+                                "max_y": 1.0,
+                            }
+                        },
+                    }
+                ],
+            }
+        )
+        arbiter = DirectionArbiter(registry)
+        tracker = RobotTracker(registry, arbiter)
+
+        tracker.ingest_state(
+            "A1", state(5.0, last_node="SAFE", driving=False), received_at=1.0
+        )
+
+        self.assertEqual(tracker.current_safe_node("A1"), "SAFE")
+        self.assertIsNone(tracker.snapshot()["A1"]["current_block"])
+        self.assertIsNone(arbiter.snapshot()["blocks"]["OVERLAP"]["fault_reason"])
+
+    def test_overlapping_geometry_prefers_the_robot_granted_block(self) -> None:
+        registry = CorridorRegistry.from_dict(
+            {
+                "holding_bays": {
+                    "HB0": {"node_id": "N0", "capacity": 2},
+                    "HB1": {"node_id": "N1", "capacity": 2},
+                    "HB2": {"node_id": "N2", "capacity": 2},
+                },
+                "blocks": [
+                    {
+                        "id": "FIRST_MATCH",
+                        "entry_a": "HB0",
+                        "entry_b": "HB1",
+                        "geometry": {
+                            "bounds": {
+                                "min_x": 1.0,
+                                "max_x": 9.0,
+                                "min_y": -1.0,
+                                "max_y": 1.0,
+                            }
+                        },
+                    },
+                    {
+                        "id": "GRANTED_MATCH",
+                        "entry_a": "HB0",
+                        "entry_b": "HB2",
+                        "geometry": {
+                            "bounds": {
+                                "min_x": 1.0,
+                                "max_x": 9.0,
+                                "min_y": -1.0,
+                                "max_y": 1.0,
+                            }
+                        },
+                    },
+                ],
+            }
+        )
+        arbiter = DirectionArbiter(registry)
+        tracker = RobotTracker(registry, arbiter)
+        arbiter.request("A1", "GRANTED_MATCH", Direction.A_TO_B, "HB2")
+
+        tracker.ingest_state("A1", state(5.0), received_at=1.0)
+
+        self.assertEqual(tracker.snapshot()["A1"]["current_block"], "GRANTED_MATCH")
+        self.assertEqual(
+            arbiter.snapshot()["blocks"]["GRANTED_MATCH"]["occupants"],
+            ["A1"],
+        )
+        self.assertIsNone(
+            arbiter.snapshot()["blocks"]["FIRST_MATCH"]["fault_reason"]
+        )
+
     def test_position_crossing_marks_enter_and_exit(self) -> None:
         arbiter, tracker = make_components()
         arbiter.request("A1", "TOP_1", Direction.A_TO_B, "HB1", source_hb="HB0")

@@ -11,7 +11,7 @@
 - RMF API Bearer 인증을 포함한 Arbiter Task 전달
 - P4 `2101 ↔ 2108` 반대 방향 진입 제어
 - A1 통과 후 B1/B2 동일 방향 동시 허가 및 전체 작업 완료
-- 중앙 사이드 Passing Bay PoC 설계안 포함(아직 구현 전)
+- 중앙 사이드 Passing Bay 2대 PoC 구현 및 자동 상태기계 테스트
 
 검증된 최종 상태에서는 A1이 `2101 → 2108`로 이동하는 동안 B1/B2가 대기하고, Block이 비워진 뒤 B1/B2가 `2108 → 2101`로 이동한다. 세 작업 모두 `COMPLETE`, Block은 `FREE`가 된다.
 
@@ -159,13 +159,59 @@ python vda5050_gui.py
 - GUI의 **Simulation 탭**은 GUI 자체에서 Simulator를 시작할 때 사용한다.
 - WSLg가 활성화된 `Ubuntu-24.04`에서 실행한다.
 
+## 8. 중앙 Single Passing Bay PoC
+
+이 PoC는 A1과 B1 두 대만 사용한다. B2에는 작업을 제출하지 않는다. 새 파일만 선택하므로 기존 P4 baseline 실행 파일은 그대로 유지된다.
+
+Fleet Adapter를 passing-bay 맵으로 재시작한다.
+
+```bash
+cd ~/rmf-work/rmf_simulation_workspace/rmf_platform-main
+
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.p4-passing-bay.yml \
+  up -d --force-recreate vda5050_fleet_adapter
+```
+
+Arbiter는 passing-bay 전용 설정으로 실행한다.
+
+```bash
+cd ~/rmf-work/rmf_simulation_workspace
+source .venv/bin/activate
+
+export RMF_API_BEARER_TOKEN='<development JWT>'
+
+./scripts/run_direction_arbiter.sh \
+  config/corridor_blocks_p4_passing_bay.yaml \
+  2>&1 | tee arbiter_p4_passing_bay.log
+```
+
+다른 터미널에서 A1을 먼저, B1을 1초 뒤에 제출한다.
+
+```bash
+cd ~/rmf-work/rmf_simulation_workspace
+./scripts/t4_dispatch_passing_bay.sh
+```
+
+예상 upstream 목표 순서는 다음과 같다.
+
+```text
+AGV_A1 -> 2104
+AGV_B1 -> 6137
+AGV_A1 -> 2108
+AGV_B1 -> 2101
+```
+
+B1은 `6137`에서 `driving=false`, `current_hb=HB_MIDDLE_SIDE` 상태로 기다리고, A1이 `2108`에 도착한 뒤 자동 재출발해야 한다. 이 구성은 홈 시뮬레이션용 비대칭 2대 PoC이며 실제 로봇 투입 전 현장 좌표 측량, bay 여유 폭, 정지 오차, 비상 정지, 다중 로봇 조건을 별도로 검증해야 한다.
+
 ## 다음 작업
 
 중앙 사이드 Holding Bay에 반대 방향 로봇이 잠시 빠졌다가 본선으로 복귀하는 PoC 설계는 아래 문서에 정리되어 있다.
 
 - [P4 Single Passing Bay PoC 설계](docs/superpowers/specs/2026-09-16-p4-single-passing-bay-poc-design.md)
 
-이 설계는 아직 구현 전이며, 다음 커밋에서 Map/Fleet/Corridor 설정과 자동 시나리오 테스트를 추가한다.
+다음 단계는 양방향 모두 side bay를 선택할 수 있는 대칭 경로, 여러 bay 중 최근접 지점 선택, 세 대 이상 접근 순서와 starvation 방지다.
 
 ## 보안 및 저장소 제외 항목
 

@@ -181,6 +181,33 @@ class DirectionArbiter:
                 return Decision.ADMIT
             return Decision.WAIT
 
+    def active_block_for_robot(self, robot_id: str) -> str | None:
+        """Return the robot's single granted or occupied block, if unambiguous."""
+        with self._lock:
+            candidates = {
+                block_id
+                for candidate_robot, block_id in self._grants
+                if candidate_robot == robot_id
+            }
+            candidates.update(
+                block_id
+                for block_id, block in self.registry.blocks.items()
+                if robot_id in block.occupants
+            )
+            return next(iter(candidates)) if len(candidates) == 1 else None
+
+    def destination_holding_bay_for_robot(self, robot_id: str) -> str | None:
+        """Return the destination bay for the robot's single active grant."""
+        with self._lock:
+            reservations = [
+                reservation
+                for (candidate_robot, _), reservation in self._grants.items()
+                if candidate_robot == robot_id
+            ]
+            if len(reservations) != 1:
+                return None
+            return reservations[0].destination_hb
+
     def cancel(self, robot_id: str, block_id: str | None = None) -> bool:
         with self._lock:
             targets = [block_id] if block_id else list(self.registry.blocks)

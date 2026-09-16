@@ -65,8 +65,22 @@ class RobotTracker:
             if isinstance(position, dict) and position.get("x") is not None and position.get("y") is not None:
                 x = float(position["x"])
                 y = float(position["y"])
-                observed_block = self.registry.block_for_position(x, y)
+                matching_blocks = self.registry.blocks_for_position(x, y)
+                granted_block = self.arbiter.active_block_for_robot(robot_id)
+                destination_hb = self.arbiter.destination_holding_bay_for_robot(
+                    robot_id
+                )
                 hb_id = self.registry.holding_bay_for_position(x, y)
+                if hb_id is not None and (
+                    granted_block is None or hb_id == destination_hb
+                ):
+                    observed_block = None
+                elif old_block in matching_blocks:
+                    observed_block = old_block
+                elif granted_block in matching_blocks:
+                    observed_block = granted_block
+                else:
+                    observed_block = matching_blocks[0] if matching_blocks else None
 
                 if observed_block is not None and observed_block != old_block:
                     try:

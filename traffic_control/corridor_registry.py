@@ -142,10 +142,16 @@ class CorridorRegistry:
         return None
 
     def block_for_position(self, x: float, y: float) -> str | None:
-        for block_id, block in self.blocks.items():
-            if _contains(block.geometry, x, y):
-                return block_id
-        return None
+        matches = self.blocks_for_position(x, y)
+        return matches[0] if matches else None
+
+    def blocks_for_position(self, x: float, y: float) -> list[str]:
+        """Return every managed block whose geometry contains a position."""
+        return [
+            block_id
+            for block_id, block in self.blocks.items()
+            if _contains(block.geometry, x, y)
+        ]
 
     def holding_bay_for_position(self, x: float, y: float) -> str | None:
         for hb_id, bay in self.holding_bays.items():
