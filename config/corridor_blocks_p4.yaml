@@ -1,0 +1,68 @@
+# P4 simulation corridor: 2101 <-> 2108.
+# Endpoints are logical holding bays on the main lane. Replace them with
+# off-lane physical holding bays before using this configuration on real robots.
+traffic_control:
+  enabled: true
+  telemetry_timeout: 5.0
+  tick_interval: 0.25
+  unmatched_route_policy: BLOCKED
+
+  holding_bays:
+    HB_LEFT:
+      node_id: "2101"
+      capacity: 4
+      geometry:
+        circle: {x: 6.833, y: 92.871, radius: 0.7}
+    HB_RIGHT:
+      node_id: "2108"
+      capacity: 4
+      geometry:
+        circle: {x: 73.7274, y: 92.8248, radius: 0.7}
+
+  groups:
+    P4_CENTER:
+      blocks:
+        - id: P4_CENTER_2101_2108
+          direction_domain: P4_CENTER_2101_2108
+          entry_a: HB_LEFT
+          entry_b: HB_RIGHT
+          capacity: 2
+          edges_a_to_b:
+            - "2101>2102"
+            - "2102>2103"
+            - "2103>2104"
+            - "2104>2105"
+            - "2105>2106"
+            - "2106>2107"
+            - "2107>2108"
+          edges_b_to_a:
+            - "2108>2107"
+            - "2107>2106"
+            - "2106>2105"
+            - "2105>2104"
+            - "2104>2103"
+            - "2103>2102"
+            - "2102>2101"
+          geometry:
+            bounds: {min_x: 7.4, max_x: 73.1, min_y: 91.8, max_y: 93.9}
+
+  routes:
+    - id: P4_LEFT_TO_RIGHT
+      start_nodes: ["2101"]
+      goal_nodes: ["2108"]
+      steps:
+        - block_id: P4_CENTER_2101_2108
+          direction: A_TO_B
+          source_hb: HB_LEFT
+          destination_hb: HB_RIGHT
+          goal_node: "2108"
+
+    - id: P4_RIGHT_TO_LEFT
+      start_nodes: ["2108"]
+      goal_nodes: ["2101"]
+      steps:
+        - block_id: P4_CENTER_2101_2108
+          direction: B_TO_A
+          source_hb: HB_RIGHT
+          destination_hb: HB_LEFT
+          goal_node: "2101"

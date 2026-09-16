@@ -1,0 +1,32 @@
+# Minimal simulation navigation graph for the P4 corridor proof of concept.
+# Replace this file with the complete company navigation graph for field use.
+building_name: p4_home_corridor_poc
+metadata:
+  simulation_only: true
+levels:
+  L1:
+    elevation: 0.0
+    vertices:
+      - [6.833, 92.871, {name: '2101', is_charger: true}]
+      - [12.5, 92.871, {name: '2102'}]
+      - [18.46, 92.871, {name: '2103'}]
+      - [30.424, 92.871, {name: '2104'}]
+      - [42.508, 92.871, {name: '2105'}]
+      - [54.818, 92.871, {name: '2106'}]
+      - [66.612, 92.871, {name: '2107'}]
+      - [73.7274, 92.8248, {name: '2108', is_charger: true}]
+    lanes:
+      - [0, 1, {graph_idx: 0}]
+      - [1, 0, {graph_idx: 0}]
+      - [1, 2, {graph_idx: 0}]
+      - [2, 1, {graph_idx: 0}]
+      - [2, 3, {graph_idx: 0}]
+      - [3, 2, {graph_idx: 0}]
+      - [3, 4, {graph_idx: 0}]
+      - [4, 3, {graph_idx: 0}]
+      - [4, 5, {graph_idx: 0}]
+      - [5, 4, {graph_idx: 0}]
+      - [5, 6, {graph_idx: 0}]
+      - [6, 5, {graph_idx: 0}]
+      - [6, 7, {graph_idx: 0}]
+      - [7, 6, {graph_idx: 0}]

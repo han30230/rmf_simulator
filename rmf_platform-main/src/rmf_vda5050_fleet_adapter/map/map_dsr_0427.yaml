@@ -1,0 +1,14 @@
+# RECONSTRUCTED two-endpoint graph for the supplied p4_scenario.yaml.
+# Replace this file with the company nav graph before corridor testing.
+building_name: reconstructed_p4_baseline
+metadata:
+  reconstructed_example: true
+levels:
+  L1:
+    elevation: 0.0
+    vertices:
+      - [6.833, 92.871, {name: '2101', is_charger: true}]
+      - [66.67, 92.871, {name: '2108', is_charger: true}]
+    lanes:
+      - [0, 1, {graph_idx: 0}]
+      - [1, 0, {graph_idx: 0}]

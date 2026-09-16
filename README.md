@@ -1,141 +1,172 @@
-# RMF + VDA5050 Simulator / Direction Arbiter
+# RMF + VDA5050 Traffic Simulation Workspace
 
-Open-RMF 기반의 실제 운영 흐름을 PC에서 재현하기 위한 통합 테스트베드입니다.
+집과 회사에서 재현한 RMF/VDA5050 시뮬레이션 작업공간이다. 현재 P4 단일 1차선 양방향 통로에서 Direction Arbiter가 로봇의 진입 방향, Block 점유, Holding Bay 예약, 대기 작업을 제어한다.
 
-현재 주 작업 대상은 과거 `rmf_lab_v23.xx` 독립 실험 시뮬레이터가 아니라, 다음 End-to-End 경로입니다.
+## 현재 확인된 범위
 
-```text
-Task / Order
-  -> Direction Arbiter Task Gate (:8200)
-  -> RMF API / Dispatcher (:8100)
-  -> RMF Planner / Schedule / Negotiation
-  -> VDA5050 Fleet Adapter
-  -> MQTT (:1883)
-  -> VDA5050 Robot Simulator
-  -> VDA5050 State feedback
-  -> Fleet Adapter / RMF task completion
-```
+- Ubuntu 24.04 / ROS 2 Jazzy / Docker Desktop WSL2
+- RMF Traffic Schedule, Task Dispatcher, Traffic Blockade, API Server
+- VDA5050 Fleet Adapter와 AGV_A1, AGV_B1, AGV_B2 등록
+- VDA5050 Robot Simulator 및 PyQt5 GUI
+- RMF API Bearer 인증을 포함한 Arbiter Task 전달
+- P4 `2101 ↔ 2108` 반대 방향 진입 제어
+- A1 통과 후 B1/B2 동일 방향 동시 허가 및 전체 작업 완료
+- 중앙 사이드 Passing Bay PoC 설계안 포함(아직 구현 전)
 
-## 현재 목표
+검증된 최종 상태에서는 A1이 `2101 → 2108`로 이동하는 동안 B1/B2가 대기하고, Block이 비워진 뒤 B1/B2가 `2108 → 2101`로 이동한다. 세 작업 모두 `COMPLETE`, Block은 `FREE`가 된다.
 
-FAB의 우회로 없는 1차선 양방향 통로에서 반대 방향 로봇이 동시에 RMF planning/negotiation에 들어가며 발생하는 교착, timeout, `endpoint_exchange_without_buffer` 류 문제를 줄이기 위해 **RMF planning 전에 방향 admission을 결정**합니다.
-
-핵심 원칙:
-
-- RMF Core/Planner/Negotiation 자체는 우선 유지
-- 반대 방향 task를 동시에 RMF에 submit하지 않음
-- Direction Arbiter가 `GRANT / WAIT / BLOCKED`를 결정
-- 대기는 corridor mainline 내부가 아니라 Holding Bay / parking / upstream safe node에서 수행
-- Direction switch는 active robot과 corridor occupancy가 실제로 clear된 뒤에만 허용
-- telemetry stale/robot fault 시 fail-safe하게 반대 방향 release 금지
-- TOP / CENTER / BOTTOM 및 다중 block으로 확장 가능한 구조 유지
-
-## 주요 폴더
+## 주요 구조
 
 ```text
-traffic_control/                         Direction Arbiter core + task gate
-config/                                  Corridor / P4 block configuration
-tests/                                   Arbiter, occupancy, dynamic insert, P4 config tests
-scripts/                                 Arbiter 실행 / T4 dispatch / workspace 검증
-docs/                                    실행 가이드, 설계, 구현 지시서
-docs/history/                            과거 rmf_lab v23 계열 patch history
-rmf_dev_tool-main/vda5050_robot_simulator/ VDA5050 Robot Simulator
-rmf_dev_tool-main/vda5050_gui/           GUI/로그 도구
-rmf_platform-main/                       Docker/RMF runtime config 및 P4 adapter map/config
-archive/                                 복원본 및 중간 checkpoint 원본 보존
+.
+├── traffic_control/                 # Direction Arbiter, Task Gate, Robot Tracker
+├── config/                          # 기본/분할/P4 Corridor 설정
+├── tests/                           # 교착, 점유, 고장, 인증, P4 구성 테스트
+├── scripts/                         # Arbiter 실행 및 Task 전송 스크립트
+├── rmf_dev_tool-main/
+│   ├── vda5050_robot_simulator/     # 3대 로봇 MQTT 시뮬레이터
+│   └── vda5050_gui/                 # 로그/맵/MQTT 모니터 GUI
+├── rmf_platform-main/
+│   ├── docker-compose.yml
+│   ├── docker-compose.p4.yml        # P4 Map/Fleet 설정 override
+│   └── src/rmf_vda5050_fleet_adapter/
+└── docs/                            # 실행 가이드와 설계 문서
 ```
 
-## T1 ~ T4 실행 개념
+## 주의: WSL 배포판
 
-### T1 — RMF Core
+PC에 `Ubuntu`와 `Ubuntu-24.04`가 함께 있으면 반드시 `Ubuntu-24.04`를 사용한다.
 
-RMF API/Dispatcher, Traffic Schedule, Planner/Negotiation 등 기반 서비스를 구동합니다.
-
-### T2 — VDA5050 Fleet Adapter
-
-RMF navigation/task 요청을 VDA5050 Order로 변환하고, MQTT State를 다시 RMF에 반영합니다.
-
-### T3 — VDA5050 Robot Simulator
-
-실물 AMR 대신 VDA5050 Order를 받아 이동하고 State를 발행합니다.
-
-### T4 — Task dispatch
-
-직접 RMF `:8100`으로 보내는 대신 Direction Arbiter `:8200`을 통과시키는 것이 현재 PoC의 목표입니다.
+```powershell
+wsl -d Ubuntu-24.04
+```
 
 ```bash
-./scripts/run_direction_arbiter.sh config/corridor_blocks_p4.yaml
-./scripts/t4_dispatch_via_arbiter.sh AGV_A1 <GOAL_NODE>
+echo "$WSL_DISTRO_NAME"
+# Ubuntu-24.04
 ```
 
-## Direction Arbiter
+## 1. Python 환경 및 테스트
 
-주요 모듈:
+```bash
+cd ~/rmf-work/rmf_simulation_workspace
 
-- `traffic_control/models.py`
-- `traffic_control/direction_arbiter.py`
-- `traffic_control/corridor_registry.py`
-- `traffic_control/robot_tracker.py`
-- `traffic_control/task_gate.py`
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install fastapi uvicorn paho-mqtt pyyaml PyQt5
 
-동작 개념:
-
-```text
-new task
-  -> latest robot telemetry 확인
-  -> route / controlled block 분류
-  -> block direction + destination HB reservation
-  -> GRANT: RMF API로 forward
-  -> WAIT : local queue 유지
+python -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
-반대 방향 waiter가 생기면 현재 batch를 무한히 연장하지 않는 batch-close 정책을 사용합니다.
+## 2. RMF Core와 API Server
 
-## P4 runtime files
+API Server 이미지 이름은 `rmf-api-server`, RMF Core는 `rmf-core:latest`를 사용한다.
 
-2026-09-16 집 환경 재현을 위해 다음 파일이 포함되어 있습니다.
+```bash
+cd ~/rmf-work/rmf_simulation_workspace/rmf_platform-main
 
-- `rmf_platform-main/docker-compose.p4.yml`
-- `rmf_platform-main/src/rmf_vda5050_fleet_adapter/map/p4_edit_node_add.yaml`
-- `rmf_platform-main/src/rmf_vda5050_fleet_adapter/config/p4_edit_before.yaml`
-- `rmf_dev_tool-main/vda5050_robot_simulator/p4_scenario.yaml`
-- `config/corridor_blocks_p4.yaml`
+docker compose up -d \
+  rmf_traffic_schedule \
+  rmf_task_dispatcher \
+  rmf_traffic_blockade
 
-## 현재 검증 상태 — 2026-09-16
+docker compose up -d --force-recreate rmf_api_server
 
-이 저장소로 정리하면서 최신 Direction Arbiter + P4 patch를 overlay한 뒤 다음 검증을 수행했습니다.
-
-```text
-python3 -m pytest -q tests
-34 passed
+curl -i --noproxy '*' http://127.0.0.1:8100/
+# HTTP 404이면 API 서버가 응답하는 상태
 ```
 
-현재 알려진 runtime 이슈:
+`sqlite_local_config.py`는 저장소에 포함되어 있으며 API를 `0.0.0.0:8100`에 연다.
 
-- RMF API의 `/tasks/robot_task`는 인증/권한 검사를 사용함
-- Task Gate에서 RMF `:8100`으로 forward할 때 올바른 Bearer/JWT 인증 전달이 아직 최종 정리 중
-- 최근 실제 실행에서 T4 submit은 `401 Unauthorized` 확인 단계까지 진행
-- 따라서 현재 병목은 Direction Arbiter state machine 자체보다 Task Gate -> RMF API authentication 연결 쪽
+## 3. VDA5050 Robot Simulator
 
-실제 Ubuntu/ROS2 Jazzy/Docker 환경의 T1~T4 전체 runtime은 대상 PC에서 다시 검증해야 합니다.
+```bash
+cd ~/rmf-work/rmf_simulation_workspace/rmf_dev_tool-main/vda5050_robot_simulator
+source ~/rmf-work/rmf_simulation_workspace/.venv/bin/activate
 
-## 문서
+python run.py --config p4_scenario.yaml
+```
 
-- `docs/direction_arbiter_guide.md` — 현재 Arbiter 사용 가이드
-- `docs/simulation_run_guide.md` — 시뮬레이션 실행 가이드
-- `docs/specs/directional_block_arbiter_implementation_spec.md` — 상세 구현 지시서
-- `docs/specs/direction_arbiter_segmented_corridor_implementation_spec.md` — segmented block 설계
-- `docs/specs/corridor_manager_spec.md` — 이전 Corridor Manager 설계
-- `docs/PROJECT_HISTORY.md` — 지금까지의 작업 흐름과 버전 계보
+정상 실행 시 AGV_A1은 2101, AGV_B1/B2는 2108 위치에서 MQTT에 연결된다.
 
-## Archive 정책
+## 4. P4 Fleet Adapter
 
-`archive/`에는 현재 main runtime과 섞으면 안 되는 복원본/중간산출물을 그대로 보관합니다.
+```bash
+cd ~/rmf-work/rmf_simulation_workspace/rmf_platform-main
 
-특히 2026-09-15 `vda5050_t2_reconstructed`는 대화에서 확보한 소스 조각을 이용한 **compatibility reconstruction**이며, 실제 회사 원본 소스와 byte-for-byte 동일하다고 간주하면 안 됩니다.
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.p4.yml \
+  up -d --force-recreate vda5050_fleet_adapter
+```
 
-## 주의
+등록 확인:
 
-- `.env`, token, JWT secret, 로그/빌드 산출물은 커밋하지 않습니다.
-- `build/`, `install/`, `log/`, `.venv/`, `results/`는 `.gitignore` 대상입니다.
-- 실제 운영환경 적용 전에는 real map, robot footprint, HB가 진짜 off-mainline인지, telemetry freshness 및 fail-safe 조건을 반드시 검증해야 합니다.
+```bash
+docker logs --tail 250 vda5050_fleet_adapter 2>&1 | \
+grep -E 'Adding robot|Added a robot|Successfully added|ERROR|FATAL'
+```
+
+## 5. API 인증 토큰과 Direction Arbiter
+
+현재 RMF API Server는 Bearer 인증을 요구한다. 개발용 JWT 생성과 실행 절차는 [RMF_API_AUTH_PATCH_README.md](RMF_API_AUTH_PATCH_README.md)를 따른다.
+
+토큰을 같은 셸에 export한 뒤 Arbiter를 실행한다.
+
+```bash
+cd ~/rmf-work/rmf_simulation_workspace
+source .venv/bin/activate
+
+export RMF_API_BEARER_TOKEN='<development JWT>'
+
+./scripts/run_direction_arbiter.sh \
+  config/corridor_blocks_p4.yaml 2>&1 | tee arbiter_p4.log
+```
+
+상태 확인:
+
+```bash
+curl -s --noproxy '*' http://127.0.0.1:8200/traffic/status | python3 -m json.tool
+```
+
+## 6. T4 작업 전송
+
+```bash
+cd ~/rmf-work/rmf_simulation_workspace
+
+./scripts/t4_dispatch_via_arbiter.sh AGV_A1 2108
+sleep 1
+./scripts/t4_dispatch_via_arbiter.sh AGV_B1 2101
+./scripts/t4_dispatch_via_arbiter.sh AGV_B2 2101
+```
+
+예상 결과:
+
+- A1: `ADMIT`
+- B1/B2: 처음에는 `WAIT`
+- A1 이탈 후 B1/B2: `TASK_RELEASED`
+- 최종: 세 Job `COMPLETE`, `P4_CENTER_2101_2108` Block `FREE`
+
+## 7. GUI
+
+```bash
+cd ~/rmf-work/rmf_simulation_workspace/rmf_dev_tool-main/vda5050_gui
+source ~/rmf-work/rmf_simulation_workspace/.venv/bin/activate
+python vda5050_gui.py
+```
+
+- 외부 `run.py`로 Simulator를 실행했다면 GUI의 **Monitor 탭**에서 로봇 3대를 확인한다.
+- GUI의 **Simulation 탭**은 GUI 자체에서 Simulator를 시작할 때 사용한다.
+- WSLg가 활성화된 `Ubuntu-24.04`에서 실행한다.
+
+## 다음 작업
+
+중앙 사이드 Holding Bay에 반대 방향 로봇이 잠시 빠졌다가 본선으로 복귀하는 PoC 설계는 아래 문서에 정리되어 있다.
+
+- [P4 Single Passing Bay PoC 설계](docs/superpowers/specs/2026-09-16-p4-single-passing-bay-poc-design.md)
+
+이 설계는 아직 구현 전이며, 다음 커밋에서 Map/Fleet/Corridor 설정과 자동 시나리오 테스트를 추가한다.
+
+## 보안 및 저장소 제외 항목
+
+가상환경, 로그, PID, DB, 캐시, 실제 JWT 및 `.env` 파일은 Git에 포함하지 않는다. 저장소에는 개발용 토큰 생성 방법만 포함한다.

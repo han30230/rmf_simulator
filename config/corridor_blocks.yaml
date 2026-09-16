@@ -1,0 +1,13 @@
+# Safe default for the recovered checkpoint.
+#
+# The available checkpoint does not prove that its current two-node map has
+# physically safe off-lane holding bays.  Keep the gate disabled until every
+# geometry, node ID, edge ID, and capacity is checked against the active map.
+traffic_control:
+  enabled: false
+  telemetry_timeout: 5.0
+  tick_interval: 0.25
+  unmatched_route_policy: BLOCKED
+  holding_bays: {}
+  groups: {}
+  routes: []

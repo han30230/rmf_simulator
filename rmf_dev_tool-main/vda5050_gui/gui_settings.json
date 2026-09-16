@@ -1,0 +1,10 @@
+{
+  "mqtt": {
+    "host": "localhost",
+    "port": 1883,
+    "interface_name": "uagv",
+    "version": "v2.0.0",
+    "manufacturer": "inatech"
+  },
+  "last_map": "D:/Documents/ICS_code/rmf_platform-main/rmf_platform-main/map/p4_edit_node_add.yaml"
+}

@@ -1,0 +1,258 @@
+x-rmf-common: &rmf-common
+  image: rmf-core:latest
+  network_mode: host
+  ipc: host
+  pid: host
+  environment:
+    - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-55}
+    - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+  restart: unless-stopped
+#
+#  sudo sysctl -w net.core.rmem_max=2147483647
+#  sudo sysctl -w net.core.rmem_default=8388608
+#
+
+services:
+  # ========================================================================
+  # RMF Core (required)
+  # ========================================================================
+
+  # 교통 스케줄 DB — 모든 로봇 궤적/계획 관리, fleet adapter 시작 전 반드시 실행
+  rmf_traffic_schedule:
+    <<: *rmf-common
+    container_name: rmf_traffic_schedule
+    command: ros2 run rmf_traffic_ros2 rmf_traffic_schedule
+
+  # 배타 구간(blockade) 조정 — 로봇 간 충돌 방지
+  rmf_traffic_blockade:
+    <<: *rmf-common
+    container_name: rmf_traffic_blockade
+    command: ros2 run rmf_traffic_ros2 rmf_traffic_blockade
+    depends_on:
+      - rmf_traffic_schedule
+
+  # 태스크 분배 — bidding 기반 태스크 할당
+  rmf_task_dispatcher:
+    <<: *rmf-common
+    container_name: rmf_task_dispatcher
+    command: ros2 run rmf_task_ros2 rmf_task_dispatcher
+    depends_on:
+      - rmf_traffic_schedule
+
+  # Building Map 서버 — visualization 노드들이 맵 데이터를 가져가는 서비스 제공
+  building_map_server:
+    <<: *rmf-common
+    container_name: building_map_server
+    volumes:
+      - ./src/rmf_vda5050_fleet_adapter/building_map/map_dsr.building.yml:/building_map/map.building.yaml:ro
+    command: ros2 run rmf_building_map_tools building_map_server /building_map/map.building.yaml
+
+  # ========================================================================
+  # VDA5050 Fleet Adapter (소스 마운트 — 코드 수정 시 컨테이너 재시작만 하면 반영)
+  # ========================================================================
+
+  vda5050_fleet_adapter:
+    <<: *rmf-common
+    container_name: vda5050_fleet_adapter
+    volumes:
+      - ./src/rmf_vda5050_fleet_adapter:/vda5050_ws/src/vda5050_fleet_adapter:ro
+    environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-55}
+      - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+    command:
+      - bash
+      - -c
+      - |
+        cd /vda5050_ws &&
+        colcon build --packages-select vda5050_fleet_adapter --symlink-install &&
+        source install/setup.bash &&
+        ros2 run vda5050_fleet_adapter fleet_adapter \
+          -c /vda5050_ws/src/vda5050_fleet_adapter/vda5050_fleet_adapter/config/config.yaml \
+          -n /vda5050_ws/src/vda5050_fleet_adapter/map/map_dsr_0427.yaml
+    depends_on:
+      - rmf_traffic_schedule
+      - rmf_traffic_blockade
+      - rmf_task_dispatcher
+
+  # ========================================================================
+  # Battery Management — 충전기 풀 스케줄링 (소스 마운트)
+  # ========================================================================
+
+  battery_management:
+    <<: *rmf-common
+    container_name: battery_management
+    volumes:
+      - ./src/rmf_battery_management:/bm_ws/src/battery_management:ro
+      - ./src/rmf_vda5050_fleet_adapter/map/map_dsr_0427.yaml:/bm_ws/nav_graph.yaml:ro
+    command:
+      - bash
+      - -c
+      - |
+        cd /bm_ws &&
+        colcon build --packages-select battery_management --symlink-install &&
+        source install/setup.bash &&
+        ros2 run battery_management battery_manager \
+          --ros-args -p config_file:=/bm_ws/src/battery_management/config/battery_management.yaml
+    depends_on:
+      - rmf_traffic_schedule
+      - rmf_task_dispatcher
+      - vda5050_fleet_adapter
+
+  # ========================================================================
+  # Commission Manager — commission 중앙 중재 (소스 마운트)
+  # ========================================================================
+
+  rmf_commission_manager:
+    <<: *rmf-common
+    container_name: rmf_commission_manager
+    volumes:
+      - ./src/rmf_commission_manager:/cm_ws/src/rmf_commission_manager:ro
+    command:
+      - bash
+      - -c
+      - |
+        cd /cm_ws &&
+        colcon build --packages-select rmf_commission_manager --symlink-install &&
+        source install/setup.bash &&
+        ros2 run rmf_commission_manager commission_manager
+    depends_on:
+      - rmf_traffic_schedule
+      - vda5050_fleet_adapter
+
+  vda5050_rmf_bridge:
+    <<: *rmf-common
+    container_name: vda5050_rmf_bridge
+    volumes:
+      - ./src/rmf_vda5050_rmf_bridge:/ws/src/vda5050_rmf_bridge
+      - ./src/rmf_vda5050_fleet_adapter/vda5050_fleet_adapter/config:/config
+      - ./src/rmf_vda5050_fleet_adapter/map:/nav_graphs:ro
+      - ./src/rmf_vda5050_rmf_bridge/static:/ws/install/vda5050_rmf_bridge/lib/python3.12/site-packages/vda5050_rmf_bridge/static
+    command: >-
+      bash -c "
+        cd /ws &&
+        colcon build --packages-select vda5050_rmf_bridge vda5050_rmf_interfaces &&
+        . install/setup.bash &&
+        ros2 run vda5050_rmf_bridge vda5050_rmf_bridge -c /config/
+      "
+    depends_on:
+      - rmf_traffic_schedule
+      - rmf_traffic_blockade
+      - rmf_task_dispatcher
+
+  # ========================================================================
+  # Optional — 필요 시 주석 해제
+  # ========================================================================
+
+  # door_supervisor:
+  #   <<: *rmf-common
+  #   container_name: door_supervisor
+  #   command: ros2 run rmf_fleet_adapter door_supervisor
+  #   depends_on:
+  #     - rmf_traffic_schedule
+
+  # lift_supervisor:
+  #   <<: *rmf-common
+  #   container_name: lift_supervisor
+  #   command: ros2 run rmf_fleet_adapter lift_supervisor
+  #   depends_on:
+  #     - rmf_traffic_schedule
+
+  # Mutex 그룹 관리 — 좁은 복도 등 배타적 접근 구간 제어
+  mutex_group_supervisor:
+    <<: *rmf-common
+    container_name: mutex_group_supervisor
+    command: ros2 run rmf_fleet_adapter mutex_group_supervisor
+    depends_on:
+      - rmf_traffic_schedule
+
+  # Reservation 노드 — 주차 구역 충돌 해소
+  rmf_reservation_node:
+    <<: *rmf-common
+    container_name: rmf_reservation_node
+    command: ros2 run rmf_reservation_node queue_manager
+    depends_on:
+      - rmf_traffic_schedule
+
+  # rmf_websocket:
+  #   <<: *rmf-common
+  #   container_name: rmf_websocket
+  #   command: ros2 run rmf_fleet_adapter fleet_state_visualizer
+  #   depends_on:
+  #     - rmf_traffic_schedule
+
+  # ========================================================================
+  # Web Monitoring UI — api-server + React 대시보드 (rmf-web 공식)
+  # ========================================================================
+
+  # RMF API Server — ROS2 ↔ REST/WebSocket API (http://localhost:8100)
+  rmf_api_server:
+    image: rmf-api-server
+    network_mode: host
+    ipc: host
+    pid: host
+    environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-55}
+      - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+      - RMF_API_SERVER_CONFIG=/api_server_ws/sqlite_local_config.py
+    volumes:
+      - ./src/rmf_dev_tool/rmf_web_custom/packages/api-server/sqlite_local_config.py:/api_server_ws/sqlite_local_config.py:ro
+    restart: unless-stopped
+    container_name: rmf_api_server
+    depends_on:
+      - rmf_traffic_schedule
+
+  # RMF Dashboard — http://localhost:${DASHBOARD_PORT:-3100}
+  rmf_web_dashboard:
+    image: rmf-web-dashboard
+    container_name: rmf_web_dashboard
+    network_mode: host
+    environment:
+      - DASHBOARD_PORT=${DASHBOARD_PORT:-3100}
+    volumes:
+      - ./src/rmf_vda5050_fleet_adapter/map/map_dsr_0427.yaml:/opt/dashboard/nav_graph.yaml:ro
+    restart: unless-stopped
+    depends_on:
+      - rmf_api_server
+
+  # ========================================================================
+  # Visualization — RMF 상태 시각화 (schedule, fleet, navgraph, floorplan 등)
+  # ========================================================================
+
+  # rmf_visualization:
+  #   <<: *rmf-common
+  #   container_name: rmf_visualization
+  #   environment:
+  #     - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+  #     - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+  #     - DISPLAY=${DISPLAY:-:0}
+  #   volumes:
+  #     - /tmp/.X11-unix:/tmp/.X11-unix:rw
+  #   command: >
+  #     ros2 launch rmf_visualization visualization.launch.xml
+  #       headless:=false
+  #       map_name:=L1
+  #   depends_on:
+  #     - rmf_traffic_schedule
+  #     - building_map_server
+
+  # docker_logger:
+  #   image: docker_logger
+  #   container_name: docker_logger
+  #   restart: unless-stopped
+  #   environment:
+  #     - DOCKER_LOGGER_CONFIG=/config/docker_logger.yaml
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock:ro
+  #     - ./src/rmf_dev_tool/docker_logger/config/docker_logger.yaml:/config/docker_logger.yaml:ro
+  #     - ./logs/docker:/logs/docker
+
+  # mqtt_logger:
+  #   image: mqtt_logger
+  #   container_name: mqtt_logger
+  #   restart: unless-stopped
+  #   network_mode: host
+  #   environment:
+  #     - MQTT_LOGGER_CONFIG=/config/mqtt_logger.yaml
+  #   volumes:
+  #     - ./src/rmf_dev_tool/mqtt_logger/config/mqtt_logger.yaml:/config/mqtt_logger.yaml:ro
+  #     - ./logs/mqtt:/logs/mqtt

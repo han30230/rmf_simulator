@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain>
+    <General>
+      <AllowMulticast>true</AllowMulticast>
+      <EnableMulticastLoopback>true</EnableMulticastLoopback>
+      <!-- 대용량 메시지 지원: schedule update가 수MB까지 커질 수 있음 -->
+      <MaxMessageSize>65500</MaxMessageSize>
+      <FragmentSize>4096</FragmentSize>
+    </General>
+    <Internal>
+      <!-- 수신 버퍼: schedule mirror update 대용량 메시지 수신 -->
+      <SocketReceiveBufferSize min="10MB">10MB</SocketReceiveBufferSize>
+      <SocketSendBufferSize min="2MB">2MB</SocketSendBufferSize>
+      <!-- 재전송 burst 크기 확대: fragment 드롭 시 빠른 복구 -->
+      <MaxRexmitBurstSize>128kB</MaxRexmitBurstSize>
+      <!-- 수신 큐 크기: fragment 처리 대기 -->
+      <DefragReliableMaxSamples>64</DefragReliableMaxSamples>
+      <!-- Heartbeat 간격 단축: 누락 감지 빠르게 -->
+      <HeartbeatInterval>50ms</HeartbeatInterval>
+      <!-- NACK 응답 지연 최소화 -->
+      <NackDelay>10ms</NackDelay>
+      <!-- Writer history 제한: 메모리 보호 -->
+      <MaxQueuedRexmitMessages>256</MaxQueuedRexmitMessages>
+    </Internal>
+  </Domain>
+</CycloneDDS>

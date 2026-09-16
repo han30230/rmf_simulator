@@ -1,0 +1,72 @@
+# Example only: replace node IDs, edge IDs, and geometry from the active map.
+traffic_control:
+  enabled: true
+  telemetry_timeout: 5.0
+  tick_interval: 0.25
+  unmatched_route_policy: BLOCKED
+
+  holding_bays:
+    HB_T0:
+      node_id: "N0"
+      capacity: 4
+      geometry:
+        circle: {x: 0.0, y: 0.0, radius: 0.5}
+    HB_T1:
+      node_id: "N1"
+      capacity: 1
+      geometry:
+        circle: {x: 10.0, y: 0.0, radius: 0.5}
+    HB_T2:
+      node_id: "N2"
+      capacity: 1
+      geometry:
+        circle: {x: 20.0, y: 0.0, radius: 0.5}
+    HB_T3:
+      node_id: "N3"
+      capacity: 4
+      geometry:
+        circle: {x: 30.0, y: 0.0, radius: 0.5}
+
+  groups:
+    TOP:
+      blocks:
+        - id: TOP_1
+          entry_a: HB_T0
+          entry_b: HB_T1
+          capacity: 1
+          edges_a_to_b: [E_T01_AB]
+          edges_b_to_a: [E_T01_BA]
+          geometry:
+            bounds: {min_x: 0.6, max_x: 9.4, min_y: -1.0, max_y: 1.0}
+        - id: TOP_2
+          entry_a: HB_T1
+          entry_b: HB_T2
+          capacity: 1
+          edges_a_to_b: [E_T12_AB]
+          edges_b_to_a: [E_T12_BA]
+          geometry:
+            bounds: {min_x: 10.6, max_x: 19.4, min_y: -1.0, max_y: 1.0}
+        - id: TOP_3
+          entry_a: HB_T2
+          entry_b: HB_T3
+          capacity: 1
+          edges_a_to_b: [E_T23_AB]
+          edges_b_to_a: [E_T23_BA]
+          geometry:
+            bounds: {min_x: 20.6, max_x: 29.4, min_y: -1.0, max_y: 1.0}
+
+  routes:
+    - id: TOP_FORWARD
+      start_nodes: ["N0"]
+      goal_nodes: ["N3"]
+      steps:
+        - {block_id: TOP_1, direction: A_TO_B, source_hb: HB_T0, destination_hb: HB_T1, goal_node: "N1"}
+        - {block_id: TOP_2, direction: A_TO_B, source_hb: HB_T1, destination_hb: HB_T2, goal_node: "N2"}
+        - {block_id: TOP_3, direction: A_TO_B, source_hb: HB_T2, destination_hb: HB_T3, goal_node: "N3"}
+    - id: TOP_REVERSE
+      start_nodes: ["N3"]
+      goal_nodes: ["N0"]
+      steps:
+        - {block_id: TOP_3, direction: B_TO_A, source_hb: HB_T3, destination_hb: HB_T2, goal_node: "N2"}
+        - {block_id: TOP_2, direction: B_TO_A, source_hb: HB_T2, destination_hb: HB_T1, goal_node: "N1"}
+        - {block_id: TOP_1, direction: B_TO_A, source_hb: HB_T1, destination_hb: HB_T0, goal_node: "N0"}

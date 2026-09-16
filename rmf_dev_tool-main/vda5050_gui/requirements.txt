@@ -1,0 +1,5 @@
+PyQt5>=5.15
+
+paho-mqtt>=1.6
+
+PyYAML>=6.0
