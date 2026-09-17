@@ -1,245 +1,87 @@
-# RMF + VDA5050 시뮬레이션 실행 가이드
+# RMF + VDA5050 Passing Bay 실행 가이드
 
-## 1. 전체 구성
+이 문서는 현재 `feature/p4-single-passing-bay-poc` 기준이다. 모든 경로는 저장소 위치를 자동으로 계산하므로 특정 PC의 절대경로에 의존하지 않는다.
 
-| 환경 | 구성요소 |
-| --- | --- |
-| WSL2 Ubuntu | Docker 기반 RMF Core, VDA5050 Fleet Adapter, Python Robot Simulator |
-| Windows | `vda5050_gui.py` 로봇 경로 시각화, `rmf_graph_editor` 맵 편집 GUI |
+## 자동 실행
 
-RMF Core의 주요 서비스는 다음과 같다.
-
-- `rmf_traffic_schedule`: 로봇 궤적 및 계획 관리
-- `rmf_traffic_blockade`: 배타 구간 조정
-- `rmf_task_dispatcher`: 태스크 분배
-- `rmf_api_server`: REST/WebSocket API (`localhost:8100`)
-
-Fleet Adapter와 Robot Simulator는 MQTT를 통해 VDA5050 메시지를 주고받는다.
-
-## 2. 사전 준비: MQTT 브로커
-
-`rmf_platform-main`과 `rmf_dev_tool-main`에는 MQTT 브로커가 포함되어 있지 않다. Fleet Adapter와 Robot Simulator 모두 `localhost:1883`을 사용하므로, 호스트 OS에 Mosquitto 등을 별도로 설치하고 실행해야 한다.
-
-## 3. 실행 순서
-
-### T1 — RMF Core 시작 (WSL2)
+최초 1회:
 
 ```bash
-cd /mnt/d/Documents/ICS_code/rmf_platform-main/rmf_platform-main
-sudo service docker start
-
-docker compose up \
-  rmf_traffic_schedule \
-  rmf_traffic_blockade \
-  rmf_task_dispatcher \
-  rmf_api_server \
-  -d
+cd ~/rmf-work/rmf_passing_bay_poc
+./scripts/setup_workspace.sh
 ```
 
-### T2 — Fleet Adapter 시작 (WSL2)
-
-BEFORE 실행 (`penalty=0`):
+Passing-bay 전체 스택 시작:
 
 ```bash
-cd /mnt/d/Documents/ICS_code/rmf_platform-main/rmf_platform-main
-
-docker compose run --rm \
-  -v "$(pwd)/fleet_config/p4_edit_before.yaml:/sim_config.yaml:ro" \
-  -v "$(pwd)/map/p4_edit_node_add.yaml:/sim_map.yaml:ro" \
-  vda5050_fleet_adapter \
-  bash -c "cd /vda5050_ws && \
-    rm -rf build/vda5050_fleet_adapter install/vda5050_fleet_adapter && \
-    colcon build --packages-select vda5050_fleet_adapter && \
-    source install/setup.bash && \
-    ros2 run vda5050_fleet_adapter fleet_adapter \
-      -c /sim_config.yaml -n /sim_map.yaml"
+./scripts/start_p4_passing_bay.sh
 ```
 
-AFTER 실행 (`penalty=50`)은 `p4_edit_before.yaml` 대신 `p4_edit_after.yaml`을 마운트한다.
-
-Corridor 설정 실행:
+작업 투입:
 
 ```bash
-cd /mnt/d/Documents/ICS_code/rmf_platform-main/rmf_platform-main
-
-docker compose run --rm \
-  -v "$(pwd)/fleet_config/p4_edit_corridor_on.yaml:/sim_config.yaml:ro" \
-  -v "$(pwd)/map/p4_edit_node_add.yaml:/sim_map.yaml:ro" \
-  vda5050_fleet_adapter \
-  bash -c "cd /vda5050_ws && \
-    rm -rf build/vda5050_fleet_adapter install/vda5050_fleet_adapter && \
-    colcon build --packages-select vda5050_fleet_adapter && \
-    source install/setup.bash && \
-    ros2 run vda5050_fleet_adapter fleet_adapter \
-      -c /sim_config.yaml -n /sim_map.yaml"
+./scripts/t4_dispatch_passing_bay.sh
 ```
 
-### T3 — Robot Simulator 시작 (WSL2)
+핵심 로그 확인:
 
 ```bash
-cd /mnt/d/Documents/ICS_code/rmf_dev_tool-main/rmf_dev_tool-main/vda5050_robot_simulator
-~/sim_venv/bin/python run.py --config p4_scenario.yaml
+tail -F .runtime/arbiter.log |
+grep --line-buffered -E \
+  'TASK_RELEASED|ROBOT_CLEARED_BLOCK|TASK_COMPLETED|BLOCK_FAULT'
 ```
 
-### T4 — Task 발행 (WSL2)
-
-Fleet Adapter 로그에서 Commission initialized 된 로봇 수를 확인한 뒤 실행한다.
+종료:
 
 ```bash
-for pair in \
-  "AGV_A1 1602" "AGV_A2 1602" "AGV_A3 1602" \
-  "AGV_B1 1599" "AGV_B2 1599" "AGV_B3 1599"; do
-  robot=$(echo "$pair" | awk '{print $1}')
-  dest=$(echo "$pair" | awk '{print $2}')
-
-  curl -s --noproxy "*" \
-    -X POST http://localhost:8100/tasks/robot_task \
-    -H "Content-Type: application/json" \
-    -d "{\"type\":\"robot_task_request\",\"robot\":\"${robot}\",\"fleet\":\"TOOL\",\"request\":{\"unix_millis_earliest_start_time\":0,\"category\":\"patrol\",\"priority\":{\"type\":\"default\",\"value\":0},\"description\":{\"places\":[\"${dest}\"],\"rounds\":1}}}" \
-    2>/dev/null
-
-  sleep 0.3
-done
+./scripts/stop_p4_passing_bay.sh
 ```
 
-> 확인 필요: 위 명령은 목적지 `1599/1602`를 사용하지만 `p4_scenario.yaml` 주석은 `2101/2112`를 출발·목적지로 설명한다. 실제 사용 맵과 Fleet Adapter 설정에 맞는 번호를 사용해야 한다.
+Docker container까지 모두 중지하려면 `--all`을 붙인다.
 
-## 4. GUI 시각화 (Windows CMD)
+## 구성요소와 포트
 
-```bat
-D:
-cd Documents\ICS_code\rmf_dev_tool-main\rmf_dev_tool-main\vda5050_gui
-python vda5050_gui.py
-```
-
-GUI 설정:
-
-1. `Mode` → `Live`
-2. `MQTT` → `Connect`
-3. Host: `127.0.0.1`
-4. Port: `1883`
-5. Prefix: `uagv/v2.0.0/inatech`
-6. `File` → `Open` → `p4_edit_node_add.yaml`
-
-실시간 MQTT 모드에서는 브로커 주소만 필요하다. 정적 로그 열기 모드까지 사용하려면 `vda5050_robot_simulator/logs/`도 함께 복사한다.
-
-## 5. 결과 저장
-
-```bash
-FAID=$(docker ps --format "{{.ID}} {{.Names}}" | grep fleet | awk '{print $1}')
-LABEL="before"  # 또는 after
-RESULT_FILE="/mnt/d/Documents/ICS_code/${LABEL}_result.txt"
-
-echo "=== ${LABEL} ===" | tee "$RESULT_FILE"
-echo "negotiation: $(docker logs "$FAID" 2>&1 | grep -c 'negotiat')" \
-  | tee -a "$RESULT_FILE"
-
-docker logs "$FAID" 2>&1 | grep "3-tier path" | head -10 \
-  | tee -a "$RESULT_FILE"
-```
-
-## 6. 맵 에디터 (`rmf_graph_editor`)
-
-### 실행
-
-```bat
-D:
-cd Documents\ICS_code\rmf_dev_tool-main\rmf_dev_tool-main\rmf_graph_editor
-pip install pyyaml
-python main.py
-```
-
-파일 열기: `Ctrl+O` → `p4_edit_node_add.yaml`
-
-### 주요 조작
-
-| 키/동작 | 기능 |
-| --- | --- |
-| `S` | 선택 모드, 노드·레인 선택 및 드래그 이동 |
-| `N` | 노드 추가 |
-| `E` | 엣지 추가: 출발 노드 → 도착 노드 |
-| `D` | 선택 노드·레인 삭제 |
-| `F` | 화면 전체 맞춤 |
-| `Ctrl+Z` / `Ctrl+Y` | 실행 취소 / 다시 실행, 최대 50단계 |
-| `Ctrl+S` | 저장 |
-| 마우스 휠 | 확대·축소 |
-| 더블클릭 | 전체 속성 편집 대화상자 |
-| `Ctrl+O` | 파일 열기 |
-
-### 양방향 Lane 추가
-
-1. `S` 모드에서 기존 단방향 lane을 클릭하고 `start/end` 노드를 확인한다.
-2. `E` 모드로 전환한다.
-3. 기존 `end` 노드에서 `start` 노드 방향으로 반대 lane을 추가한다.
-4. 오른쪽 패널에서 `speed_limit`, corridor 폭 등을 설정한다.
-5. `Ctrl+S`로 저장한다.
-
-### 주요 노드 속성
-
-| 속성 | 설명 | 비고 |
+| 구성요소 | 역할 | 포트/통신 |
 | --- | --- | --- |
-| `name` | Waypoint 이름 | Task 목적지 이름으로 사용 |
-| `is_charger` | 충전기 여부 | Fleet 등록에 최소 1개 필요 |
-| `is_holding_point` | 대기 가능 지점 | 로봇 대기 허용 |
-| `mutex` | 동시 진입 제한 그룹 | 같은 그룹 lane의 배타 진입 |
-| `narrow_corridor` | 좁은 복도 표시 | `CongestionAwareLaneCloser` 연동 |
+| Mosquitto | VDA5050 MQTT broker | TCP 1883 |
+| Robot Simulator | AGV_A1/B1 state 발행, order 수행 | MQTT |
+| Fleet Adapter | MQTT state/order와 RMF 변환 | ROS 2 + MQTT |
+| RMF Schedule/Dispatcher | 경로 schedule과 task 배정 | ROS 2 |
+| RMF API Server | REST task endpoint | HTTP 8100 |
+| Direction Arbiter | Corridor/Holding Bay 진입 제어 | HTTP 8200 + MQTT |
 
-### 주요 Lane 속성
+## Passing-bay 상태 흐름
 
-| 속성 | 설명 |
-| --- | --- |
-| `speed_limit` | 최대 속도(m/s) |
-| `rotationAllowed` | 구간 내 회전 허용 여부 |
-| `corridor.leftWidth/rightWidth` | 복도 폭 및 충돌 감지 범위(m) |
-| `mutex` | 동시 진입 제한 그룹명 |
+1. A1이 `2101 → 2104`로 이동한다.
+2. B1이 `2108 → 6137`로 이동해 side bay에서 대기한다.
+3. A1은 하나의 task로 `2104 → 2108`을 계속 주행한다.
+4. A1 telemetry가 `lastNodeId=2106`을 보고하면 공유 conflict domain이 해제된다.
+5. A1은 2106에서 정지하지 않고 주행하며, B1은 `6137 → 2101`로 출발한다.
+6. 목적지 holding-bay 예약은 각 로봇이 실제 도착할 때 해제된다.
 
-### 노드 색상 범례
+release-node telemetry가 누락되면 통로는 fail-closed 상태를 유지한다.
 
-| 색상 | 의미 |
-| --- | --- |
-| 파란색 | `NONE`, 일반 waypoint |
-| 노란색 | `CHGE`, 충전 스테이션 |
-| 주황색 | `PICKDROP`, 픽업·드롭 위치 |
-| 초록색 | `PARK`, 주차 스팟 |
-| 보라 테두리 | `is_holding_point=true` |
+## GUI
 
-## 7. 주요 설정 파일
+```bash
+cd ~/rmf-work/rmf_passing_bay_poc
+source .venv/bin/activate
+python rmf_dev_tool-main/vda5050_gui/vda5050_gui.py
+```
 
-| 파일 | 경로 | 용도 |
-| --- | --- | --- |
-| `p4_edit_node_add.yaml` | `rmf_platform-main/map/` | 시뮬레이션 맵 |
-| `p4_edit_before.yaml` | `rmf_platform-main/fleet_config/` | BEFORE 설정, penalty=0 |
-| `p4_edit_after.yaml` | `rmf_platform-main/fleet_config/` | AFTER 설정, penalty=50 |
-| `p4_edit_corridor_on.yaml` | `rmf_platform-main/fleet_config/` | Corridor Manager 설정 |
-| `p4_scenario.yaml` | `rmf_dev_tool-main/vda5050_robot_simulator/` | 로봇 초기 위치 및 시뮬레이터 설정 |
-| `config.yaml` | `src/rmf_vda5050_fleet_adapter/vda5050_fleet_adapter/config/` | Fleet Adapter 설정 |
-
-## 8. 이전 PC에서 옮겨야 할 구성
+외부 스크립트가 Simulator를 실행하므로 GUI에서는 **Monitor** 탭을 사용한다. 맵은 다음 파일을 연다.
 
 ```text
-rmf_platform-main/
-├── docker-compose.yml
-├── docker/Dockerfile
-├── cyclonedds.xml
-├── cyclonedds_rmf.xml
-├── src/rmf_core/
-├── src/rmf_vda5050_fleet_adapter/
-├── src/rmf_battery_management/
-├── src/rmf_commission_manager/
-├── src/rmf_vda5050_rmf_bridge/
-└── src/rmf_dev_tool/rmf_web_custom/
-
-rmf_dev_tool-main/
-├── vda5050_robot_simulator/
-└── vda5050_gui/
+rmf_platform-main/src/rmf_vda5050_fleet_adapter/map/p4_passing_bay.yaml
 ```
 
-### 현재 확인된 경로 문제
+## 수동 진단
 
-`docker-compose.yml`은 다음 맵을 참조한다.
-
-```text
-src/rmf_vda5050_fleet_adapter/map/map_dsr_0427.yaml
+```bash
+docker compose -f rmf_platform-main/docker-compose.yml ps
+docker logs --tail 200 vda5050_fleet_adapter
+curl -s --noproxy '*' http://127.0.0.1:8200/traffic/status |
+python3 -m json.tool
 ```
 
-이 파일이 실제 워크스페이스에 없으면 `vda5050_fleet_adapter`, `battery_management`, `rmf_web_dashboard`의 volume mount 또는 실행이 실패한다. 반면 수동 T2 명령은 최상위의 `map/p4_edit_node_add.yaml`과 `fleet_config/p4_edit_corridor_on.yaml`을 사용한다. 어느 구조가 실제 기준인지 확인하고 경로를 통일해야 한다.
+실행 파일과 자세한 새 PC 설치법은 저장소 루트의 `README.md`를 우선 기준으로 한다.
