@@ -191,5 +191,6 @@ def build_vda5050_nodes_edges(
             start_node_id=name,
             end_node_id=path[index + 1],
             max_speed=edge_attrs.get('speed_limit'),
+            orientation=theta,
         ))
     return result_nodes, result_edges
