@@ -5,6 +5,7 @@ import unittest
 
 from traffic_control.corridor_registry import CorridorRegistry
 from traffic_control.direction_arbiter import DirectionArbiter
+from traffic_control.models import Direction
 from traffic_control.robot_tracker import RobotTracker
 from traffic_control.task_gate import TaskGate
 
@@ -93,6 +94,48 @@ class PassingBayFlowTests(unittest.TestCase):
         )
         self.assertIsNone(
             status["arbiter"]["blocks"]["P4_EAST_TO_SIDE"]["fault_reason"]
+        )
+
+    def test_gate_departure_gap_prefers_the_active_gate_to_right_grant(self) -> None:
+        registry = CorridorRegistry.from_yaml(CONFIG)
+        arbiter = DirectionArbiter(registry)
+        tracker = RobotTracker(registry, arbiter, telemetry_timeout=5.0)
+
+        tracker.ingest_state(
+            "AGV_A1",
+            state(*POSITIONS["2104"], node="2104", driving=False),
+            received_at=1.0,
+        )
+        decision = arbiter.request(
+            "AGV_A1",
+            "P4_GATE_TO_RIGHT",
+            Direction.A_TO_B,
+            "HB_RIGHT",
+            source_hb="HB_WEST_GATE",
+            release_node="2106",
+        )
+        self.assertEqual(decision.value, "ADMIT")
+
+        # HB_WEST_GATE ends at x=31.024. This point is just beyond that bay,
+        # where the active P4_GATE_TO_RIGHT grant must win instead of the
+        # broader, opposing P4_SIDE_TO_LEFT geometry.
+        tracker.ingest_state(
+            "AGV_A1",
+            state(31.05, 92.871, node="2104", driving=True),
+            received_at=2.0,
+        )
+
+        status = arbiter.snapshot()
+        self.assertEqual(
+            tracker.snapshot()["AGV_A1"]["current_block"],
+            "P4_GATE_TO_RIGHT",
+        )
+        self.assertEqual(
+            status["blocks"]["P4_GATE_TO_RIGHT"]["occupants"],
+            ["AGV_A1"],
+        )
+        self.assertIsNone(
+            status["blocks"]["P4_SIDE_TO_LEFT"]["fault_reason"]
         )
 
     def test_b1_yields_in_side_bay_then_rejoins_after_a1_crosses(self) -> None:
