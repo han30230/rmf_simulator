@@ -73,10 +73,13 @@ P4 설정에서는 `P4_GATE_TO_RIGHT` A_TO_B step에만 `release_node: "2106"`�
 
 `RobotTracker`는 매 state message에서 다음 순서를 따른다.
 
-1. 기존 position/edge 기반으로 block 진입 및 점유를 갱신한다.
-2. 활성 grant에 `release_node`가 있고 `lastNodeId`가 정확히 일치하면 `mark_cleared`를 호출한다.
-3. 조기 해제된 로봇의 `current_block`을 `None`으로 바꾸되, 중간 node를 holding bay로 간주하지 않는다.
-4. 최종 destination holding bay 도착은 기존 `position + lastNodeId + driving=false` 조건으로 판단한다.
+1. retained grant의 `release_node`와 현재 `lastNodeId`가 정확히 일치하는지 먼저 계산한다.
+2. 일치하지 않을 때만 기존 position/edge 기반으로 block 진입 및 점유를 갱신한다.
+3. 일치하면 `mark_cleared`를 호출하고 해당 state message를 block 내부 관측으로 다시 처리하지 않는다.
+4. 조기 해제된 로봇의 `current_block`을 `None`으로 바꾸되, 중간 node를 holding bay로 간주하지 않는다.
+5. 최종 destination holding bay 도착은 기존 `position + lastNodeId + driving=false` 조건으로 판단한다.
+
+VDA5050 장비가 같은 `lastNodeId=2106` state를 반복 발행해도 해제 로그와 domain 전환은 한 번만 일어나고, retained grant가 block occupant로 되살아나지 않아야 한다.
 
 `lastNodeId`가 `2105`인 상태, 단순히 `2106` 방향으로 주행 중인 상태, position만 경계 밖으로 나온 상태로는 조기 해제하지 않는다. 설정된 node를 실제로 통과했다는 node telemetry가 필요하다.
 
@@ -144,4 +147,3 @@ P4 설정에서는 `P4_GATE_TO_RIGHT` A_TO_B step에만 `release_node: "2106"`�
 - 양쪽 방향에 대칭적인 release boundary 구성
 - ETA 기반 우선순위와 starvation 제한
 - 실제 로봇의 surveyed geometry, 정지 거리, localization 오차를 반영한 release node 선정
-
