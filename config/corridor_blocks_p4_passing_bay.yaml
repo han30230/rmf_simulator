@@ -46,7 +46,10 @@ traffic_control:
             - "2103>2102"
             - "2102>2101"
           geometry:
-            bounds: {min_x: 7.6, max_x: 29.7, min_y: 91.8, max_y: 93.9}
+            # Overlap the 2104 holding-bay circle (starts at x=29.824) so
+            # telemetry cannot fall through into a broad passing-block geometry
+            # immediately before reaching the gate.
+            bounds: {min_x: 7.6, max_x: 29.9, min_y: 91.8, max_y: 93.9}
 
     P4_PASSING:
       blocks:
@@ -68,7 +71,7 @@ traffic_control:
             - "2106>2105"
             - "2105>6137"
           geometry:
-            bounds: &passing_main_bounds {min_x: 7.6, max_x: 73.0, min_y: 91.75, max_y: 93.9}
+            bounds: &passing_main_bounds {min_x: 31.1, max_x: 54.818, min_y: 91.75, max_y: 93.9}
 
         - id: P4_GATE_TO_RIGHT
           direction_domain: P4_PASSING_EVENT
@@ -106,7 +109,10 @@ traffic_control:
             - "2103>2102"
             - "2102>2101"
           geometry:
-            bounds: *passing_main_bounds
+            # This movement continues through the west approach to HB_LEFT.
+            # Keep its granted geometry across that route so it wins over the
+            # overlapping P4_WEST_ADVANCE geometry after passing 2104.
+            bounds: {min_x: 7.6, max_x: 54.818, min_y: 91.75, max_y: 93.9}
 
   routes:
     - id: P4_LEFT_TO_RIGHT_VIA_GATE
@@ -123,6 +129,7 @@ traffic_control:
           source_hb: HB_WEST_GATE
           destination_hb: HB_RIGHT
           goal_node: "2108"
+          release_node: "2106"
 
     - id: P4_RIGHT_TO_LEFT_VIA_SIDE
       start_nodes: ["2108"]

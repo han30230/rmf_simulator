@@ -55,6 +55,9 @@ class RobotTracker:
         with self._lock:
             previous = self._robots.get(robot_id)
             old_block = previous.current_block if previous else None
+            last_node_id = str(payload.get("lastNodeId") or "")
+            release = self.arbiter.release_node_for_robot(robot_id)
+            release_matches = release is not None and last_node_id == release[1]
             position = payload.get("agvPosition")
             x: float | None = None
             y: float | None = None
@@ -71,7 +74,10 @@ class RobotTracker:
                     robot_id
                 )
                 hb_id = self.registry.holding_bay_for_position(x, y)
-                if hb_id is not None and (
+                if release_matches:
+                    observed_block = None
+                    hb_id = None
+                elif hb_id is not None and (
                     granted_block is None or hb_id == destination_hb
                 ):
                     observed_block = None
@@ -91,12 +97,16 @@ class RobotTracker:
                             observed_block,
                             reason="unreserved_robot_detected_inside",
                         )
-                elif old_block is not None and observed_block is None and hb_id is not None:
+                elif (
+                    old_block is not None
+                    and observed_block is None
+                    and hb_id == destination_hb
+                ):
                     self.arbiter.mark_exited(robot_id, old_block)
 
                 if observed_block is not None:
                     block_id = observed_block
-                elif old_block is not None and hb_id is None:
+                elif old_block is not None and hb_id != destination_hb:
                     # No safe exit evidence: retain unresolved occupancy fail-closed.
                     block_id = old_block
                 else:
@@ -104,7 +114,7 @@ class RobotTracker:
 
                 if hb_id is not None and block_id is None:
                     self.arbiter.occupy_holding_bay(hb_id, robot_id)
-            elif bool(payload.get("driving", False)):
+            elif bool(payload.get("driving", False)) and not release_matches:
                 observed_block = self.registry.block_for_edges(edge_states)
                 if observed_block is not None and observed_block != old_block:
                     try:
@@ -118,12 +128,18 @@ class RobotTracker:
                     block_id = observed_block
                     hb_id = None
 
+            if release_matches:
+                release_block, _ = release
+                self.arbiter.mark_cleared(robot_id, release_block)
+                block_id = None
+                hb_id = None
+
             telemetry = RobotTelemetry(
                 robot_id=robot_id,
                 received_at=now,
                 x=x if x is not None else (previous.x if previous else None),
                 y=y if y is not None else (previous.y if previous else None),
-                last_node_id=str(payload.get("lastNodeId") or ""),
+                last_node_id=last_node_id,
                 driving=bool(payload.get("driving", False)),
                 node_states=list(payload.get("nodeStates") or []),
                 edge_states=edge_states,

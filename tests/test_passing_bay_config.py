@@ -118,6 +118,28 @@ class PassingBayConfigurationTests(unittest.TestCase):
             ["HB_RIGHT", "HB_MIDDLE_SIDE"],
         )
 
+    def test_forward_route_releases_only_after_the_central_conflict(self) -> None:
+        traffic = yaml.safe_load(ARBITER_PATH.read_text(encoding="utf-8"))[
+            "traffic_control"
+        ]
+        routes = {route["id"]: route for route in traffic["routes"]}
+        forward = routes["P4_LEFT_TO_RIGHT_VIA_GATE"]
+        self.assertEqual(forward["steps"][1]["release_node"], "2106")
+
+        blocks = {
+            block["id"]: block
+            for group in traffic["groups"].values()
+            for block in group["blocks"]
+        }
+        for block_id in ("P4_EAST_TO_SIDE", "P4_GATE_TO_RIGHT"):
+            bounds = blocks[block_id]["geometry"]["bounds"]
+            self.assertEqual(float(bounds["min_x"]), 31.1)
+            self.assertEqual(float(bounds["max_x"]), 54.818)
+
+        side_to_left = blocks["P4_SIDE_TO_LEFT"]["geometry"]["bounds"]
+        self.assertEqual(float(side_to_left["min_x"]), 7.6)
+        self.assertEqual(float(side_to_left["max_x"]), 54.818)
+
     def test_compose_and_dispatch_select_passing_bay_runtime(self) -> None:
         compose = yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))
         command = " ".join(

@@ -114,6 +114,34 @@ class CorridorRegistry:
                         f"route step {block_id} goal {goal_node} does not match "
                         f"destination holding bay {destination_hb}"
                     )
+                release_node = step.get("release_node")
+                normalized_release = (
+                    None if release_node is None else str(release_node).strip()
+                )
+                if normalized_release == "":
+                    raise ValueError(
+                        f"route step {block_id} release node must not be empty"
+                    )
+                if normalized_release is not None:
+                    direction_edges = (
+                        block.edges_a_to_b
+                        if direction is Direction.A_TO_B
+                        else block.edges_b_to_a
+                    )
+                    direction_nodes = {
+                        node
+                        for edge in direction_edges
+                        for node in edge.split(">", maxsplit=1)
+                    }
+                    if (
+                        normalized_release == goal_node
+                        or normalized_release not in direction_nodes
+                    ):
+                        raise ValueError(
+                            f"route step {block_id} release node "
+                            f"{normalized_release} must precede goal {goal_node} "
+                            f"on {direction.value} edges"
+                        )
                 steps.append(
                     RouteStep(
                         block_id=block_id,
@@ -121,6 +149,7 @@ class CorridorRegistry:
                         destination_hb=destination_hb,
                         goal_node=goal_node,
                         source_hb=normalized_source,
+                        release_node=normalized_release,
                     )
                 )
             if not steps:

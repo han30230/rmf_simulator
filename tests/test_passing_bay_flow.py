@@ -16,6 +16,9 @@ CONFIG = ROOT / "config/corridor_blocks_p4_passing_bay.yaml"
 POSITIONS = {
     "2101": (6.833, 92.871),
     "2104": (30.424, 92.871),
+    "2105": (42.508, 92.871),
+    "2106": (54.818, 92.871),
+    "2107": (66.612, 92.871),
     "6137": (42.508, 91.100),
     "2108": (73.7274, 92.8248),
 }
@@ -63,6 +66,35 @@ class RecordingForwarder:
 
 
 class PassingBayFlowTests(unittest.TestCase):
+    def test_west_approach_remains_in_its_granted_block_until_gate_bay(self) -> None:
+        registry = CorridorRegistry.from_yaml(CONFIG)
+        arbiter = DirectionArbiter(registry)
+        tracker = RobotTracker(registry, arbiter, telemetry_timeout=5.0)
+        gate = TaskGate(registry, arbiter, tracker, RecordingForwarder())
+
+        tracker.ingest_state(
+            "AGV_A1",
+            state(*POSITIONS["2101"], node="2101", driving=False),
+            received_at=1.0,
+        )
+        result = gate.submit(payload("AGV_A1", "2108"))
+        self.assertEqual(result["decision"], "ADMIT")
+
+        tracker.ingest_state("AGV_A1", state(18.46, 92.871), received_at=2.0)
+        # This point is immediately before the 2104 holding-bay circle. It must
+        # remain part of the west approach instead of matching an overlapping
+        # passing-event block and triggering fail-closed.
+        tracker.ingest_state("AGV_A1", state(29.75, 92.871), received_at=3.0)
+
+        status = gate.status()
+        self.assertEqual(
+            status["robots"]["AGV_A1"]["current_block"],
+            "P4_WEST_ADVANCE",
+        )
+        self.assertIsNone(
+            status["arbiter"]["blocks"]["P4_EAST_TO_SIDE"]["fault_reason"]
+        )
+
     def test_b1_yields_in_side_bay_then_rejoins_after_a1_crosses(self) -> None:
         registry = CorridorRegistry.from_yaml(CONFIG)
         arbiter = DirectionArbiter(registry)
@@ -94,7 +126,11 @@ class PassingBayFlowTests(unittest.TestCase):
         self.assertEqual(gate.status()["jobs"][a1["job_id"]]["status"], "WAITING")
         self.assertEqual(len(forwarder.goals), 2)
 
-        tracker.ingest_state("AGV_B1", state(60.0, 92.85), received_at=3.1)
+        tracker.ingest_state(
+            "AGV_B1",
+            state(*POSITIONS["2106"], node="2106", driving=True),
+            received_at=3.1,
+        )
         tracker.ingest_state(
             "AGV_B1", state(*POSITIONS["6137"], node="6137", driving=False), received_at=4.0
         )
@@ -112,11 +148,21 @@ class PassingBayFlowTests(unittest.TestCase):
             ],
         )
 
-        tracker.ingest_state("AGV_A1", state(50.0, 92.86), received_at=5.0)
         tracker.ingest_state(
-            "AGV_A1", state(*POSITIONS["2108"], node="2108", driving=False), received_at=6.0
+            "AGV_A1",
+            state(*POSITIONS["2105"], node="2105", driving=True),
+            received_at=5.0,
         )
-        gate.tick(now=6.0)
+        gate.tick(now=5.0)
+        self.assertEqual(forwarder.goals[-1], ("AGV_A1", "2108"))
+        self.assertEqual(gate.status()["jobs"][b1["job_id"]]["status"], "WAITING")
+
+        tracker.ingest_state(
+            "AGV_A1",
+            state(*POSITIONS["2106"], node="2106", driving=True),
+            received_at=5.5,
+        )
+        gate.tick(now=5.5)
         self.assertEqual(
             forwarder.goals,
             [
@@ -127,18 +173,55 @@ class PassingBayFlowTests(unittest.TestCase):
             ],
         )
 
+        handoff = gate.status()
+        self.assertEqual(handoff["jobs"][a1["job_id"]]["status"], "ACTIVE")
+        self.assertEqual(handoff["jobs"][b1["job_id"]]["status"], "ACTIVE")
+        self.assertTrue(handoff["robots"]["AGV_A1"]["driving"])
+        self.assertIsNone(handoff["robots"]["AGV_A1"]["current_block"])
+        self.assertIn(
+            "AGV_A1",
+            handoff["arbiter"]["holding_bays"]["HB_RIGHT"]["reservations"],
+        )
+
         tracker.ingest_state(
-            "AGV_B1", state(*POSITIONS["2104"], node="2104"), received_at=7.0
+            "AGV_A1",
+            state(*POSITIONS["2107"], node="2107", driving=True),
+            received_at=6.0,
+        )
+        tracker.ingest_state(
+            "AGV_B1",
+            state(*POSITIONS["2105"], node="2105", driving=True),
+            received_at=6.1,
         )
         self.assertEqual(
             tracker.snapshot()["AGV_B1"]["current_block"],
             "P4_SIDE_TO_LEFT",
         )
-        tracker.ingest_state("AGV_B1", state(25.0, 92.871), received_at=7.5)
+
         tracker.ingest_state(
-            "AGV_B1", state(*POSITIONS["2101"], node="2101", driving=False), received_at=8.0
+            "AGV_A1",
+            state(*POSITIONS["2108"], node="2108", driving=False),
+            received_at=7.0,
         )
-        gate.tick(now=8.0)
+        gate.tick(now=7.0)
+        self.assertEqual(gate.status()["jobs"][a1["job_id"]]["status"], "COMPLETE")
+
+        tracker.ingest_state(
+            "AGV_B1",
+            state(*POSITIONS["2104"], node="2104", driving=True),
+            received_at=7.5,
+        )
+        self.assertEqual(
+            tracker.snapshot()["AGV_B1"]["current_block"],
+            "P4_SIDE_TO_LEFT",
+        )
+        tracker.ingest_state("AGV_B1", state(25.0, 92.871), received_at=8.0)
+        tracker.ingest_state(
+            "AGV_B1",
+            state(*POSITIONS["2101"], node="2101", driving=False),
+            received_at=8.5,
+        )
+        gate.tick(now=8.5)
 
         final = gate.status()
         self.assertEqual(final["jobs"][a1["job_id"]]["status"], "COMPLETE")
@@ -149,6 +232,7 @@ class PassingBayFlowTests(unittest.TestCase):
             self.assertEqual(block["reservations"], [])
             self.assertEqual(block["waiting"]["A_TO_B"], [])
             self.assertEqual(block["waiting"]["B_TO_A"], [])
+            self.assertIsNone(block["fault_reason"])
 
 
 if __name__ == "__main__":

@@ -447,7 +447,8 @@ git commit -m "Clear corridor grants at telemetry release nodes"
 **Interfaces:**
 - Consumes: route-step `release_node`
 - P4 release boundary: node `2106`
-- P4 shared conflict geometry: `31.1 <= x <= 54.818`
+- P4 A1/east-side central conflict geometry: `31.1 <= x <= 54.818`
+- P4 side-to-left route geometry: `7.6 <= x <= 54.818`
 
 - [ ] **Step 1: Write failing P4 configuration assertions**
 
@@ -460,10 +461,14 @@ forward = next(
 )
 self.assertEqual(forward.steps[1].release_node, "2106")
 
-for block_id in ("P4_EAST_TO_SIDE", "P4_GATE_TO_RIGHT", "P4_SIDE_TO_LEFT"):
+for block_id in ("P4_EAST_TO_SIDE", "P4_GATE_TO_RIGHT"):
     bounds = registry.blocks[block_id].geometry["bounds"]
     self.assertEqual(float(bounds["min_x"]), 31.1)
     self.assertEqual(float(bounds["max_x"]), 54.818)
+
+side_to_left = registry.blocks["P4_SIDE_TO_LEFT"].geometry["bounds"]
+self.assertEqual(float(side_to_left["min_x"]), 7.6)
+self.assertEqual(float(side_to_left["max_x"]), 54.818)
 ```
 
 - [ ] **Step 2: Rewrite the passing-bay flow expectation before changing config**
@@ -520,6 +525,12 @@ Replace the shared geometry anchor with:
 
 ```yaml
 bounds: &passing_main_bounds {min_x: 31.1, max_x: 54.818, min_y: 91.75, max_y: 93.9}
+```
+
+Override `P4_SIDE_TO_LEFT` because that granted movement continues through the west approach:
+
+```yaml
+bounds: {min_x: 7.6, max_x: 54.818, min_y: 91.75, max_y: 93.9}
 ```
 
 Add to the second `P4_LEFT_TO_RIGHT_VIA_GATE` step:

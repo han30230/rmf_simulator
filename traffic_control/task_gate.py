@@ -152,6 +152,7 @@ class TaskGate:
                 if job.status is JobStatus.ACTIVE:
                     if not self.tracker.has_arrived(job.robot_id, step.goal_node):
                         continue
+                    self.arbiter.mark_arrived(job.robot_id, step.block_id)
                     job.step_index += 1
                     job.upstream_result = None
                     job.last_error = None
@@ -230,6 +231,7 @@ class TaskGate:
                 step.direction,
                 step.destination_hb,
                 source_hb=step.source_hb,
+                release_node=step.release_node,
             )
         if decision is Decision.WAIT:
             job.status = JobStatus.WAITING

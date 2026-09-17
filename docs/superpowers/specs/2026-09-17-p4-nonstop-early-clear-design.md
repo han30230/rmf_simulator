@@ -83,7 +83,7 @@ VDA5050 장비가 같은 `lastNodeId=2106` state를 반복 발행해도 해제 �
 
 `lastNodeId`가 `2105`인 상태, 단순히 `2106` 방향으로 주행 중인 상태, position만 경계 밖으로 나온 상태로는 조기 해제하지 않는다. 설정된 node를 실제로 통과했다는 node telemetry가 필요하다.
 
-공유 block geometry는 실제 충돌 구역인 `HB_WEST_GATE` 부근부터 `2106`까지로 축소한다. `2106` 동쪽의 A1은 조기 해제 후 managed geometry 밖에 있어 `unreserved_robot_detected_inside` 오탐이 발생하지 않아야 한다. B1의 `6137 -> 2101` grant는 중앙 충돌 구역을 포함하므로 A1과 동시에 같은 충돌 geometry를 점유할 수 없다.
+`P4_EAST_TO_SIDE`와 `P4_GATE_TO_RIGHT` geometry는 실제 중앙 충돌 구역인 `HB_WEST_GATE` 동쪽부터 `2106`까지로 축소한다. `2106` 동쪽의 A1은 조기 해제 후 managed geometry 밖에 있어 `unreserved_robot_detected_inside` 오탐이 발생하지 않아야 한다. `P4_SIDE_TO_LEFT`는 B1의 실제 route가 `2104` 서쪽까지 이어지므로 `HB_LEFT` 직전까지 geometry를 유지한다. 이 geometry가 중첩된 곳에서는 기존 granted-block 우선 규칙으로 B1을 `P4_WEST_ADVANCE` 무예약 진입으로 오인하지 않는다.
 
 ## 6. TaskGate 처리
 
@@ -136,6 +136,7 @@ VDA5050 장비가 같은 `lastNodeId=2106` state를 반복 발행해도 해제 �
 - `release_node`가 없는 기존 테스트는 기존 완료 시점까지 block을 유지한다.
 - release node를 관측하지 않고 telemetry timeout이 나면 opposite waiter가 승인되지 않는다.
 - 조기 해제 뒤 destination HB 예약이 다른 robot admission에 의해 침범되지 않는다.
+- 목적지가 아닌 중간 holding bay를 통과해도 active grant를 완료 처리하지 않는다.
 - 전체 unittest suite를 실행하여 기존 single-corridor, fault, dynamic insert, passing-bay, orientation 동작을 모두 확인한다.
 
 ## 10. 범위와 후속 작업

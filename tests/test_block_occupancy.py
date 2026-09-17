@@ -60,6 +60,112 @@ def state(x: float, *, last_node: str = "", driving: bool = True) -> dict:
 
 
 class BlockOccupancyTests(unittest.TestCase):
+    def test_intermediate_holding_bay_does_not_finalize_active_grant(self) -> None:
+        registry = CorridorRegistry.from_dict(
+            {
+                "holding_bays": {
+                    "HB0": {
+                        "node_id": "N0",
+                        "geometry": {"circle": {"x": 0.0, "y": 0.0, "radius": 0.5}},
+                    },
+                    "HB_MID": {
+                        "node_id": "MID",
+                        "geometry": {"circle": {"x": 7.0, "y": 0.0, "radius": 0.5}},
+                    },
+                    "HB1": {
+                        "node_id": "N1",
+                        "geometry": {"circle": {"x": 10.0, "y": 0.0, "radius": 0.5}},
+                    },
+                },
+                "blocks": [
+                    {
+                        "id": "TOP_1",
+                        "entry_a": "HB0",
+                        "entry_b": "HB1",
+                        "geometry": {
+                            "bounds": {
+                                "min_x": 0.6,
+                                "max_x": 6.4,
+                                "min_y": -1.0,
+                                "max_y": 1.0,
+                            }
+                        },
+                    }
+                ],
+            }
+        )
+        arbiter = DirectionArbiter(registry)
+        tracker = RobotTracker(registry, arbiter)
+        arbiter.request("A1", "TOP_1", Direction.A_TO_B, "HB1", source_hb="HB0")
+        tracker.ingest_state("A1", state(5.0), received_at=1.0)
+
+        tracker.ingest_state(
+            "A1", state(7.0, last_node="MID", driving=False), received_at=2.0
+        )
+
+        self.assertEqual(tracker.snapshot()["A1"]["current_block"], "TOP_1")
+        self.assertEqual(arbiter.snapshot()["blocks"]["TOP_1"]["occupants"], ["A1"])
+        self.assertEqual(arbiter.snapshot()["holding_bays"]["HB1"]["occupants"], [])
+
+    def test_exact_release_node_clears_block_while_robot_keeps_driving(self) -> None:
+        arbiter, tracker = make_components()
+        arbiter.request(
+            "A1",
+            "TOP_1",
+            Direction.A_TO_B,
+            "HB1",
+            source_hb="HB0",
+            release_node="N_CLEAR",
+        )
+        tracker.ingest_state(
+            "A1", state(5.0, last_node="N_BEFORE"), received_at=1.0
+        )
+        self.assertEqual(tracker.snapshot()["A1"]["current_block"], "TOP_1")
+
+        tracker.ingest_state(
+            "A1",
+            state(9.0, last_node="N_CLEAR", driving=True),
+            received_at=2.0,
+        )
+
+        snapshot = tracker.snapshot()["A1"]
+        self.assertIsNone(snapshot["current_block"])
+        self.assertTrue(snapshot["driving"])
+        status = arbiter.snapshot()
+        self.assertEqual(status["blocks"]["TOP_1"]["occupants"], [])
+        self.assertEqual(status["holding_bays"]["HB1"]["reservations"], ["A1"])
+
+        tracker.ingest_state(
+            "A1",
+            state(9.0, last_node="N_CLEAR", driving=True),
+            received_at=2.5,
+        )
+        self.assertIsNone(tracker.snapshot()["A1"]["current_block"])
+        self.assertEqual(arbiter.snapshot()["blocks"]["TOP_1"]["occupants"], [])
+
+    def test_missing_release_node_telemetry_remains_fail_closed(self) -> None:
+        arbiter, tracker = make_components()
+        arbiter.request(
+            "A1",
+            "TOP_1",
+            Direction.A_TO_B,
+            "HB1",
+            source_hb="HB0",
+            release_node="N_CLEAR",
+        )
+        tracker.ingest_state(
+            "A1", state(5.0, last_node="N_BEFORE"), received_at=1.0
+        )
+        tracker.ingest_state(
+            "A1", state(50.0, last_node="N_BEFORE"), received_at=2.0
+        )
+
+        self.assertEqual(tracker.snapshot()["A1"]["current_block"], "TOP_1")
+        self.assertEqual(tracker.expire_stale(now=8.0), ["A1"])
+        status = arbiter.snapshot()["blocks"]["TOP_1"]
+        self.assertEqual(status["state"], "BLOCKED")
+        self.assertEqual(status["occupants"], ["A1"])
+
     def test_unreserved_robot_at_holding_bay_wins_over_overlapping_block(self) -> None:
         registry = CorridorRegistry.from_dict(
             {

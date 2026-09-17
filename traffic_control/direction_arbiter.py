@@ -52,6 +52,7 @@ class DirectionArbiter:
         *,
         source_hb: str | None = None,
         request_time: float | None = None,
+        release_node: str | None = None,
     ) -> Decision:
         direction = Direction(direction)
         with self._lock:
@@ -80,6 +81,7 @@ class DirectionArbiter:
                 destination_hb=destination_hb,
                 source_hb=source_hb,
                 request_time=time.monotonic() if request_time is None else request_time,
+                release_node=release_node,
             )
             domain = self._domains[block.direction_domain]
             if domain.active_direction is None:
@@ -113,8 +115,11 @@ class DirectionArbiter:
 
     def mark_entered(self, robot_id: str, block_id: str) -> None:
         with self._lock:
+            key = (robot_id, block_id)
+            if self._robot_states.get(key) is RobotCorridorState.CLEARED:
+                return
             block = self.registry.blocks[block_id]
-            reservation = self._grants.get((robot_id, block_id))
+            reservation = self._grants.get(key)
             if reservation is None:
                 if robot_id in block.occupants:
                     return
@@ -125,7 +130,7 @@ class DirectionArbiter:
                 source = self.registry.holding_bays[reservation.source_hb]
                 source.occupants.discard(robot_id)
                 source.reservations.discard(robot_id)
-            self._robot_states[(robot_id, block_id)] = RobotCorridorState.INSIDE
+            self._robot_states[key] = RobotCorridorState.INSIDE
             for domain_id in self._domains:
                 self._reconcile_domain(domain_id)
             self._assert_invariants()
@@ -133,6 +138,51 @@ class DirectionArbiter:
                 "[TRAFFIC] ROBOT_ENTERED_BLOCK robot=%s block=%s",
                 robot_id, block_id,
             )
+
+    def mark_cleared(self, robot_id: str, block_id: str) -> bool:
+        """Release conflict resources while retaining the destination bay."""
+        with self._lock:
+            key = (robot_id, block_id)
+            reservation = self._grants.get(key)
+            if reservation is None or reservation.release_node is None:
+                return False
+            if self._robot_states.get(key) is RobotCorridorState.CLEARED:
+                return False
+            block = self.registry.blocks[block_id]
+            block.occupants.pop(robot_id, None)
+            block.reservations.pop(robot_id, None)
+            if reservation.source_hb:
+                source = self.registry.holding_bays[reservation.source_hb]
+                source.occupants.discard(robot_id)
+                source.reservations.discard(robot_id)
+            self._robot_states[key] = RobotCorridorState.CLEARED
+            logger.info(
+                "[TRAFFIC] ROBOT_CLEARED_BLOCK robot=%s block=%s release_node=%s",
+                robot_id,
+                block_id,
+                reservation.release_node,
+            )
+            self._reconcile_domain(block.direction_domain)
+            self._assert_invariants()
+            return True
+
+    def mark_arrived(self, robot_id: str, block_id: str) -> bool:
+        """Finalize a retained grant after its destination is reached."""
+        with self._lock:
+            key = (robot_id, block_id)
+            reservation = self._grants.pop(key, None)
+            if reservation is None:
+                return False
+            block = self.registry.blocks[block_id]
+            block.occupants.pop(robot_id, None)
+            block.reservations.pop(robot_id, None)
+            destination = self.registry.holding_bays[reservation.destination_hb]
+            destination.reservations.discard(robot_id)
+            destination.occupants.add(robot_id)
+            self._robot_states[key] = RobotCorridorState.EXITED
+            self._reconcile_domain(block.direction_domain)
+            self._assert_invariants()
+            return True
 
     def mark_exited(self, robot_id: str, block_id: str) -> None:
         with self._lock:
@@ -188,6 +238,8 @@ class DirectionArbiter:
                 block_id
                 for candidate_robot, block_id in self._grants
                 if candidate_robot == robot_id
+                and self._robot_states.get((candidate_robot, block_id))
+                is not RobotCorridorState.CLEARED
             }
             candidates.update(
                 block_id
@@ -195,6 +247,16 @@ class DirectionArbiter:
                 if robot_id in block.occupants
             )
             return next(iter(candidates)) if len(candidates) == 1 else None
+
+    def release_node_for_robot(self, robot_id: str) -> tuple[str, str] | None:
+        """Return the configured release point for one retained grant."""
+        with self._lock:
+            matches = [
+                (block_id, reservation.release_node)
+                for (candidate_robot, block_id), reservation in self._grants.items()
+                if candidate_robot == robot_id and reservation.release_node is not None
+            ]
+            return matches[0] if len(matches) == 1 else None
 
     def destination_holding_bay_for_robot(self, robot_id: str) -> str | None:
         """Return the destination bay for the robot's single active grant."""

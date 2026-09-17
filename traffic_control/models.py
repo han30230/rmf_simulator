@@ -34,6 +34,7 @@ class RobotCorridorState(str, Enum):
     WAITING = "WAITING"
     RESERVED = "RESERVED"
     INSIDE = "INSIDE"
+    CLEARED = "CLEARED"
     EXITED = "EXITED"
     FAULT = "FAULT"
 
@@ -86,6 +87,7 @@ class Reservation:
     destination_hb: str
     source_hb: str | None
     request_time: float
+    release_node: str | None = None
 
 
 @dataclass(frozen=True)
@@ -95,6 +97,7 @@ class RouteStep:
     destination_hb: str
     goal_node: str
     source_hb: str | None = None
+    release_node: str | None = None
 
 
 @dataclass(frozen=True)
@@ -103,4 +106,3 @@ class RouteIntent:
     start_nodes: frozenset[str]
     goal_nodes: frozenset[str]
     steps: tuple[RouteStep, ...]
-
