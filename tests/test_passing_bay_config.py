@@ -131,9 +131,17 @@ class PassingBayConfigurationTests(unittest.TestCase):
             for group in traffic["groups"].values()
             for block in group["blocks"]
         }
+        gate_circle = traffic["holding_bays"]["HB_WEST_GATE"]["geometry"][
+            "circle"
+        ]
+        gate_center_x = float(gate_circle["x"])
+        gate_east_edge = gate_center_x + float(gate_circle["radius"])
         for block_id in ("P4_EAST_TO_SIDE", "P4_GATE_TO_RIGHT"):
             bounds = blocks[block_id]["geometry"]["bounds"]
-            self.assertEqual(float(bounds["min_x"]), 31.1)
+            # The passing geometry must begin inside the east half of the gate
+            # bay so state updates cannot fall through to an opposing block.
+            self.assertGreaterEqual(float(bounds["min_x"]), gate_center_x)
+            self.assertLessEqual(float(bounds["min_x"]), gate_east_edge)
             self.assertEqual(float(bounds["max_x"]), 54.818)
 
         side_to_left = blocks["P4_SIDE_TO_LEFT"]["geometry"]["bounds"]
