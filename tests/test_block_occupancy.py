@@ -59,7 +59,86 @@ def state(x: float, *, last_node: str = "", driving: bool = True) -> dict:
     }
 
 
+def overlapping_source_components(direction: Direction) -> tuple[DirectionArbiter, RobotTracker]:
+    registry = CorridorRegistry.from_dict({
+        "holding_bays": {
+            name: {
+                "node_id": node,
+                "geometry": {"circle": {"x": x, "y": 0.0, "radius": 0.5}},
+            }
+            for name, node, x in [("LEFT", "L", 0.0), ("RIGHT", "R", 10.0),
+                                  ("UNRELATED", "U", 12.0)]
+        },
+        "blocks": [
+            {
+                "id": name, "entry_a": "LEFT", "entry_b": "RIGHT",
+                "geometry": {"bounds": {"min_x": low, "max_x": high,
+                                         "min_y": -1.0, "max_y": 1.0}},
+            }
+            for name, low, high in [("OVERLAP", -2.0, 14.0), ("GRANTED", 0.4, 9.6)]
+        ],
+        "routes": [{
+            "id": "cross", "start_nodes": ["L", "R"], "goal_nodes": ["L", "R"],
+            "steps": [{
+                "block_id": "GRANTED", "direction": direction.value,
+                "destination_hb": "RIGHT" if direction is Direction.A_TO_B else "LEFT",
+                "goal_node": "R" if direction is Direction.A_TO_B else "L",
+                # Exercise the loader's existing direction-based source inference.
+            }],
+        }],
+    })
+    arbiter = DirectionArbiter(registry)
+    return arbiter, RobotTracker(registry, arbiter)
+
+
 class BlockOccupancyTests(unittest.TestCase):
+    def test_grant_preserves_source_bay_until_departure_in_both_directions(self) -> None:
+        for direction, source, source_x, inside_x in [
+            (Direction.A_TO_B, "LEFT", 0.0, 1.0),
+            (Direction.B_TO_A, "RIGHT", 10.0, 9.0),
+        ]:
+            with self.subTest(direction=direction):
+                arbiter, tracker = overlapping_source_components(direction)
+                robot = "test_robot"
+                tracker.ingest_state(robot, state(source_x, driving=False), received_at=1.0)
+                step = tracker.registry.routes[0].steps[0]
+                self.assertEqual(step.source_hb, source)
+                decision = arbiter.request(
+                    robot, step.block_id, step.direction, step.destination_hb,
+                    source_hb=step.source_hb,
+                )
+                self.assertEqual(decision.value, "ADMIT")
+                for now, x in [(2.0, source_x), (3.0, source_x),
+                               (4.0, 0.45 if source_x == 0.0 else 9.55)]:
+                    tracker.ingest_state(robot, state(x, driving=False), received_at=now)
+                    self.assertEqual(tracker.snapshot()[robot]["current_hb"], source)
+                    self.assertIsNone(tracker.snapshot()[robot]["current_block"])
+                    snapshot = arbiter.snapshot()
+                    self.assertEqual(snapshot["blocks"]["GRANTED"]["reservations"], [robot])
+                    for block in snapshot["blocks"].values():
+                        self.assertIsNone(block["fault_reason"])
+                        self.assertEqual(block["occupants"], [])
+
+                tracker.ingest_state(robot, state(inside_x), received_at=5.0)
+                self.assertEqual(tracker.snapshot()[robot]["current_block"], "GRANTED")
+                self.assertIsNone(tracker.snapshot()[robot]["current_hb"])
+                snapshot = arbiter.snapshot()
+                self.assertEqual(snapshot["blocks"]["GRANTED"]["occupants"], [robot])
+                self.assertEqual(snapshot["holding_bays"][source]["occupants"], [])
+                self.assertIsNone(snapshot["blocks"]["OVERLAP"]["fault_reason"])
+
+    def test_source_grant_does_not_hide_unreserved_entry_or_unrelated_bay(self) -> None:
+        for x in (-1.0, 12.0):
+            with self.subTest(x=x):
+                arbiter, tracker = overlapping_source_components(Direction.A_TO_B)
+                tracker.ingest_state("test_robot", state(0.0, driving=False), received_at=1.0)
+                arbiter.request("test_robot", "GRANTED", Direction.A_TO_B, "RIGHT", source_hb="LEFT")
+                tracker.ingest_state("test_robot", state(x), received_at=2.0)
+                self.assertEqual(tracker.snapshot()["test_robot"]["current_block"], "OVERLAP")
+                block = arbiter.snapshot()["blocks"]["OVERLAP"]
+                self.assertEqual(block["state"], "BLOCKED")
+                self.assertEqual(block["fault_reason"], "unreserved_robot_detected_inside")
+
     def test_intermediate_holding_bay_does_not_finalize_active_grant(self) -> None:
         registry = CorridorRegistry.from_dict(
             {

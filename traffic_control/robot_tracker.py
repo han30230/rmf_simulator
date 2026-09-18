@@ -73,13 +73,19 @@ class RobotTracker:
                 destination_hb = self.arbiter.destination_holding_bay_for_robot(
                     robot_id
                 )
+                source_hb = self.arbiter.source_holding_bay_for_robot(robot_id)
                 hb_id = self.registry.holding_bay_for_position(x, y)
                 if release_matches:
                     observed_block = None
                     hb_id = None
                 elif hb_id is not None and (
-                    granted_block is None or hb_id == destination_hb
+                    granted_block is None
+                    or hb_id == destination_hb
+                    or hb_id == source_hb
                 ):
+                    # A grant can precede departure from its source bay.
+                    # Existing occupancy is still retained below unless this
+                    # is the destination; returning to source is not an exit.
                     observed_block = None
                 elif old_block in matching_blocks:
                     observed_block = old_block

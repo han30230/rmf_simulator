@@ -67,6 +67,47 @@ class RecordingForwarder:
 
 
 class PassingBayFlowTests(unittest.TestCase):
+    def test_granted_robot_still_at_source_bay_does_not_fault_overlapping_block(self) -> None:
+        registry = CorridorRegistry.from_yaml(CONFIG)
+        arbiter = DirectionArbiter(registry)
+        tracker = RobotTracker(registry, arbiter)
+        robot = "AGV_A1"
+        tracker.ingest_state(
+            robot, state(*POSITIONS["2104"], node="2104", driving=False),
+            received_at=1.0,
+        )
+        arbiter.request(
+            robot, "P4_GATE_TO_RIGHT", Direction.A_TO_B, "HB_RIGHT",
+            source_hb="HB_WEST_GATE", release_node="2106",
+        )
+        # A grant can arrive before the next order or before motion begins.
+        tracker.ingest_state(
+            robot, state(*POSITIONS["2104"], node="2104", driving=False),
+            received_at=2.0,
+        )
+        status = arbiter.snapshot()
+        self.assertIsNone(status["blocks"]["P4_SIDE_TO_LEFT"]["fault_reason"])
+        self.assertEqual(status["blocks"]["P4_GATE_TO_RIGHT"]["reservations"], [robot])
+        self.assertEqual(status["holding_bays"]["HB_WEST_GATE"]["occupants"], [robot])
+        self.assertIsNone(tracker.snapshot()[robot]["current_block"])
+        self.assertEqual(tracker.snapshot()[robot]["current_hb"], "HB_WEST_GATE")
+        for block in status["blocks"].values():
+            self.assertIsNone(block["fault_reason"])
+
+        tracker.ingest_state(robot, state(31.05, 92.871), received_at=3.0)
+        self.assertEqual(tracker.snapshot()[robot]["current_block"], "P4_GATE_TO_RIGHT")
+        self.assertEqual(arbiter.snapshot()["holding_bays"]["HB_WEST_GATE"]["occupants"], [])
+        self.assertIsNone(arbiter.snapshot()["blocks"]["P4_SIDE_TO_LEFT"]["fault_reason"])
+
+        # Returning to the source is not proof of a safe destination exit.
+        tracker.ingest_state(
+            robot, state(*POSITIONS["2104"], node="2104", driving=False),
+            received_at=4.0,
+        )
+        self.assertEqual(tracker.snapshot()[robot]["current_block"], "P4_GATE_TO_RIGHT")
+        self.assertEqual(tracker.expire_stale(now=10.0), [robot])
+        self.assertEqual(arbiter.snapshot()["blocks"]["P4_GATE_TO_RIGHT"]["state"], "BLOCKED")
+
     def test_west_approach_remains_in_its_granted_block_until_gate_bay(self) -> None:
         registry = CorridorRegistry.from_yaml(CONFIG)
         arbiter = DirectionArbiter(registry)

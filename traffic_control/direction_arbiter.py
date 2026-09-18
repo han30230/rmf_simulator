@@ -258,6 +258,18 @@ class DirectionArbiter:
             ]
             return matches[0] if len(matches) == 1 else None
 
+    def source_holding_bay_for_robot(self, robot_id: str) -> str | None:
+        """Return the source bay for the robot's single retained grant."""
+        with self._lock:
+            reservations = [
+                reservation
+                for (candidate_robot, _), reservation in self._grants.items()
+                if candidate_robot == robot_id
+            ]
+            if len(reservations) != 1:
+                return None
+            return reservations[0].source_hb
+
     def destination_holding_bay_for_robot(self, robot_id: str) -> str | None:
         """Return the destination bay for the robot's single active grant."""
         with self._lock:
