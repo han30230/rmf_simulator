@@ -71,7 +71,9 @@ traffic_control:
             - "2106>2105"
             - "2105>6137"
           geometry:
-            bounds: &passing_main_bounds {min_x: 31.1, max_x: 54.818, min_y: 91.75, max_y: 93.9}
+            # Start inside the 2104 holding-bay circle (east edge x=31.024)
+            # so telemetry cannot fall into P4_SIDE_TO_LEFT during handoff.
+            bounds: &passing_main_bounds {min_x: 30.9, max_x: 54.818, min_y: 91.75, max_y: 93.9}
 
         - id: P4_GATE_TO_RIGHT
           direction_domain: P4_PASSING_EVENT
