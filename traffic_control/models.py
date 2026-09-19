@@ -99,6 +99,7 @@ class RouteStep:
     goal_node: str
     source_hb: str | None = None
     release_node: str | None = None
+    requires_opposite_routes_cleared: bool = False
 
 
 @dataclass(frozen=True)

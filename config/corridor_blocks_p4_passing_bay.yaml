@@ -178,6 +178,7 @@ traffic_control:
           source_hb: HB_MIDDLE_SIDE
           destination_hb: HB_LEFT
           goal_node: "2101"
+          requires_opposite_routes_cleared: true
 
     - id: P4_RIGHT_TO_LEFT_DIRECT_WHEN_CLEAR
       start_nodes: ["2108"]

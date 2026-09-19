@@ -248,6 +248,14 @@ class DirectionArbiter:
             )
             return next(iter(candidates)) if len(candidates) == 1 else None
 
+    def has_cleared(self, robot_id: str, block_id: str) -> bool:
+        """Return whether a retained grant has cleared its conflict section."""
+        with self._lock:
+            return (
+                self._robot_states.get((robot_id, block_id))
+                is RobotCorridorState.CLEARED
+            )
+
     def release_node_for_robot(self, robot_id: str) -> tuple[str, str] | None:
         """Return the configured release point for one retained grant."""
         with self._lock:

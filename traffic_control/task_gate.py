@@ -25,7 +25,7 @@ from uuid import uuid4
 
 from .corridor_registry import CorridorRegistry
 from .direction_arbiter import DirectionArbiter
-from .models import Decision, RouteIntent
+from .models import Decision, RouteIntent, RouteStep
 from .robot_tracker import MqttStateMonitor, RobotTracker
 
 logger = logging.getLogger(__name__)
@@ -225,6 +225,21 @@ class TaskGate:
             job.status = JobStatus.COMPLETE
             return {"decision": "COMPLETE"}
 
+        if (
+            step.requires_opposite_routes_cleared
+            and self._opposite_route_work_remains(step, exclude_job_id=job.job_id)
+        ):
+            self.arbiter.cancel(job.robot_id, step.block_id)
+            job.status = JobStatus.WAITING
+            logger.info(
+                "[TRAFFIC] TASK_HELD robot=%s job=%s block=%s "
+                "reason=opposite_routes_pending",
+                job.robot_id,
+                job.job_id,
+                step.block_id,
+            )
+            return {"decision": Decision.WAIT.value}
+
         decision = self.arbiter.decision_for(job.robot_id, step.block_id)
         if decision is not Decision.ADMIT:
             decision = self.arbiter.request(
@@ -248,6 +263,40 @@ class TaskGate:
             job.status = JobStatus.BLOCKED
             return {"decision": Decision.BLOCKED.value}
         return self._forward_current_step(job)
+
+    def _opposite_route_work_remains(
+        self,
+        candidate_step: RouteStep,
+        *,
+        exclude_job_id: str,
+    ) -> bool:
+        candidate_domain = self.registry.blocks[
+            candidate_step.block_id
+        ].direction_domain
+        terminal = {JobStatus.COMPLETE, JobStatus.CANCELLED}
+        for other in self._jobs.values():
+            if other.job_id == exclude_job_id or other.status in terminal:
+                continue
+            for offset, other_step in enumerate(
+                other.route.steps[other.step_index :]
+            ):
+                other_block = self.registry.blocks[other_step.block_id]
+                if (
+                    other_block.direction_domain != candidate_domain
+                    or other_step.direction is not candidate_step.direction.opposite
+                ):
+                    continue
+                if (
+                    offset == 0
+                    and other.status is JobStatus.ACTIVE
+                    and self.arbiter.has_cleared(
+                        other.robot_id,
+                        other_step.block_id,
+                    )
+                ):
+                    continue
+                return True
+        return False
 
     def _select_route(
         self,

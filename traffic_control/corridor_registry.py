@@ -153,6 +153,9 @@ class CorridorRegistry:
                         goal_node=goal_node,
                         source_hb=normalized_source,
                         release_node=normalized_release,
+                        requires_opposite_routes_cleared=bool(
+                            step.get("requires_opposite_routes_cleared", False)
+                        ),
                     )
                 )
             if not steps:

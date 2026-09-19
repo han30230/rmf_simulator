@@ -214,6 +214,7 @@ class PassingBayConfigurationTests(unittest.TestCase):
             [step["source_hb"] for step in reverse["steps"]],
             ["HB_RIGHT", "HB_MIDDLE_SIDE"],
         )
+        self.assertTrue(reverse["steps"][1]["requires_opposite_routes_cleared"])
 
     def test_forward_route_releases_only_after_the_central_conflict(self) -> None:
         traffic = yaml.safe_load(ARBITER_PATH.read_text(encoding="utf-8"))[
