@@ -431,6 +431,10 @@ class DirectionArbiter:
         }
         if existing_directions and existing_directions != {reservation.direction}:
             return False
+        if block.require_source_hb_unreserved and reservation.source_hb is not None:
+            source = self.registry.holding_bays[reservation.source_hb]
+            if source.reservations - {reservation.robot_id}:
+                return False
         bay = self.registry.holding_bays[reservation.destination_hb]
         used = (bay.occupants | bay.reservations) - {reservation.robot_id}
         return len(used) < bay.capacity

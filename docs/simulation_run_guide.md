@@ -23,6 +23,18 @@ Passing-bay 전체 스택 시작:
 ./scripts/t4_dispatch_passing_bay.sh
 ```
 
+2대 대 1대 실행:
+
+```bash
+./scripts/stop_p4_passing_bay.sh --all
+./scripts/start_p4_passing_bay_2v1.sh
+./scripts/t4_dispatch_passing_bay_2v1.sh
+```
+
+2대 대 1대에서는 A1이 2106을 통과하면 B1이 `6137 → 2101`로 출발한다.
+B2의 `2108 → 6137` 구간은 A1의 HB_RIGHT 목적지 예약이 해제될 때까지
+보류하여 A1의 2106–2108 잔여 경로와 겹치지 않게 한다.
+
 핵심 로그 확인:
 
 ```bash
@@ -44,7 +56,7 @@ Docker container까지 모두 중지하려면 `--all`을 붙인다.
 | 구성요소 | 역할 | 포트/통신 |
 | --- | --- | --- |
 | Mosquitto | VDA5050 MQTT broker | TCP 1883 |
-| Robot Simulator | AGV_A1/B1 state 발행, order 수행 | MQTT |
+| Robot Simulator | AGV_A1/B1/B2 state 발행, order 수행 | MQTT |
 | Fleet Adapter | MQTT state/order와 RMF 변환 | ROS 2 + MQTT |
 | RMF Schedule/Dispatcher | 경로 schedule과 task 배정 | ROS 2 |
 | RMF API Server | REST task endpoint | HTTP 8100 |

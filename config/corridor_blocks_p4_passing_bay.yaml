@@ -60,6 +60,9 @@ traffic_control:
           entry_a: HB_MIDDLE_SIDE
           entry_b: HB_RIGHT
           capacity: 1
+          # Do not launch another robot from the east endpoint while a robot
+          # that already cleared the central conflict is still arriving there.
+          require_source_hb_unreserved: true
           edges_a_to_b:
             - "6137>2105"
             - "2105>2106"

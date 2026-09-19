@@ -34,7 +34,7 @@ class PortableWorkspaceTests(unittest.TestCase):
         self.assertIn("docker-compose.portable.yml", script)
         self.assertIn("corridor_blocks_p4_passing_bay.yaml", script)
         self.assertIn("RMF_API_BEARER_TOKEN", script)
-        self.assertIn("p4_passing_bay_2robots.yaml", script)
+        self.assertIn("p4_passing_bay_runtime.yaml", script)
 
     def test_portable_compose_provides_an_mqtt_broker(self) -> None:
         compose = (

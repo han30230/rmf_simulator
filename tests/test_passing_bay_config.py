@@ -12,6 +12,8 @@ MAP_PATH = ADAPTER / "map/p4_passing_bay.yaml"
 ARBITER_PATH = ROOT / "config/corridor_blocks_p4_passing_bay.yaml"
 COMPOSE_PATH = ROOT / "rmf_platform-main/docker-compose.p4-passing-bay.yml"
 DISPATCH_PATH = ROOT / "scripts/t4_dispatch_passing_bay.sh"
+START_2V1_PATH = ROOT / "scripts/start_p4_passing_bay_2v1.sh"
+DISPATCH_2V1_PATH = ROOT / "scripts/t4_dispatch_passing_bay_2v1.sh"
 
 
 def contains(geometry: dict, x: float, y: float) -> bool:
@@ -26,6 +28,35 @@ class PassingBayConfigurationTests(unittest.TestCase):
     def test_required_runtime_files_exist(self) -> None:
         for path in (MAP_PATH, ARBITER_PATH, COMPOSE_PATH, DISPATCH_PATH):
             self.assertTrue(path.is_file(), path)
+
+    def test_two_against_one_runtime_selects_all_three_robots(self) -> None:
+        self.assertTrue(START_2V1_PATH.is_file(), START_2V1_PATH)
+        self.assertTrue(DISPATCH_2V1_PATH.is_file(), DISPATCH_2V1_PATH)
+
+        start = START_2V1_PATH.read_text(encoding="utf-8")
+        self.assertIn(
+            "PASSING_BAY_DISPATCH_SCRIPT=t4_dispatch_passing_bay_2v1.sh",
+            start,
+        )
+        self.assertIn(
+            '/start_p4_passing_bay.sh" AGV_A1 AGV_B1 AGV_B2',
+            start,
+        )
+
+        dispatch = DISPATCH_2V1_PATH.read_text(encoding="utf-8")
+        requests = [
+            line.strip()
+            for line in dispatch.splitlines()
+            if "t4_dispatch_via_arbiter.sh" in line
+        ]
+        self.assertEqual(
+            requests,
+            [
+                '"${script_dir}/t4_dispatch_via_arbiter.sh" AGV_A1 2108',
+                '"${script_dir}/t4_dispatch_via_arbiter.sh" AGV_B1 2101',
+                '"${script_dir}/t4_dispatch_via_arbiter.sh" AGV_B2 2101',
+            ],
+        )
 
     def test_side_bay_is_bidirectionally_connected_to_2105(self) -> None:
         data = yaml.safe_load(MAP_PATH.read_text(encoding="utf-8"))
@@ -92,6 +123,7 @@ class PassingBayConfigurationTests(unittest.TestCase):
             blocks["P4_WEST_ADVANCE"]["direction_domain"],
             "P4_PASSING_EVENT",
         )
+        self.assertTrue(blocks["P4_EAST_TO_SIDE"]["require_source_hb_unreserved"])
 
     def test_managed_routes_have_the_expected_two_steps(self) -> None:
         traffic = yaml.safe_load(ARBITER_PATH.read_text(encoding="utf-8"))[

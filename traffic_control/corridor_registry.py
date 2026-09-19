@@ -71,6 +71,9 @@ class CorridorRegistry:
                 entry_a=entry_a,
                 entry_b=entry_b,
                 capacity=capacity,
+                require_source_hb_unreserved=bool(
+                    raw.get("require_source_hb_unreserved", False)
+                ),
                 geometry=raw.get("geometry"),
                 edges_a_to_b={str(item) for item in raw.get("edges_a_to_b", [])},
                 edges_b_to_a={str(item) for item in raw.get("edges_b_to_a", [])},

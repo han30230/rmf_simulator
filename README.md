@@ -47,6 +47,18 @@ cd ~/rmf-work/rmf_passing_bay_poc
 ./scripts/t4_dispatch_passing_bay.sh
 ```
 
+2대 대 1대 시나리오는 별도 시작/투입 스크립트를 사용한다.
+
+```bash
+./scripts/stop_p4_passing_bay.sh --all
+./scripts/start_p4_passing_bay_2v1.sh
+./scripts/t4_dispatch_passing_bay_2v1.sh
+```
+
+이 시나리오는 A1이 `2101 → 2108`, B1/B2가 `2108 → 2101`로 이동한다.
+B1은 A1이 2106을 통과하면 side bay에서 출발하고, B2는 A1이 2108에
+도착해 HB_RIGHT 목적지 예약이 해제된 뒤 출발한다.
+
 `setup_workspace.sh`는 다음을 준비한다.
 
 - 저장소 내부 `.venv`
@@ -58,7 +70,7 @@ cd ~/rmf-work/rmf_passing_bay_poc
 
 - MQTT가 없을 때만 Mosquitto 실행
 - RMF Traffic Schedule, Dispatcher, Blockade, API Server 실행
-- AGV_A1/AGV_B1 2대 Simulator 실행
+- 기본 AGV_A1/AGV_B1 2대 Simulator 실행 또는 인자로 선택한 로봇 실행
 - Passing-bay Fleet Adapter 실행
 - 개발용 단기 JWT를 메모리에 생성
 - `config/corridor_blocks_p4_passing_bay.yaml` Arbiter 실행

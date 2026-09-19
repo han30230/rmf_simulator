@@ -6,12 +6,18 @@ platform_dir="${workspace_dir}/rmf_platform-main"
 simulator_dir="${workspace_dir}/rmf_dev_tool-main/vda5050_robot_simulator"
 python_bin="${workspace_dir}/.venv/bin/python"
 runtime_dir="${workspace_dir}/.runtime"
-simulator_config="${runtime_dir}/p4_passing_bay_2robots.yaml"
+simulator_config="${runtime_dir}/p4_passing_bay_runtime.yaml"
 simulator_log="${runtime_dir}/simulator.log"
 arbiter_log="${runtime_dir}/arbiter.log"
 base_compose="${platform_dir}/docker-compose.yml"
 portable_compose="${platform_dir}/docker-compose.portable.yml"
 passing_compose="${platform_dir}/docker-compose.p4-passing-bay.yml"
+robot_ids=("$@")
+if [[ "${#robot_ids[@]}" -eq 0 ]]; then
+  robot_ids=(AGV_A1 AGV_B1)
+fi
+expected_robots="${#robot_ids[@]}"
+dispatch_script="${PASSING_BAY_DISPATCH_SCRIPT:-t4_dispatch_passing_bay.sh}"
 
 [[ -x "${python_bin}" ]] || {
   echo "가상환경이 없습니다. 먼저 ./scripts/setup_workspace.sh 를 실행하세요." >&2
@@ -99,19 +105,22 @@ done
 }
 
 cd "${simulator_dir}"
-"${python_bin}" - "${simulator_config}" <<'PY'
+"${python_bin}" - "${simulator_config}" "${robot_ids[@]}" <<'PY'
 from pathlib import Path
 import sys
 import yaml
 
 source = Path("p4_scenario.yaml")
 target = Path(sys.argv[1])
+requested = sys.argv[2:]
 data = yaml.safe_load(source.read_text(encoding="utf-8"))
 data["robots"] = [
     robot for robot in data["robots"]
-    if robot["serial_number"] in {"AGV_A1", "AGV_B1"}
+    if robot["serial_number"] in set(requested)
 ]
-assert [robot["serial_number"] for robot in data["robots"]] == ["AGV_A1", "AGV_B1"]
+selected = [robot["serial_number"] for robot in data["robots"]]
+if len(requested) != len(set(requested)) or set(selected) != set(requested):
+    raise SystemExit(f"unknown or duplicate robot selection: {requested}")
 target.write_text(
     yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
     encoding="utf-8",
@@ -130,14 +139,14 @@ registered=0
 for _ in $(seq 1 120); do
   registered="$(docker logs vda5050_fleet_adapter 2>&1 | \
     grep -c 'Successfully added robot' || true)"
-  if [[ "${registered}" -ge 2 ]]; then
-    echo "[OK] Fleet Adapter: AGV_A1/AGV_B1"
+  if [[ "${registered}" -ge "${expected_robots}" ]]; then
+    echo "[OK] Fleet Adapter: ${robot_ids[*]}"
     break
   fi
   sleep 1
 done
-[[ "${registered}" -ge 2 ]] || {
-  echo "Fleet Adapter가 로봇 2대를 등록하지 못했습니다." >&2
+[[ "${registered}" -ge "${expected_robots}" ]] || {
+  echo "Fleet Adapter가 로봇 ${expected_robots}대를 등록하지 못했습니다." >&2
   exit 1
 }
 
@@ -175,6 +184,6 @@ wait_for_port 8200 Arbiter
 
 echo
 echo "Passing-bay runtime is ready."
-echo "Dispatch: ./scripts/t4_dispatch_passing_bay.sh"
+echo "Dispatch: ./scripts/${dispatch_script}"
 echo "Status:   curl -s --noproxy '*' http://127.0.0.1:8200/traffic/status | python3 -m json.tool"
 echo "Logs:     tail -F .runtime/arbiter.log"

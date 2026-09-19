@@ -57,6 +57,7 @@ class CorridorBlock:
     entry_a: str
     entry_b: str
     capacity: int = 1
+    require_source_hb_unreserved: bool = False
     geometry: dict[str, Any] | None = None
     edges_a_to_b: set[str] = field(default_factory=set)
     edges_b_to_a: set[str] = field(default_factory=set)
