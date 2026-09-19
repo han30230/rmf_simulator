@@ -6,6 +6,7 @@ from traffic_control.corridor_chain import CorridorChainPlanner, PlannedAuthorit
 from traffic_control.corridor_registry import CorridorRegistry
 from traffic_control.direction_arbiter import DirectionArbiter
 from traffic_control.models import Decision, Direction
+from traffic_control.robot_tracker import RobotTracker
 
 from tests.test_corridor_chain_registry import chain_config
 
@@ -16,6 +17,53 @@ def components(*, block_capacity: int = 1):
         block["capacity"] = block_capacity
     registry = CorridorRegistry.from_dict(config)
     return registry, DirectionArbiter(registry), CorridorChainPlanner(registry)
+
+
+def tracking_components():
+    config = chain_config()
+    positions = {
+        "LEFT_1": (-1.0, 1.0),
+        "LEFT_2": (-1.0, 2.0),
+        "SIDE_1": (10.0, 2.0),
+        "SIDE_2": (20.0, 2.0),
+        "RIGHT_1": (31.0, 1.0),
+        "RIGHT_2": (31.0, 2.0),
+    }
+    for hb_id, (x, y) in positions.items():
+        config["holding_bays"][hb_id]["geometry"] = {
+            "circle": {"x": x, "y": y, "radius": 0.4}
+        }
+    for block, bounds, forward_release, reverse_release in zip(
+        config["blocks"],
+        ((0.0, 10.0), (10.0, 20.0), (20.0, 30.0)),
+        ("N1", "N2", "N3"),
+        ("N0", "N1", "N2"),
+    ):
+        low, high = bounds
+        block["geometry"] = {
+            "bounds": {
+                "min_x": low,
+                "max_x": high,
+                "min_y": -0.5,
+                "max_y": 0.5,
+            }
+        }
+        block["release_node_a_to_b"] = forward_release
+        block["release_node_b_to_a"] = reverse_release
+    registry = CorridorRegistry.from_dict(config)
+    arbiter = DirectionArbiter(registry)
+    tracker = RobotTracker(registry, arbiter, telemetry_timeout=5.0)
+    return registry, arbiter, CorridorChainPlanner(registry), tracker
+
+
+def state(node: str, x: float, y: float, *, driving: bool = True) -> dict:
+    return {
+        "lastNodeId": node,
+        "driving": driving,
+        "agvPosition": {"x": x, "y": y, "theta": 0.0, "mapId": "L1"},
+        "nodeStates": [],
+        "edgeStates": [],
+    }
 
 
 def planned(
@@ -142,6 +190,50 @@ class MovementAuthorityTests(unittest.TestCase):
         self.assertEqual(arbiter.decision_for_authority("B1"), Decision.ADMIT)
         self.assertIn("B1", registry.blocks["C2"].reservations)
         self.assertEqual(registry.holding_bays["SIDE_1"].reservations, {"B1"})
+
+    def test_tracker_releases_blocks_in_order_and_keeps_destination_reserved(self) -> None:
+        registry, arbiter, planner, tracker = tracking_components()
+        tracker.ingest_state("A1", state("L1", -1.0, 1.0, driving=False), received_at=1.0)
+        authority = planned(registry, planner, "L1", "R1")
+        arbiter.request_authority(authority, robot_id="A1", request_time=1.0)
+
+        tracker.ingest_state("A1", state("N0", 5.0, 0.0), received_at=2.0)
+        self.assertEqual(tracker.snapshot()["A1"]["current_block"], "C1")
+
+        tracker.ingest_state("A1", state("N1", 10.0, 0.0), received_at=3.0)
+        granted = arbiter.authority_for_robot("A1")
+        assert granted is not None
+        self.assertEqual(granted.unreleased_blocks, ("C2", "C3"))
+        self.assertEqual(registry.holding_bays["RIGHT_1"].reservations, {"A1"})
+
+        tracker.ingest_state("A1", state("", 15.0, 0.0), received_at=4.0)
+        self.assertEqual(tracker.snapshot()["A1"]["current_block"], "C2")
+        tracker.ingest_state("A1", state("N2", 20.0, 0.0), received_at=5.0)
+        self.assertEqual(granted.unreleased_blocks, ("C3",))
+        self.assertEqual(registry.holding_bays["RIGHT_1"].reservations, {"A1"})
+
+        tracker.ingest_state("A1", state("", 25.0, 0.0), received_at=6.0)
+        tracker.ingest_state("A1", state("R1", 31.0, 1.0, driving=False), received_at=7.0)
+
+        self.assertIsNone(arbiter.authority_for_robot("A1"))
+        self.assertEqual(registry.holding_bays["RIGHT_1"].occupants, {"A1"})
+        for block in registry.blocks.values():
+            self.assertNotIn("A1", block.occupants)
+            self.assertNotIn("A1", block.reservations)
+
+    def test_timeout_faults_every_unreleased_authority_block(self) -> None:
+        registry, arbiter, planner, tracker = tracking_components()
+        tracker.ingest_state("A1", state("L1", -1.0, 1.0, driving=False), received_at=1.0)
+        authority = planned(registry, planner, "L1", "R1")
+        arbiter.request_authority(authority, robot_id="A1", request_time=1.0)
+        tracker.ingest_state("A1", state("N0", 5.0, 0.0), received_at=2.0)
+
+        self.assertEqual(tracker.expire_stale(now=8.0), ["A1"])
+
+        self.assertEqual(
+            {block_id for block_id, block in registry.blocks.items() if block.fault_reason},
+            {"C1", "C2", "C3"},
+        )
 
 
 if __name__ == "__main__":

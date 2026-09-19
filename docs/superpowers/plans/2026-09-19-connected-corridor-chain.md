@@ -266,7 +266,7 @@ modules; expected: all pass.
 - Consumes: active `MovementAuthority` and existing configured edge/geometry/release-node telemetry.
 - Produces: ordered block entry/clear transitions and fail-closed timeout of all unreleased blocks.
 
-- [ ] **Step 1: Write telemetry RED tests**
+- [x] **Step 1: Write telemetry RED tests**
 
 Feed positions/edges from C1 through C3. Assert that the tracker selects the
 matching block from the robot's authority, releases C1 then C2 in order, keeps
@@ -274,12 +274,12 @@ the destination slot reserved, and completes only at the concrete destination
 node. Assert timeout faults every unreleased block rather than only the current
 one.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Expected: the current single-grant lookup is ambiguous and blocks are not
 released as an ordered authority.
 
-- [ ] **Step 3: Generalize granted-block classification**
+- [x] **Step 3: Generalize granted-block classification**
 
 Add `granted_blocks_for_robot(robot_id) -> tuple[str, ...]`. Robot Tracker first
 chooses a geometry/edge match within that ordered set, then applies existing
@@ -287,7 +287,7 @@ source/destination safe-area rules, then reports unrelated block intrusion.
 Never classify an unvisited future block as occupied solely because it is
 reserved.
 
-- [ ] **Step 4: Release and fault authority resources**
+- [x] **Step 4: Release and fault authority resources**
 
 `mark_cleared` records a released block but retains later reservations and the
 destination slot. `fault(robot_id)` marks every block in
@@ -295,7 +295,7 @@ destination slot. `fault(robot_id)` marks every block in
 remaining reservations, moves physical slot occupancy, and deletes the active
 authority.
 
-- [ ] **Step 5: Run GREEN and occupancy regressions**
+- [x] **Step 5: Run GREEN and occupancy regressions**
 
 Run the two modified modules plus existing passing-bay flow tests; expected:
 all pass.

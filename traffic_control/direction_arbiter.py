@@ -339,6 +339,9 @@ class DirectionArbiter:
                 source.occupants.discard(robot_id)
                 source.reservations.discard(robot_id)
             self._robot_states[key] = RobotCorridorState.CLEARED
+            authority = self._authorities.get(robot_id)
+            if authority is not None and block_id in authority.block_ids:
+                authority.released_blocks.add(block_id)
             logger.info(
                 "[TRAFFIC] ROBOT_CLEARED_BLOCK robot=%s block=%s release_node=%s",
                 robot_id,
@@ -346,6 +349,7 @@ class DirectionArbiter:
                 reservation.release_node,
             )
             self._reconcile_domain(block.direction_domain)
+            self._reconcile_authorities()
             self._assert_invariants()
             return True
 
@@ -431,6 +435,20 @@ class DirectionArbiter:
             )
             return next(iter(candidates)) if len(candidates) == 1 else None
 
+    def granted_blocks_for_robot(self, robot_id: str) -> tuple[str, ...]:
+        """Return active grants in travel order for occupancy classification."""
+        with self._lock:
+            authority = self._authorities.get(robot_id)
+            if authority is not None:
+                return authority.unreleased_blocks
+            return tuple(
+                block_id
+                for candidate_robot, block_id in self._grants
+                if candidate_robot == robot_id
+                and self._robot_states.get((candidate_robot, block_id))
+                is not RobotCorridorState.CLEARED
+            )
+
     def has_cleared(self, robot_id: str, block_id: str) -> bool:
         """Return whether a retained grant has cleared its conflict section."""
         with self._lock:
@@ -442,6 +460,13 @@ class DirectionArbiter:
     def release_node_for_robot(self, robot_id: str) -> tuple[str, str] | None:
         """Return the configured release point for one retained grant."""
         with self._lock:
+            authority = self._authorities.get(robot_id)
+            if authority is not None:
+                for block_id in authority.unreleased_blocks:
+                    reservation = self._grants.get((robot_id, block_id))
+                    if reservation is not None and reservation.release_node is not None:
+                        return block_id, reservation.release_node
+                return None
             matches = [
                 (block_id, reservation.release_node)
                 for (candidate_robot, block_id), reservation in self._grants.items()
@@ -452,6 +477,9 @@ class DirectionArbiter:
     def source_holding_bay_for_robot(self, robot_id: str) -> str | None:
         """Return the source bay for the robot's single retained grant."""
         with self._lock:
+            authority = self._authorities.get(robot_id)
+            if authority is not None:
+                return authority.source_slot
             reservations = [
                 reservation
                 for (candidate_robot, _), reservation in self._grants.items()
@@ -464,6 +492,9 @@ class DirectionArbiter:
     def destination_holding_bay_for_robot(self, robot_id: str) -> str | None:
         """Return the destination bay for the robot's single active grant."""
         with self._lock:
+            authority = self._authorities.get(robot_id)
+            if authority is not None:
+                return authority.destination_slot
             reservations = [
                 reservation
                 for (candidate_robot, _), reservation in self._grants.items()
@@ -504,6 +535,24 @@ class DirectionArbiter:
 
     def fault(self, robot_id: str, *, reason: str) -> None:
         with self._lock:
+            authority = self._authorities.get(robot_id)
+            if authority is not None:
+                logger.error(
+                    "[TRAFFIC] ROBOT_FAULT robot=%s reason=%s",
+                    robot_id,
+                    reason,
+                )
+                for block_id in authority.unreleased_blocks:
+                    block = self.registry.blocks[block_id]
+                    block.fault_reason = reason
+                    self._robot_states[(robot_id, block_id)] = RobotCorridorState.FAULT
+                    logger.error(
+                        "[TRAFFIC] BLOCK_FAULT robot=%s block=%s reason=%s",
+                        robot_id,
+                        block_id,
+                        reason,
+                    )
+                return
             for block_id, block in self.registry.blocks.items():
                 if robot_id in block.occupants:
                     block.fault_reason = reason
@@ -654,6 +703,7 @@ class DirectionArbiter:
                 destination_hb=authority.destination_slot,
                 source_hb=(authority.source_slot if index == 0 else None),
                 request_time=authority.request_time,
+                release_node=block.release_node(authority.direction),
             )
             block.reservations[authority.robot_id] = reservation
             self._grants[(authority.robot_id, block_id)] = reservation

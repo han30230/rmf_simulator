@@ -111,6 +111,8 @@ class CorridorBlock:
     geometry: dict[str, Any] | None = None
     edges_a_to_b: set[str] = field(default_factory=set)
     edges_b_to_a: set[str] = field(default_factory=set)
+    release_node_a_to_b: str | None = None
+    release_node_b_to_a: str | None = None
     occupants: dict[str, Direction] = field(default_factory=dict)
     reservations: dict[str, "Reservation"] = field(default_factory=dict)
     fault_reason: str | None = None
@@ -128,6 +130,13 @@ class CorridorBlock:
             raise RuntimeError(f"opposite directions present in {self.block_id}")
         direction = next(iter(directions))
         return BlockState(direction.value)
+
+    def release_node(self, direction: Direction) -> str | None:
+        return (
+            self.release_node_a_to_b
+            if direction is Direction.A_TO_B
+            else self.release_node_b_to_a
+        )
 
 
 @dataclass(frozen=True)

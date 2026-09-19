@@ -69,7 +69,12 @@ class RobotTracker:
                 x = float(position["x"])
                 y = float(position["y"])
                 matching_blocks = self.registry.blocks_for_position(x, y)
-                granted_block = self.arbiter.active_block_for_robot(robot_id)
+                granted_blocks = self.arbiter.granted_blocks_for_robot(robot_id)
+                granted_block = next(
+                    (item for item in granted_blocks if item in matching_blocks),
+                    None,
+                )
+                authority = self.arbiter.authority_for_robot(robot_id)
                 destination_hb = self.arbiter.destination_holding_bay_for_robot(
                     robot_id
                 )
@@ -79,7 +84,7 @@ class RobotTracker:
                     observed_block = None
                     hb_id = None
                 elif hb_id is not None and (
-                    granted_block is None
+                    not granted_blocks
                     or hb_id == destination_hb
                     or hb_id == source_hb
                 ):
@@ -95,6 +100,12 @@ class RobotTracker:
                     observed_block = matching_blocks[0] if matching_blocks else None
 
                 if observed_block is not None and observed_block != old_block:
+                    if (
+                        old_block is not None
+                        and authority is not None
+                        and old_block in authority.unreleased_blocks
+                    ):
+                        self.arbiter.mark_cleared(robot_id, old_block)
                     try:
                         self.arbiter.mark_entered(robot_id, observed_block)
                     except ValueError:
@@ -108,7 +119,10 @@ class RobotTracker:
                     and observed_block is None
                     and hb_id == destination_hb
                 ):
-                    self.arbiter.mark_exited(robot_id, old_block)
+                    if authority is not None:
+                        self.arbiter.mark_authority_arrived(robot_id)
+                    else:
+                        self.arbiter.mark_exited(robot_id, old_block)
 
                 if observed_block is not None:
                     block_id = observed_block
@@ -179,7 +193,10 @@ class RobotTracker:
         with self._lock:
             for robot_id, telemetry in self._robots.items():
                 if (
-                    telemetry.current_block is not None
+                    (
+                        telemetry.current_block is not None
+                        or self.arbiter.authority_for_robot(robot_id) is not None
+                    )
                     and not telemetry.faulted
                     and current - telemetry.received_at > self.telemetry_timeout
                 ):

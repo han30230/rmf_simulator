@@ -128,6 +128,16 @@ class CorridorRegistry:
                 geometry=raw.get("geometry"),
                 edges_a_to_b={str(item) for item in raw.get("edges_a_to_b", [])},
                 edges_b_to_a={str(item) for item in raw.get("edges_b_to_a", [])},
+                release_node_a_to_b=(
+                    str(raw["release_node_a_to_b"])
+                    if raw.get("release_node_a_to_b") is not None
+                    else None
+                ),
+                release_node_b_to_a=(
+                    str(raw["release_node_b_to_a"])
+                    if raw.get("release_node_b_to_a") is not None
+                    else None
+                ),
             )
 
         used_chain_blocks: set[str] = set()
