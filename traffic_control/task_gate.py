@@ -69,6 +69,7 @@ class ChainGateJob:
     original_payload: dict[str, Any]
     chain_id: str
     final_goal_node: str
+    request_time: float = 0.0
     status: JobStatus = JobStatus.WAITING
     active_plan: PlannedAuthority | None = None
     active_authority_id: str | None = None
@@ -131,6 +132,7 @@ class TaskGate:
                         original_payload=deepcopy(payload),
                         chain_id=chain_path.chain_id,
                         final_goal_node=goal_node,
+                        request_time=time.monotonic(),
                     )
                     self._chain_jobs[job.job_id] = job
                     logger.info(
@@ -365,6 +367,9 @@ class TaskGate:
                 "decision": Decision.BLOCKED.value,
                 "reason": job.last_error,
             }
+        if self._older_opposite_chain_waiter(job, path):
+            job.status = JobStatus.WAITING
+            return {"decision": Decision.WAIT.value}
         plan = self._chain_planner.plan(
             path,
             lambda block_ids, direction, destination_slot: (
@@ -438,6 +443,72 @@ class TaskGate:
             job.active_plan.goal_node,
         )
         return {"decision": Decision.ADMIT.value, "upstream": result}
+
+    def _older_opposite_chain_waiter(self, job: ChainGateJob, path) -> bool:
+        candidate_blocks = set(path.block_ids)
+        for other in self._chain_jobs.values():
+            if (
+                other.job_id == job.job_id
+                or other.status is not JobStatus.WAITING
+                or other.request_time >= job.request_time
+            ):
+                continue
+            other_start = self.tracker.current_safe_node(other.robot_id)
+            if other_start is None:
+                continue
+            other_path = self.registry.resolve_chain_path(
+                other_start,
+                other.final_goal_node,
+            )
+            if (
+                other_path is not None
+                and other_path.direction is path.direction.opposite
+                and candidate_blocks.intersection(other_path.block_ids)
+            ):
+                destination_slot = self.registry.holding_bay_for_node(
+                    other.final_goal_node
+                )
+                if destination_slot is not None and self._slot_depends_on_direction(
+                    destination_slot,
+                    path.direction,
+                ):
+                    continue
+                return True
+        return False
+
+    def _slot_depends_on_direction(
+        self,
+        slot_id: str,
+        direction,
+    ) -> bool:
+        occupants = self.registry.holding_bays[slot_id].occupants
+        for occupant in occupants:
+            occupant_job = next(
+                (
+                    item
+                    for item in self._chain_jobs.values()
+                    if item.robot_id == occupant
+                    and item.status
+                    not in {
+                        JobStatus.COMPLETE,
+                        JobStatus.CANCELLED,
+                        JobStatus.BLOCKED,
+                    }
+                ),
+                None,
+            )
+            if occupant_job is None:
+                continue
+            start_node = self.tracker.current_safe_node(occupant)
+            if start_node is None:
+                continue
+            occupant_path = self.registry.resolve_chain_path(
+                start_node,
+                occupant_job.final_goal_node,
+            )
+            if occupant_path is not None and occupant_path.direction is direction:
+                return True
+        return False
 
     def _attempt_current_step(self, job: GateJob) -> dict[str, Any]:
         self._refresh_waiting_route(job)

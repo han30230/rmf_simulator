@@ -424,14 +424,14 @@ Expected: all pass.
 - Consumes: connected-chain YAML through the real Registry, Arbiter, Tracker, Planner, and Task Gate.
 - Produces: deterministic proofs for clear direct travel, 1v3, 2v2, dynamic insertion, fairness, and faults.
 
-- [ ] **Step 1: Add deterministic 1v3 and 2v2 RED tests**
+- [x] **Step 1: Add deterministic 1v3 and 2v2 RED tests**
 
 Drive telemetry node by node. Record every upstream goal. Assert direct robots
 do not receive side-bay goals, yielding robots stop only at side bays, opposite
 directions never overlap a block, and all final jobs complete with empty block
 resources.
 
-- [ ] **Step 2: Add dynamic and fairness RED tests**
+- [x] **Step 2: Add dynamic and fairness RED tests**
 
 Insert trailing jobs after the first robot enters C1 and after an opposite robot
 enters SIDE_2. Assert the current authority is preserved, the overlapping batch
@@ -439,7 +439,7 @@ closes, and the oldest opposite direction is eventually admitted. Continue
 injecting newer same-direction requests and prove accumulated wait age prevents
 starvation of the older opposite request.
 
-- [ ] **Step 3: Add fault RED tests**
+- [x] **Step 3: Add fault RED tests**
 
 Expire telemetry independently in C1, C2, and C3. Assert every unreleased
 authority block becomes faulted and no conflicting job is forwarded. Omit
@@ -447,13 +447,13 @@ side-bay arrival telemetry and prove opposite traffic remains held. Initialize
 the gate with stale or ambiguous occupancy and prove affected blocks remain
 fail-closed until fresh telemetry or an explicit safe reset reconciles them.
 
-- [ ] **Step 4: Make only generic fixes and run GREEN**
+- [x] **Step 4: Make only generic fixes and run GREEN**
 
 Do not add scenario IDs to production. Run chain flow, movement authority,
 Task Gate, occupancy, staging, and independent multi-corridor tests; expected:
 all pass.
 
-- [ ] **Step 5: Run the full suite**
+- [x] **Step 5: Run the full suite**
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
