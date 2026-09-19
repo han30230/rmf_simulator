@@ -130,6 +130,33 @@ production Python은 로봇 이름이나 1v3 대수를 검사하지 않는다. �
 
 서로 연결되지 않은 P4/P5 두 통로를 한 Arbiter에서 동시에 운용할 수 있다.
 
+## 연결형 장거리 단일 통로
+
+실제 팹처럼 하나의 긴 본선을 세 구간(C1/C2/C3)으로 나누고, 구간 사이에
+사이드 베이 두 곳을 둔 연결형 예제도 제공한다. 로봇은 본선에서 대기하지
+않으며, Arbiter가 현재 점유와 반대 방향 대기열을 보고 도달 가능한 가장 먼
+SafeStop까지 여러 블록을 하나의 movement authority로 원자적으로 예약한다.
+
+```bash
+./scripts/stop_p4_passing_bay.sh --all
+./scripts/start_connected_corridor_chain.sh 1v3  # 또는 2v2
+./scripts/launch_connected_corridor_chain_visualizer.sh
+
+# 별도 터미널
+./scripts/dispatch_connected_corridor_chain_1v3.sh  # 또는 ..._2v2.sh
+```
+
+중간 블록은 로봇이 다음 구간으로 넘어가면 순서대로 해제한다. 권한의 마지막
+블록은 release node를 지나도 유지하며, 목적지 종점 또는 사이드 베이 안에
+들어온 telemetry가 확인된 뒤에만 해제한다. 따라서 반대 방향 batch는 피신
+로봇이 본선 junction에 도달한 시점이 아니라 실제 사이드 베이 도착 이후에
+출발한다.
+
+설정은 `config/corridor_blocks_connected_chain.yaml`, navigation graph는
+`rmf_platform-main/src/rmf_vda5050_fleet_adapter/map/connected_corridor_chain.yaml`
+이다. 로봇 수, 로봇 이름, C1/C2/C3 node 이름은 production Python 정책에
+포함되지 않으며, 현장 topology와 SafeStop/slot은 YAML로 정의한다.
+
 ```bash
 ./scripts/stop_p4_passing_bay.sh --all
 ./scripts/start_p4_p5_multi_corridor.sh

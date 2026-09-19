@@ -463,6 +463,12 @@ class DirectionArbiter:
             authority = self._authorities.get(robot_id)
             if authority is not None:
                 for block_id in authority.unreleased_blocks:
+                    # The final block protects the authority's destination
+                    # SafeStop. Keep it until telemetry confirms arrival;
+                    # reaching its configured release node can still leave
+                    # the robot on the main line before the side bay/endpoint.
+                    if block_id == authority.block_ids[-1]:
+                        continue
                     reservation = self._grants.get((robot_id, block_id))
                     if reservation is not None and reservation.release_node is not None:
                         return block_id, reservation.release_node

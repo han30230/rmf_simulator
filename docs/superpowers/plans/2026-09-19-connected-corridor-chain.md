@@ -474,31 +474,31 @@ Expected: at least the current 93 tests plus all new chain tests pass.
 - Consumes: complete connected-chain stack.
 - Produces: actual 1v3 and 2v2 acceptance evidence, documented commands, clean commit, and pushed feature branch.
 
-- [ ] **Step 1: Restart only this repository's connected runtime**
+- [x] **Step 1: Restart only this repository's connected runtime**
 
 Stop the current repository stack, start `start_connected_corridor_chain.sh`,
 and verify initial robots occupy distinct endpoint slots, jobs are empty, every
 block is `FREE`, and no fault exists.
 
-- [ ] **Step 2: Poll connected 1v3 to completion**
+- [x] **Step 2: Poll connected 1v3 to completion**
 
 Record log offset, dispatch 1v3, and poll `/traffic/status` until all jobs are
 `COMPLETE` or timeout/fault occurs. Verify no planned main-lane stop, side-bay
 use only for a yielding authority, correct final nodes, all blocks `FREE`, and
 empty block occupants/reservations/waiting.
 
-- [ ] **Step 3: Restart and poll connected 2v2 to completion**
+- [x] **Step 3: Restart and poll connected 2v2 to completion**
 
 Apply the same acceptance checks. Additionally verify opposite directions run
 concurrently only on disjoint C1/C3 intervals and never overlap C2.
 
-- [ ] **Step 4: Inspect in the VDA5050 Visualizer**
+- [x] **Step 4: Inspect in the VDA5050 Visualizer**
 
 Launch the connected map and retain the completed runtime for user inspection.
 Confirm all four robot traces are collision-free and no clear-chain robot makes
 an unnecessary side-bay visit.
 
-- [ ] **Step 5: Document and verify the final tree**
+- [x] **Step 5: Document and verify the final tree**
 
 Document start, visualizer, 1v3, 2v2, status, and log commands. Run focused
 tests, the full suite, `git diff --check`, YAML parsing, Bash syntax, and:

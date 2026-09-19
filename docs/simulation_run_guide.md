@@ -137,6 +137,53 @@ grep --line-buffered -E \
 
 Docker container까지 모두 중지하려면 `--all`을 붙인다.
 
+## 연결된 장거리 Corridor 실행
+
+`connected_corridor_chain.yaml`은 서로 분리된 통로가 아니라 하나의 긴
+양방향 1차선 본선이다. `C1 - SIDE1 - C2 - SIDE2 - C3` 구조이며 SIDE1과
+SIDE2는 본선 junction 옆의 물리 사이드 베이다. 종점과 사이드 베이만
+SafeStop으로 사용하므로 정상 스케줄링에서는 본선 위에 대기 작업을 만들지
+않는다.
+
+1대 대 3대:
+
+```bash
+./scripts/stop_p4_passing_bay.sh --all
+./scripts/start_connected_corridor_chain.sh 1v3
+./scripts/launch_connected_corridor_chain_visualizer.sh
+./scripts/dispatch_connected_corridor_chain_1v3.sh
+```
+
+2대 대 2대:
+
+```bash
+./scripts/stop_p4_passing_bay.sh --all
+./scripts/start_connected_corridor_chain.sh 2v2
+./scripts/launch_connected_corridor_chain_visualizer.sh
+./scripts/dispatch_connected_corridor_chain_2v2.sh
+```
+
+1v3에서는 A1이 `CHAIN_SIDE_2`에 실제 도착한 뒤 B1/B2/B3가 각 왼쪽
+종점으로 직행하고, 세 대가 통과한 뒤 A1이 오른쪽 종점으로 이동한다.
+2v2에서는 A1/A2가 각각 SIDE2/SIDE1에 실제 도착한 뒤 B1/B2가 왼쪽으로
+직행하며, 이후 A1/A2가 오른쪽 종점으로 이동한다. 반대 방향 로봇이 없는
+clear chain에서는 최종 종점까지 하나의 작업으로 직행한다.
+
+상태와 이벤트는 다음 명령으로 확인한다.
+
+```bash
+curl -s --noproxy '*' http://127.0.0.1:8200/traffic/status |
+python3 -m json.tool
+
+tail -F .runtime/arbiter.log |
+grep --line-buffered -E \
+  'AUTHORITY_ADMIT|TASK_RELEASED|ROBOT_CLEARED_BLOCK|TASK_COMPLETED|BLOCK_FAULT|ROBOT_FAULT'
+```
+
+movement authority의 중간 블록은 telemetry에 따라 롤링 해제되지만 마지막
+블록은 목적지 SafeStop 도착까지 유지된다. 이 규칙은 robot ID나 map node를
+검사하는 분기가 아니라 authority의 블록 순서와 YAML topology에 적용된다.
+
 ## 구성요소와 포트
 
 | 구성요소 | 역할 | 포트/통신 |

@@ -235,6 +235,26 @@ class MovementAuthorityTests(unittest.TestCase):
             {"C1", "C2", "C3"},
         )
 
+    def test_final_block_stays_reserved_until_side_bay_arrival(self) -> None:
+        registry, arbiter, planner, tracker = tracking_components()
+        tracker.ingest_state("A1", state("L1", -1.0, 1.0, driving=False), received_at=1.0)
+        authority = planned(registry, planner, "L1", "S2")
+        arbiter.request_authority(authority, robot_id="A1", request_time=1.0)
+
+        tracker.ingest_state("A1", state("N0", 5.0, 0.0), received_at=2.0)
+        tracker.ingest_state("A1", state("N1", 10.0, 0.0), received_at=3.0)
+        tracker.ingest_state("A1", state("", 15.0, 0.0), received_at=4.0)
+        tracker.ingest_state("A1", state("N2", 20.0, 0.0), received_at=5.0)
+
+        granted = arbiter.authority_for_robot("A1")
+        assert granted is not None
+        self.assertEqual(granted.unreleased_blocks, ("C2",))
+        self.assertIn("A1", registry.blocks["C2"].occupants)
+
+        tracker.ingest_state("A1", state("S2", 20.0, 2.0, driving=False), received_at=6.0)
+        self.assertIsNone(arbiter.authority_for_robot("A1"))
+        self.assertEqual(registry.holding_bays["SIDE_2"].occupants, {"A1"})
+
 
 if __name__ == "__main__":
     unittest.main()
