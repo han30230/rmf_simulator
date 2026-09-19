@@ -76,6 +76,30 @@ class ChainPath:
 
 
 @dataclass
+class MovementAuthority:
+    authority_id: str
+    robot_id: str
+    chain_id: str
+    direction: Direction
+    source_group: str
+    source_slot: str
+    destination_group: str
+    destination_slot: str
+    goal_node: str
+    block_ids: tuple[str, ...]
+    request_time: float
+    released_blocks: set[str] = field(default_factory=set)
+
+    @property
+    def unreleased_blocks(self) -> tuple[str, ...]:
+        return tuple(
+            block_id
+            for block_id in self.block_ids
+            if block_id not in self.released_blocks
+        )
+
+
+@dataclass
 class CorridorBlock:
     block_id: str
     group_id: str

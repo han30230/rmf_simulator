@@ -189,7 +189,7 @@ Run the planner and registry modules; expected: all pass.
 - Produces: `MovementAuthority`; `DirectionArbiter.can_reserve_path`, `request_authority`, `authority_for_robot`, `mark_authority_arrived`, and `cancel_authority`.
 - Preserves: existing `request`, `mark_arrived`, `cancel`, snapshots, and single-block semantics.
 
-- [ ] **Step 1: Write atomicity and overlap RED tests**
+- [x] **Step 1: Write atomicity and overlap RED tests**
 
 Assert that a three-block authority reserves all blocks and one destination
 slot, a conflict on the final block leaves C1/C2 and the bay untouched, same
@@ -205,11 +205,11 @@ self.assertEqual(
 )
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Expected: missing authority APIs.
 
-- [ ] **Step 3: Add the authority model and atomic admission**
+- [x] **Step 3: Add the authority model and atomic admission**
 
 Use:
 
@@ -239,7 +239,7 @@ capacity and direction, every involved direction-domain batch, and destination
 slot capacity before mutating any resource. Then add one compatible
 `Reservation` per block and reserve the destination slot once.
 
-- [ ] **Step 4: Add deterministic waiting and cancellation**
+- [x] **Step 4: Add deterministic waiting and cancellation**
 
 Keep pending authorities ordered by `(request_time, authority_id)`. An opposite
 pending interval closes only the overlapping active domains. Cancellation
@@ -247,7 +247,7 @@ removes every pending/granted block reservation and the one destination
 reservation. A rejected atomic request must leave snapshots byte-for-byte
 equivalent except for its waiting entry.
 
-- [ ] **Step 5: Run GREEN and existing Arbiter tests**
+- [x] **Step 5: Run GREEN and existing Arbiter tests**
 
 Run movement-authority, direction-arbiter, fault-safety, and block-occupancy
 modules; expected: all pass.
