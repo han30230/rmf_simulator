@@ -80,10 +80,46 @@ domain은 반대 방향 waiter가 생긴 시점에 현재 batch를 닫는다. B1
 `P4_LS2/P4_LS3`로 같은 방향 pipeline 주행을 한다. A1은 B1이 비운
 `P4_RS1`을 목적지로 사용한다.
 
+주행 도중 B2/B3 작업을 추가하려면 같은 staging 1v3 stack에서 다음을
+실행한다.
+
+```bash
+./scripts/t4_dispatch_passing_bay_staging_dynamic_1v3.sh
+```
+
+A1/B1을 먼저 투입한 뒤 B1의 `HB_MIDDLE_SIDE` 도착 조건으로 B2를,
+A1의 `last_node_id=2105` 조건으로 B3를 투입한다. timeout은 오류 감지용이며
+작업 투입 시점은 고정 sleep이 아니라 `/traffic/status` 상태로 결정한다.
+
 이 동작은 로봇 이름을 검사하는 production 분기가 아니라 YAML에 정의된
 Holding Bay, block endpoint, direction domain과 route step으로 결정된다.
 다른 현장에서는 slot 수와 route 조합을 설정으로 바꾸고, simulation 좌표는
 차체 크기·제동거리·정지 오차를 반영해 측량한 좌표로 교체해야 한다.
+
+## 다중 Corridor 실행
+
+P4와 P5 두 개의 독립 통로를 동시에 실행한다.
+
+```bash
+./scripts/stop_p4_passing_bay.sh --all
+./scripts/start_p4_p5_multi_corridor.sh
+./scripts/launch_p4_p5_multi_corridor_visualizer.sh
+./scripts/t4_dispatch_p4_p5_multi_corridor.sh
+```
+
+Visualizer에는 서로 연결되지 않은 두 navigation graph가 표시된다. P4는
+왼쪽에서 오른쪽으로 교행을 시작하고 P5는 오른쪽에서 왼쪽으로 직행을
+시작하므로, 서로 반대인 direction domain이 동시에 활성화되는 것을 확인할
+수 있다. 각 corridor는 고유한 holding bay, block ID, direction domain을
+가지며 Arbiter의 판정 로직은 공유한다. 새 corridor나 통로당 최대 4대의
+slot을 추가할 때는 map과 YAML route/capacity를 확장하고 production Python에
+로봇 ID나 node ID 조건을 추가하지 않는다.
+
+다중 corridor map:
+
+```text
+rmf_platform-main/src/rmf_vda5050_fleet_adapter/map/p4_p5_multi_passing_bay.yaml
+```
 
 핵심 로그 확인:
 

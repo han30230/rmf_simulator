@@ -12,7 +12,7 @@ Open-RMF, VDA5050 Fleet Adapter, MQTT Robot Simulator와 Direction Arbiter를 �
 - 목적지 `HB_RIGHT` 예약은 A1이 실제 `2108`에 도착할 때까지 유지
 - B1은 A1의 `2108` 도착 전, A1이 `2106`을 통과한 직후 출발 가능
 
-단위·상태기계·통합 구성 테스트 54개와 portable workspace 테스트를 포함한다.
+단위·상태기계·통합 구성 테스트와 portable workspace 테스트를 포함한다.
 
 ## 요구 환경
 
@@ -108,11 +108,43 @@ A1은 왼쪽에서 오른쪽으로 이동한다. B1은 먼저 6137로 피한 뒤
 `release_node` 통과 후 왼쪽으로 출발하고, B2/B3는 반대 방향 작업이
 끝나면 서로 다른 목적지 slot로 직행한다.
 
+주행 중에 새 작업이 들어오는 동적 1v3은 같은 stack을 시작한 뒤 아래
+dispatch 스크립트를 사용한다.
+
+```bash
+./scripts/t4_dispatch_passing_bay_staging_dynamic_1v3.sh
+```
+
+이 스크립트는 A1/B1을 먼저 투입하고, status API를 polling하여 B1이
+`HB_MIDDLE_SIDE`에 도착하면 B2를, A1이 2105에 도달하면 B3를 투입한다.
+고정 sleep으로 순서를 만들지 않으므로 실제 주행 속도가 달라도 상태 전이를
+기준으로 동작한다.
+
 slot 수, 좌표, block, direction domain과 route는
 `config/corridor_blocks_p4_passing_bay_staging.yaml` 및 staging map에 있다.
 production Python은 로봇 이름이나 1v3 대수를 검사하지 않는다. 실제 현장에
 적용할 때는 로봇 외형, 제동거리, 위치 오차와 안전 여유를 반영한 측량
 좌표로 simulation 값을 교체해야 한다.
+
+## 다중 Corridor 시나리오
+
+서로 연결되지 않은 P4/P5 두 통로를 한 Arbiter에서 동시에 운용할 수 있다.
+
+```bash
+./scripts/stop_p4_passing_bay.sh --all
+./scripts/start_p4_p5_multi_corridor.sh
+./scripts/launch_p4_p5_multi_corridor_visualizer.sh
+./scripts/t4_dispatch_p4_p5_multi_corridor.sh
+```
+
+P4와 P5는 서로 다른 holding bay, block 및 direction domain을 사용한다.
+따라서 P4가 `A_TO_B`인 동안 P5가 `B_TO_A`로 주행할 수 있으며 한 통로의
+대기열이 다른 통로의 방향 전환을 막지 않는다. 현재 실행 예제는 통로당
+2대를 배치한다. 한 통로에서 최대 4대를 운용할 때도 production Python을
+분기하지 않고 해당 통로의 slot, capacity, route를 YAML에 추가한다.
+
+구성 파일은 `config/corridor_blocks_p4_p5_multi.yaml`, navigation graph는
+`rmf_platform-main/src/rmf_vda5050_fleet_adapter/map/p4_p5_multi_passing_bay.yaml`이다.
 
 `setup_workspace.sh`는 다음을 준비한다.
 
