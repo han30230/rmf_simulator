@@ -371,9 +371,9 @@ expected: all pass.
 
 **Interfaces:**
 - Consumes: generic runtime selectors in `start_p4_passing_bay.sh` and the new chain schema.
-- Produces: one connected main graph, C1/C2/C3, two physical side bays, distinct endpoint slots, and four registered robots.
+- Produces: one connected main graph, C1/C2/C3, two physical side bays, distinct endpoint slots, five registered scenario candidates, and exactly four selected robots per 1v3 or 2v2 run.
 
-- [ ] **Step 1: Write missing-file and semantic RED tests**
+- [x] **Step 1: Write missing-file and semantic RED tests**
 
 Assert that the map is one connected component; each side bay has one spur to a
 distinct main junction; C1/C2/C3 form one ordered chain; junctions are absent
@@ -381,25 +381,26 @@ from all safe-stop members; endpoint slots are distinct; every configured edge
 exists in the graph; no robot ID appears in Arbiter YAML; and all scripts are
 repository-relative.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Expected: new runtime files do not exist.
 
-- [ ] **Step 3: Create map, configuration, and registrations**
+- [x] **Step 3: Create map, configuration, and registrations**
 
 Use symbolic map names such as `CHAIN_LEFT_1`, `CHAIN_SIDE_1`, and
 `CHAIN_RIGHT_1` only in data files. Give C1/C2/C3 separate direction domains
 and configured release nodes beyond each physical conflict boundary. Place
-four simulator robots in distinct endpoint slots.
+five simulator candidates in distinct endpoint slots; the start wrapper selects
+the four required by the requested 1v3 or 2v2 fixture.
 
-- [ ] **Step 4: Add launch and dispatch wrappers**
+- [x] **Step 4: Add launch and dispatch wrappers**
 
 The start wrapper exports selected scenario, Compose, Arbiter config, and
 runtime name before delegating to the existing launcher. Dispatch scripts only
 map scenario robots to physical destination slot names; they contain no control
 policy or sleep-based admission decisions.
 
-- [ ] **Step 5: Run GREEN plus YAML/Bash validation**
+- [x] **Step 5: Run GREEN plus YAML/Bash validation**
 
 ```bash
 .venv/bin/python -m unittest tests.test_connected_corridor_chain_config -v
