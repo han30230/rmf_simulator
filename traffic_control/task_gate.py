@@ -23,6 +23,7 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 from uuid import uuid4
 
+from .corridor_chain import CorridorChainPlanner, PlannedAuthority
 from .corridor_registry import CorridorRegistry
 from .direction_arbiter import DirectionArbiter
 from .models import Decision, RouteIntent, RouteStep
@@ -61,6 +62,21 @@ class GateJob:
         return self.route.steps[self.step_index]
 
 
+@dataclass
+class ChainGateJob:
+    job_id: str
+    robot_id: str
+    original_payload: dict[str, Any]
+    chain_id: str
+    final_goal_node: str
+    status: JobStatus = JobStatus.WAITING
+    active_plan: PlannedAuthority | None = None
+    active_authority_id: str | None = None
+    leg_count: int = 0
+    upstream_result: dict[str, Any] | None = None
+    last_error: str | None = None
+
+
 class TaskGate:
     """Configuration-driven admission and safe-segment task staging."""
 
@@ -76,6 +92,8 @@ class TaskGate:
         self.tracker = tracker
         self.forwarder = forwarder
         self._jobs: dict[str, GateJob] = {}
+        self._chain_jobs: dict[str, ChainGateJob] = {}
+        self._chain_planner = CorridorChainPlanner(registry)
         self._lock = threading.RLock()
 
     def submit(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -99,6 +117,31 @@ class TaskGate:
         routes = self.registry.resolve_routes(start_node, goal_node)
         route = self._select_route(routes)
         if route is None:
+            chain_path = self.registry.resolve_chain_path(start_node, goal_node)
+            if chain_path is not None:
+                with self._lock:
+                    if self._active_job_for_robot(robot_id) is not None:
+                        return {
+                            "decision": Decision.BLOCKED.value,
+                            "reason": "robot_already_has_gate_job",
+                        }
+                    job = ChainGateJob(
+                        job_id=uuid4().hex,
+                        robot_id=robot_id,
+                        original_payload=deepcopy(payload),
+                        chain_id=chain_path.chain_id,
+                        final_goal_node=goal_node,
+                    )
+                    self._chain_jobs[job.job_id] = job
+                    logger.info(
+                        "[TRAFFIC] ARBITER_REQUEST robot=%s chain=%s goal=%s",
+                        robot_id,
+                        chain_path.chain_id,
+                        goal_node,
+                    )
+                    result = self._attempt_chain_leg(job)
+                    result["job_id"] = job.job_id
+                    return result
             policy = str(
                 self.registry.settings.get("unmatched_route_policy", "BLOCKED")
             ).upper()
@@ -170,10 +213,60 @@ class TaskGate:
 
                 self._attempt_current_step(job)
 
+            for job in list(self._chain_jobs.values()):
+                if job.status in {
+                    JobStatus.BLOCKED,
+                    JobStatus.COMPLETE,
+                    JobStatus.CANCELLED,
+                }:
+                    continue
+                if job.status is JobStatus.ACTIVE:
+                    if (
+                        job.active_plan is None
+                        or not self.tracker.has_arrived(
+                            job.robot_id,
+                            job.active_plan.goal_node,
+                        )
+                    ):
+                        continue
+                    self.arbiter.mark_authority_arrived(job.robot_id)
+                    job.leg_count += 1
+                    arrived_goal = job.active_plan.goal_node
+                    job.active_plan = None
+                    job.active_authority_id = None
+                    job.upstream_result = None
+                    job.last_error = None
+                    if arrived_goal == job.final_goal_node:
+                        job.status = JobStatus.COMPLETE
+                        logger.info(
+                            "[TRAFFIC] TASK_COMPLETED robot=%s job=%s",
+                            job.robot_id,
+                            job.job_id,
+                        )
+                        continue
+                    job.status = JobStatus.WAITING
+                self._attempt_chain_leg(job)
+
     def cancel(self, job_id: str) -> bool:
         """Cancel a task that has not yet been submitted upstream."""
         with self._lock:
             job = self._jobs.get(job_id)
+            if job is None:
+                chain_job = self._chain_jobs.get(job_id)
+                if chain_job is None or chain_job.status in {
+                    JobStatus.ACTIVE,
+                    JobStatus.COMPLETE,
+                    JobStatus.CANCELLED,
+                }:
+                    return False
+                self.arbiter.cancel_authority(chain_job.robot_id)
+                chain_job.status = JobStatus.CANCELLED
+                logger.info(
+                    "[TRAFFIC] TASK_CANCELLED robot=%s job=%s",
+                    chain_job.robot_id,
+                    chain_job.job_id,
+                )
+                return True
             if job is None or job.status in {
                 JobStatus.ACTIVE,
                 JobStatus.COMPLETE,
@@ -198,26 +291,153 @@ class TaskGate:
             for job in self._jobs.values():
                 if job.status not in {JobStatus.COMPLETE, JobStatus.CANCELLED}:
                     job.status = JobStatus.CANCELLED
+            for job in self._chain_jobs.values():
+                if job.status not in {JobStatus.COMPLETE, JobStatus.CANCELLED}:
+                    job.status = JobStatus.CANCELLED
             return True
 
     def status(self) -> dict[str, Any]:
         with self._lock:
-            return {
-                "enabled": self.registry.enabled,
-                "jobs": {
+            jobs = {
+                job_id: {
+                    "robot_id": job.robot_id,
+                    "route_id": job.route.route_id,
+                    "step_index": job.step_index,
+                    "step_count": len(job.route.steps),
+                    "status": job.status.value,
+                    "last_error": job.last_error,
+                }
+                for job_id, job in sorted(self._jobs.items())
+            }
+            jobs.update(
+                {
                     job_id: {
                         "robot_id": job.robot_id,
-                        "route_id": job.route.route_id,
-                        "step_index": job.step_index,
-                        "step_count": len(job.route.steps),
+                        "route_id": f"chain:{job.chain_id}",
+                        "chain_id": job.chain_id,
+                        "final_goal_node": job.final_goal_node,
+                        "step_index": job.leg_count,
+                        "step_count": None,
                         "status": job.status.value,
                         "last_error": job.last_error,
+                        "active_authority_id": job.active_authority_id,
+                        "source_slot": (
+                            job.active_plan.source_slot if job.active_plan else None
+                        ),
+                        "destination_slot": (
+                            job.active_plan.destination_slot if job.active_plan else None
+                        ),
+                        "blocks": (
+                            list(job.active_plan.block_ids) if job.active_plan else []
+                        ),
                     }
-                    for job_id, job in sorted(self._jobs.items())
-                },
+                    for job_id, job in sorted(self._chain_jobs.items())
+                }
+            )
+            return {
+                "enabled": self.registry.enabled,
+                "jobs": jobs,
                 "arbiter": self.arbiter.snapshot(),
                 "robots": self.tracker.snapshot(),
             }
+
+    def _attempt_chain_leg(self, job: ChainGateJob) -> dict[str, Any]:
+        if job.active_plan is not None:
+            decision = self.arbiter.decision_for_authority(job.robot_id)
+            if decision is Decision.ADMIT:
+                return self._forward_chain_leg(job)
+            if decision is Decision.BLOCKED:
+                job.status = JobStatus.BLOCKED
+                return {"decision": Decision.BLOCKED.value}
+
+        start_node = self.tracker.current_safe_node(job.robot_id)
+        if start_node is None:
+            job.status = JobStatus.WAITING
+            return {"decision": Decision.WAIT.value}
+        path = self.registry.resolve_chain_path(start_node, job.final_goal_node)
+        if path is None:
+            if start_node == job.final_goal_node:
+                job.status = JobStatus.COMPLETE
+                return {"decision": "COMPLETE"}
+            job.status = JobStatus.BLOCKED
+            job.last_error = "chain_path_unavailable"
+            return {
+                "decision": Decision.BLOCKED.value,
+                "reason": job.last_error,
+            }
+        plan = self._chain_planner.plan(
+            path,
+            lambda block_ids, direction, destination_slot: (
+                self.arbiter.can_reserve_path(
+                    block_ids,
+                    direction,
+                    destination_slot,
+                    robot_id=job.robot_id,
+                    chain_id=path.chain_id,
+                )
+            ),
+        )
+        if plan is None:
+            job.status = JobStatus.WAITING
+            return {"decision": Decision.WAIT.value}
+        decision = self.arbiter.request_authority(plan, robot_id=job.robot_id)
+        if decision is Decision.WAIT:
+            job.status = JobStatus.WAITING
+            return {"decision": Decision.WAIT.value}
+        if decision is Decision.BLOCKED:
+            job.status = JobStatus.BLOCKED
+            return {"decision": Decision.BLOCKED.value}
+        job.active_plan = plan
+        authority = self.arbiter.authority_for_robot(job.robot_id)
+        job.active_authority_id = authority.authority_id if authority else None
+        return self._forward_chain_leg(job)
+
+    def _forward_chain_leg(self, job: ChainGateJob) -> dict[str, Any]:
+        assert job.active_plan is not None
+        staged = deepcopy(job.original_payload)
+        description = staged.setdefault("request", {}).setdefault("description", {})
+        description["places"] = [job.active_plan.goal_node]
+        description["rounds"] = 1
+        try:
+            result = self.forwarder(staged)
+        except urllib_error.HTTPError as error:
+            if 400 <= error.code < 500:
+                self.arbiter.cancel_authority(job.robot_id)
+                job.status = JobStatus.BLOCKED
+                job.last_error = str(error)
+                return {
+                    "decision": Decision.BLOCKED.value,
+                    "reason": "upstream_http_rejection",
+                    "status_code": error.code,
+                    "error": str(error),
+                }
+            job.status = JobStatus.ACTIVE
+            job.last_error = str(error)
+            return {"decision": "FORWARD_UNKNOWN", "error": str(error)}
+        except Exception as error:
+            job.status = JobStatus.ACTIVE
+            job.last_error = str(error)
+            return {"decision": "FORWARD_UNKNOWN", "error": str(error)}
+
+        if isinstance(result, dict) and result.get("success") is False:
+            job.status = JobStatus.RETRY
+            job.last_error = str(
+                result.get("message") or result.get("error") or "upstream rejected task"
+            )
+            return {"decision": "RETRY", "error": job.last_error}
+
+        job.status = JobStatus.ACTIVE
+        job.upstream_result = result
+        job.last_error = None
+        logger.info(
+            "[TRAFFIC] TASK_RELEASED robot=%s job=%s authority=%s blocks=%s goal=%s",
+            job.robot_id,
+            job.job_id,
+            job.active_authority_id,
+            ",".join(job.active_plan.block_ids),
+            job.active_plan.goal_node,
+        )
+        return {"decision": Decision.ADMIT.value, "upstream": result}
 
     def _attempt_current_step(self, job: GateJob) -> dict[str, Any]:
         self._refresh_waiting_route(job)
@@ -490,12 +710,24 @@ class TaskGate:
         )
         return {"decision": Decision.ADMIT.value, "upstream": result}
 
-    def _active_job_for_robot(self, robot_id: str) -> GateJob | None:
+    def _active_job_for_robot(
+        self, robot_id: str
+    ) -> GateJob | ChainGateJob | None:
         terminal = {JobStatus.COMPLETE, JobStatus.CANCELLED, JobStatus.BLOCKED}
-        return next(
+        legacy = next(
             (
                 job
                 for job in self._jobs.values()
+                if job.robot_id == robot_id and job.status not in terminal
+            ),
+            None,
+        )
+        if legacy is not None:
+            return legacy
+        return next(
+            (
+                job
+                for job in self._chain_jobs.values()
                 if job.robot_id == robot_id and job.status not in terminal
             ),
             None,

@@ -312,7 +312,7 @@ all pass.
 - Consumes: `resolve_chain_path`, `CorridorChainPlanner`, authority Arbiter APIs.
 - Produces: chain-aware `GateJob` progress while retaining current configured `RouteIntent` behavior.
 
-- [ ] **Step 1: Write clear-chain and conflict RED tests**
+- [x] **Step 1: Write clear-chain and conflict RED tests**
 
 For a chain task, assert one forwarded RMF goal at the final slot when clear.
 With C3 conflicted, assert the first forwarded goal is SIDE_2, the job remains
@@ -320,12 +320,12 @@ active toward the original final goal, and the final leg is submitted only
 after confirmed side-bay arrival. Assert an explicit HTTP 401 cancels the whole
 authority while an uncertain response retains it.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Expected: `TaskGate.submit` reports `unmatched_managed_route` because no static
 route exists.
 
-- [ ] **Step 3: Add opt-in chain jobs**
+- [x] **Step 3: Add opt-in chain jobs**
 
 Extend `GateJob` with optional fields:
 
@@ -341,14 +341,14 @@ the upstream task goal to `PlannedAuthority.goal_node`. After authority arrival,
 finish if it equals `final_goal_node`; otherwise resolve and plan from the new
 physical slot.
 
-- [ ] **Step 4: Preserve delivery failure semantics**
+- [x] **Step 4: Preserve delivery failure semantics**
 
 Explicit 4xx and explicit upstream rejection cancel every authority resource.
 An exception or ambiguous upstream response marks the leg active and retains
 the authority. Status exposes chain ID, final goal, active authority ID, source
 slot, destination slot, and ordered blocks without changing existing job keys.
 
-- [ ] **Step 5: Run GREEN and Task Gate regressions**
+- [x] **Step 5: Run GREEN and Task Gate regressions**
 
 Run chain Task Gate, dynamic insert, passing-bay flow, and staging flow tests;
 expected: all pass.
