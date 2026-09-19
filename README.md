@@ -136,6 +136,9 @@ production Python은 로봇 이름이나 1v3 대수를 검사하지 않는다. �
 사이드 베이 두 곳을 둔 연결형 예제도 제공한다. 로봇은 본선에서 대기하지
 않으며, Arbiter가 현재 점유와 반대 방향 대기열을 보고 도달 가능한 가장 먼
 SafeStop까지 여러 블록을 하나의 movement authority로 원자적으로 예약한다.
+좌우 종점의 로봇 주차 위치는 본선 위에 연달아 놓지 않고, 각각 별도 junction에
+연결된 capacity-one leaf slot으로 구성한다. 따라서 대기 중인 로봇이나 이미
+도착한 로봇을 다른 로봇의 경로가 관통하지 않는다.
 
 ```bash
 ./scripts/stop_p4_passing_bay.sh --all
@@ -156,6 +159,8 @@ SafeStop까지 여러 블록을 하나의 movement authority로 원자적으로 
 `rmf_platform-main/src/rmf_vda5050_fleet_adapter/map/connected_corridor_chain.yaml`
 이다. 로봇 수, 로봇 이름, C1/C2/C3 node 이름은 production Python 정책에
 포함되지 않으며, 현장 topology와 SafeStop/slot은 YAML로 정의한다.
+Visualizer는 내부 node ID를 바꾸지 않고 같은 map에 공통인 접두사만 화면에서
+줄여 표시한다. 예를 들어 `CHAIN_RJ1`은 `RJ1`로 보여 긴 label의 겹침을 줄인다.
 
 ```bash
 ./scripts/stop_p4_passing_bay.sh --all

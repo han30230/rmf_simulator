@@ -43,6 +43,69 @@ class ConnectedCorridorChainConfigTests(unittest.TestCase):
         self.assertEqual(adjacency["CHAIN_SIDE_1"], {"CHAIN_J1"})
         self.assertEqual(adjacency["CHAIN_SIDE_2"], {"CHAIN_J2"})
 
+    def test_layout_uses_wide_comb_staging_and_terminal_robot_slots(self) -> None:
+        level = yaml.safe_load(MAP.read_text(encoding="utf-8"))["levels"]["L1"]
+        names = [str(vertex[2]["name"]) for vertex in level["vertices"]]
+        positions = {
+            str(vertex[2]["name"]): (float(vertex[0]), float(vertex[1]))
+            for vertex in level["vertices"]
+        }
+        adjacency = {name: set() for name in names}
+        for source_index, destination_index, _ in level["lanes"]:
+            adjacency[names[source_index]].add(names[destination_index])
+
+        endpoint_slots = tuple(
+            f"CHAIN_{side}{index}"
+            for side in ("L", "R")
+            for index in range(1, 5)
+        )
+        self.assertNotIn("CHAIN_E1", positions)
+        self.assertNotIn("CHAIN_E2", positions)
+        self.assertTrue(all(positions[node][1] > 50.0 for node in endpoint_slots))
+        self.assertTrue(all(len(adjacency[node]) == 1 for node in endpoint_slots))
+        for side in ("L", "R"):
+            for index in range(1, 5):
+                self.assertEqual(
+                    adjacency[f"CHAIN_{side}{index}"],
+                    {f"CHAIN_{side}J{index}"},
+                )
+        self.assertLess(
+            max(positions[node][1] for node in ("CHAIN_SIDE_1", "CHAIN_SIDE_2")),
+            50.0,
+        )
+        self.assertNotEqual(
+            positions["CHAIN_SIDE_1"][1],
+            positions["CHAIN_SIDE_2"][1],
+        )
+        for node in (
+            "CHAIN_C1_A", "CHAIN_C1_B", "CHAIN_C2_A", "CHAIN_C2_B",
+            "CHAIN_C3_A", "CHAIN_C3_B",
+        ):
+            self.assertIn(node, positions)
+
+        main_line = (
+            "CHAIN_LJ4", "CHAIN_LJ3", "CHAIN_LJ2", "CHAIN_LJ1", "CHAIN_M0",
+            "CHAIN_C1_A", "CHAIN_N1", "CHAIN_C1_B", "CHAIN_J1",
+            "CHAIN_C2_A", "CHAIN_N2", "CHAIN_C2_B", "CHAIN_J2",
+            "CHAIN_C3_A", "CHAIN_N3", "CHAIN_C3_B", "CHAIN_M3",
+            "CHAIN_RJ1", "CHAIN_RJ2", "CHAIN_RJ3", "CHAIN_RJ4",
+        )
+        self.assertTrue(all(positions[node][1] == 50.0 for node in main_line))
+        gaps = [
+            round(positions[right][0] - positions[left][0], 1)
+            for left, right in zip(main_line, main_line[1:])
+        ]
+        self.assertGreaterEqual(min(gaps), 7.0)
+        self.assertGreaterEqual(len(set(gaps)), 4)
+
+    def test_dispatch_uses_distinct_terminal_destination_slots(self) -> None:
+        one_v_three = SCRIPTS[2].read_text(encoding="utf-8")
+        two_v_two = SCRIPTS[3].read_text(encoding="utf-8")
+        for expected in ("AGV_A1 CHAIN_R4", "AGV_B1 CHAIN_L4", "AGV_B2 CHAIN_L3", "AGV_B3 CHAIN_L2"):
+            self.assertIn(expected, one_v_three)
+        for expected in ("AGV_A1 CHAIN_R4", "AGV_A2 CHAIN_R3", "AGV_B1 CHAIN_L4", "AGV_B2 CHAIN_L3"):
+            self.assertIn(expected, two_v_two)
+
     def test_chain_has_three_ordered_blocks_and_physical_safe_slots(self) -> None:
         raw = yaml.safe_load(ARBITER.read_text(encoding="utf-8"))["traffic_control"]
         registry = CorridorRegistry.from_yaml(ARBITER)
@@ -80,6 +143,21 @@ class ConnectedCorridorChainConfigTests(unittest.TestCase):
             for item in robots
         }
         self.assertEqual(len(positions), 5)
+        level = yaml.safe_load(MAP.read_text(encoding="utf-8"))["levels"]["L1"]
+        map_positions = {
+            str(vertex[2]["name"]): (float(vertex[0]), float(vertex[1]))
+            for vertex in level["vertices"]
+        }
+        expected_nodes = {
+            "AGV_A1": "CHAIN_L1", "AGV_A2": "CHAIN_L2",
+            "AGV_B1": "CHAIN_R1", "AGV_B2": "CHAIN_R2", "AGV_B3": "CHAIN_R3",
+        }
+        for robot in robots:
+            initial = robot["initial_position"]
+            self.assertEqual(
+                (float(initial["x"]), float(initial["y"])),
+                map_positions[expected_nodes[robot["serial_number"]]],
+            )
         fleet = yaml.safe_load(FLEET.read_text(encoding="utf-8"))
         self.assertEqual(set(fleet["rmf_fleet"]["robots"]), {
             "AGV_A1", "AGV_A2", "AGV_B1", "AGV_B2", "AGV_B3"

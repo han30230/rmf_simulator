@@ -29,6 +29,28 @@ from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 _SETTINGS_PATH = Path(__file__).parent / "gui_settings.json"
 
 
+def _common_node_label_prefix(node_ids) -> str:
+    """Return a shared delimited prefix that can be hidden in map labels."""
+    values = [str(node_id) for node_id in node_ids if node_id]
+    if len(values) < 2:
+        return ""
+    common = values[0]
+    for value in values[1:]:
+        while common and not value.startswith(common):
+            common = common[:-1]
+    boundary = max((common.rfind(mark) for mark in ("_", "/", ":", ".", "-")), default=-1)
+    prefix = common[: boundary + 1]
+    if len(prefix) < 3 or any(len(value) <= len(prefix) for value in values):
+        return ""
+    return prefix
+
+
+def _display_node_label(node_id: str, common_prefix: str) -> str:
+    if common_prefix and node_id.startswith(common_prefix):
+        return node_id[len(common_prefix):]
+    return node_id
+
+
 def _load_settings() -> dict:
     try:
         return json.loads(_SETTINGS_PATH.read_text(encoding="utf-8"))
@@ -180,6 +202,7 @@ class MapData:
         self.vertices: List[MapVertex] = []
         self.edges: List[MapEdge] = []
         self.edge_mutex_by_nodes: Dict[Tuple[str, str], str] = {}
+        self.label_prefix = ""
         self.loaded = False
         self.file_path = ""
 
@@ -234,6 +257,9 @@ class MapData:
             self.vertices.append(
                 MapVertex(x=x, y=y, name=name, vtype=vtype, mutex=mutex)
             )
+        self.label_prefix = _common_node_label_prefix(
+            vertex.name for vertex in self.vertices
+        )
 
         # Parse lanes (edges)
         for lane in level_data.get("lanes", []):
@@ -1020,7 +1046,8 @@ class MapCanvas(QWidget):
                 painter.setFont(active_font)
                 metrics = QFontMetrics(active_font)
                 label_width = 110 if is_order_node else 90
-                label = metrics.elidedText(v.name, Qt.ElideRight, label_width)
+                display_name = _display_node_label(v.name, md.label_prefix)
+                label = metrics.elidedText(display_name, Qt.ElideRight, label_width)
                 rect_w = metrics.horizontalAdvance(label) + 8
                 rect_h = metrics.height() + 3
                 rect = QRectF(sx - rect_w / 2, sy - r - rect_h - 3, rect_w, rect_h)
@@ -1315,7 +1342,13 @@ class MapCanvas(QWidget):
                 painter.drawEllipse(QPointF(sx, sy), r, r)
 
             painter.setPen(QPen(COL_NODE_TEXT))
-            painter.drawText(QRectF(sx - 40, sy - r - 16, 80, 14), Qt.AlignCenter, nid)
+            prefix = (
+                self._map_data.label_prefix
+                if self._map_data and self._map_data.loaded
+                else ""
+            )
+            label = _display_node_label(nid, prefix)
+            painter.drawText(QRectF(sx - 40, sy - r - 16, 80, 14), Qt.AlignCenter, label)
 
     def _draw_robot(self, painter: QPainter, snap: Snapshot, agv_id: str, agv_color: QColor, selected: bool):
         if snap.agv_x is None or snap.agv_y is None:
@@ -3512,4 +3545,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

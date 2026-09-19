@@ -143,7 +143,9 @@ Docker container까지 모두 중지하려면 `--all`을 붙인다.
 양방향 1차선 본선이다. `C1 - SIDE1 - C2 - SIDE2 - C3` 구조이며 SIDE1과
 SIDE2는 본선 junction 옆의 물리 사이드 베이다. 종점과 사이드 베이만
 SafeStop으로 사용하므로 정상 스케줄링에서는 본선 위에 대기 작업을 만들지
-않는다.
+않는다. 좌우의 L1-L4/R1-R4는 각각 독립 junction에 연결된 leaf slot이다.
+한 slot으로 가는 경로가 다른 slot을 지나지 않으므로 대기·도착 로봇과 본선
+주행 로봇의 물리 경로가 겹치지 않는다.
 
 1대 대 3대:
 
@@ -163,11 +165,12 @@ SafeStop으로 사용하므로 정상 스케줄링에서는 본선 위에 대기
 ./scripts/dispatch_connected_corridor_chain_2v2.sh
 ```
 
-1v3에서는 A1이 `CHAIN_SIDE_2`에 실제 도착한 뒤 B1/B2/B3가 각 왼쪽
-종점으로 직행하고, 세 대가 통과한 뒤 A1이 오른쪽 종점으로 이동한다.
-2v2에서는 A1/A2가 각각 SIDE2/SIDE1에 실제 도착한 뒤 B1/B2가 왼쪽으로
-직행하며, 이후 A1/A2가 오른쪽 종점으로 이동한다. 반대 방향 로봇이 없는
-clear chain에서는 최종 종점까지 하나의 작업으로 직행한다.
+현재 dispatch 예제는 먼저 허가된 같은 방향 batch가 최종 leaf slot까지
+도착한 뒤 반대 방향 batch를 출발시킨다. 1v3은 A1이 R4에 도착한 뒤
+B1/B2/B3가 L4/L3/L2로 이동하고, 2v2는 A1/A2가 R4/R3에 도착한 뒤
+B1/B2가 L4/L3로 이동한다. 목적지는 dispatch 데이터이며 production Python은
+이 robot ID나 node ID를 검사하지 않는다. 반대 방향 로봇이 없는 clear
+chain에서는 사이드 베이에 들르지 않고 최종 leaf slot까지 직행한다.
 
 상태와 이벤트는 다음 명령으로 확인한다.
 

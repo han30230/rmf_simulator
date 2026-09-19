@@ -10,11 +10,11 @@ robot_defaults:
   obstacle_detection: {enabled: false}
   battery: {initial_charge: 80.0, discharge_rate: 0.01, idle_discharge_rate: 0.001, charge_rate: 5.0}
 robots:
-  - {serial_number: AGV_A1, initial_position: {x: 10.0, y: 55.0, theta: -1.5708, map_id: L1}}
-  - {serial_number: AGV_A2, initial_position: {x: 6.0, y: 53.0, theta: -0.6435, map_id: L1}}
-  - {serial_number: AGV_B1, initial_position: {x: 70.0, y: 55.0, theta: -1.5708, map_id: L1}}
-  - {serial_number: AGV_B2, initial_position: {x: 74.0, y: 53.0, theta: -2.4981, map_id: L1}}
-  - {serial_number: AGV_B3, initial_position: {x: 74.0, y: 47.0, theta: 2.4981, map_id: L1}}
+  - {serial_number: AGV_A1, initial_position: {x: -9.0, y: 58.0, theta: -1.5708, map_id: L1}}
+  - {serial_number: AGV_A2, initial_position: {x: -17.0, y: 59.0, theta: -1.5708, map_id: L1}}
+  - {serial_number: AGV_B1, initial_position: {x: 107.0, y: 58.5, theta: -1.5708, map_id: L1}}
+  - {serial_number: AGV_B2, initial_position: {x: 115.0, y: 57.5, theta: -1.5708, map_id: L1}}
+  - {serial_number: AGV_B3, initial_position: {x: 124.0, y: 59.0, theta: -1.5708, map_id: L1}}
 download_map: {map_id: L1, map_download_url: 'http://example.com/map.tar.gz', map_version: 2.4.1}
 action_results: {pick: FINISHED, drop: FINISHED, startCharging: FINISHED, stopCharging: FINISHED, initPosition: FINISHED, finePositioning: FINISHED, startPause: FINISHED, stopPause: FINISHED, cancelOrder: FINISHED, factsheetRequest: FINISHED, downloadMap: FINISHED}
 publishing: {state_interval: 0.5, visualization_interval: 0.5, simulation_tick: 0.05}
