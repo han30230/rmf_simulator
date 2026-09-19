@@ -49,6 +49,32 @@ class HoldingBay:
     reservations: set[str] = field(default_factory=set)
 
 
+@dataclass(frozen=True)
+class SafeStopGroup:
+    group_id: str
+    members: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CorridorChain:
+    chain_id: str
+    block_ids: tuple[str, ...]
+    safe_stop_ids: tuple[str, ...]
+    max_active_robots: int
+
+
+@dataclass(frozen=True)
+class ChainPath:
+    chain_id: str
+    direction: Direction
+    block_ids: tuple[str, ...]
+    safe_stop_ids: tuple[str, ...]
+    source_group: str
+    destination_group: str
+    source_slot: str
+    destination_slot: str
+
+
 @dataclass
 class CorridorBlock:
     block_id: str

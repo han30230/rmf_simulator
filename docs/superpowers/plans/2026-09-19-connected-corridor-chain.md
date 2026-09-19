@@ -17,6 +17,7 @@
 - Do not branch on robot IDs, scenario cardinality, or connected-map node IDs in production Python.
 - Keep the existing route/Reservation API working for the validated single passing-bay, staging, and independent multi-corridor scenarios.
 - Make topology, physical slots, capacities, geometries, release nodes, chain order, and maximum active robots configuration data.
+- A block used by a configured chain may name logical safe-stop groups as its `entry_a`/`entry_b`; existing static-route blocks continue to name physical holding bays.
 - A normal planned stop may occur only in a configured physical safe-stop slot; junctions are not safe stops.
 - Reserve every block in an authority plus its concrete destination slot atomically; never leave partial reservations.
 - Do not revoke a movement authority already submitted to RMF.
@@ -38,7 +39,7 @@
 - Produces: `SafeStopGroup`, `CorridorChain`, `ChainPath`; `CorridorRegistry.safe_stop_groups`, `CorridorRegistry.corridor_chains`, `CorridorRegistry.resolve_chain_path(start_node, goal_node)`.
 - Preserves: `resolve_route(s)` and every current YAML file that has no `corridor_chains` section.
 
-- [ ] **Step 1: Write registry RED tests**
+- [x] **Step 1: Write registry RED tests**
 
 Use a three-block fixture whose left and right groups each contain two physical
 slots. Assert forward/reverse paths and strict validation:
@@ -58,7 +59,7 @@ Also assert rejection when `len(safe_stops) != len(blocks) + 1`, a group member
 is unknown or duplicated, a block endpoint does not match its adjacent groups,
 or `max_active_robots < 1`.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run:
 
@@ -68,7 +69,7 @@ Run:
 
 Expected: import or attribute failure because chain types and parsing do not exist.
 
-- [ ] **Step 3: Add immutable topology types**
+- [x] **Step 3: Add immutable topology types**
 
 Add these public shapes to `models.py`:
 
@@ -97,14 +98,18 @@ class ChainPath:
     destination_slot: str
 ```
 
-- [ ] **Step 4: Parse and resolve chains**
+- [x] **Step 4: Parse and resolve chains**
 
 Build reverse indexes from holding-bay node to physical slot and from slot to
-safe-stop group. `resolve_chain_path` returns `None` when either node is outside
-configured chains. Slice `block_ids` in travel order and reverse them for
-`B_TO_A`; do not enumerate robot identities or start/goal pairs.
+safe-stop group. Permit `CorridorBlock.entry_a/entry_b` to resolve to either a
+physical holding bay or a logical safe-stop group, then require every chain
+block to match its adjacent group IDs in A-to-B order. Static `RouteStep`
+validation still requires physical holding-bay endpoints. `resolve_chain_path`
+returns `None` when either node is outside configured chains. Slice `block_ids`
+in travel order and reverse them for `B_TO_A`; do not enumerate robot identities
+or start/goal pairs.
 
-- [ ] **Step 5: Run GREEN plus registry regressions**
+- [x] **Step 5: Run GREEN plus registry regressions**
 
 ```bash
 .venv/bin/python -m unittest \
