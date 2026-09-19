@@ -95,7 +95,8 @@ class TaskGate:
                 "reason": "robot_not_at_known_safe_point",
             }
 
-        route = self.registry.resolve_route(start_node, goal_node)
+        routes = self.registry.resolve_routes(start_node, goal_node)
+        route = self._select_route(routes)
         if route is None:
             policy = str(
                 self.registry.settings.get("unmatched_route_policy", "BLOCKED")
@@ -218,6 +219,7 @@ class TaskGate:
             }
 
     def _attempt_current_step(self, job: GateJob) -> dict[str, Any]:
+        self._refresh_waiting_route(job)
         step = job.current_step
         if step is None:
             job.status = JobStatus.COMPLETE
@@ -246,6 +248,72 @@ class TaskGate:
             job.status = JobStatus.BLOCKED
             return {"decision": Decision.BLOCKED.value}
         return self._forward_current_step(job)
+
+    def _select_route(
+        self,
+        routes: list[RouteIntent],
+        *,
+        exclude_job_id: str | None = None,
+    ) -> RouteIntent | None:
+        eligible = [
+            route
+            for route in routes
+            if self._route_is_eligible(route, exclude_job_id=exclude_job_id)
+        ]
+        guarded = [route for route in eligible if route.requires_no_opposite_jobs]
+        return guarded[0] if guarded else (eligible[0] if eligible else None)
+
+    def _route_is_eligible(
+        self,
+        route: RouteIntent,
+        *,
+        exclude_job_id: str | None = None,
+    ) -> bool:
+        if not route.requires_no_opposite_jobs:
+            return True
+
+        terminal = {JobStatus.COMPLETE, JobStatus.CANCELLED}
+        for candidate_step in route.steps:
+            candidate_block = self.registry.blocks[candidate_step.block_id]
+            for other in self._jobs.values():
+                if other.job_id == exclude_job_id or other.status in terminal:
+                    continue
+                for other_step in other.route.steps[other.step_index :]:
+                    other_block = self.registry.blocks[other_step.block_id]
+                    if (
+                        other_block.direction_domain
+                        == candidate_block.direction_domain
+                        and other_step.direction is candidate_step.direction.opposite
+                    ):
+                        return False
+        return True
+
+    def _refresh_waiting_route(self, job: GateJob) -> None:
+        if job.status is not JobStatus.WAITING or job.step_index != 0:
+            return
+        start_node = self.tracker.current_safe_node(job.robot_id)
+        if start_node is None or start_node not in job.route.start_nodes:
+            return
+        routes = self.registry.resolve_routes(
+            start_node,
+            _goal_node(job.original_payload),
+        )
+        selected = self._select_route(routes, exclude_job_id=job.job_id)
+        if selected is None or selected.route_id == job.route.route_id:
+            return
+
+        previous_step = job.current_step
+        if previous_step is not None:
+            self.arbiter.cancel(job.robot_id, previous_step.block_id)
+        previous_route_id = job.route.route_id
+        job.route = selected
+        logger.info(
+            "[TRAFFIC] ROUTE_SWITCH robot=%s job=%s from=%s to=%s",
+            job.robot_id,
+            job.job_id,
+            previous_route_id,
+            selected.route_id,
+        )
 
     def _forward_current_step(self, job: GateJob) -> dict[str, Any]:
         step = job.current_step

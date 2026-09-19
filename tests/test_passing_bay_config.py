@@ -112,6 +112,7 @@ class PassingBayConfigurationTests(unittest.TestCase):
         shared = {
             "P4_EAST_TO_SIDE",
             "P4_GATE_TO_RIGHT",
+            "P4_RIGHT_TO_LEFT_DIRECT",
             "P4_SIDE_TO_LEFT",
         }
 
@@ -124,6 +125,38 @@ class PassingBayConfigurationTests(unittest.TestCase):
             "P4_PASSING_EVENT",
         )
         self.assertTrue(blocks["P4_EAST_TO_SIDE"]["require_source_hb_unreserved"])
+
+    def test_clear_corridor_has_a_guarded_direct_right_to_left_route(self) -> None:
+        traffic = yaml.safe_load(ARBITER_PATH.read_text(encoding="utf-8"))[
+            "traffic_control"
+        ]
+        blocks = {
+            block["id"]: block
+            for group in traffic["groups"].values()
+            for block in group["blocks"]
+        }
+        direct = blocks["P4_RIGHT_TO_LEFT_DIRECT"]
+        self.assertEqual((direct["entry_a"], direct["entry_b"]), ("HB_LEFT", "HB_RIGHT"))
+        self.assertTrue(direct["require_source_hb_unreserved"])
+        self.assertEqual(
+            direct["edges_b_to_a"],
+            [
+                "2108>2107",
+                "2107>2106",
+                "2106>2105",
+                "2105>2104",
+                "2104>2103",
+                "2103>2102",
+                "2102>2101",
+            ],
+        )
+
+        routes = {route["id"]: route for route in traffic["routes"]}
+        route = routes["P4_RIGHT_TO_LEFT_DIRECT_WHEN_CLEAR"]
+        self.assertTrue(route["requires_no_opposite_jobs"])
+        self.assertEqual(len(route["steps"]), 1)
+        self.assertEqual(route["steps"][0]["block_id"], "P4_RIGHT_TO_LEFT_DIRECT")
+        self.assertEqual(route["steps"][0]["goal_node"], "2101")
 
     def test_managed_routes_have_the_expected_two_steps(self) -> None:
         traffic = yaml.safe_load(ARBITER_PATH.read_text(encoding="utf-8"))[

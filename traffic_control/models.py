@@ -107,3 +107,4 @@ class RouteIntent:
     start_nodes: frozenset[str]
     goal_nodes: frozenset[str]
     steps: tuple[RouteStep, ...]
+    requires_no_opposite_jobs: bool = False

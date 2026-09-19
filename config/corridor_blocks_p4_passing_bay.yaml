@@ -119,6 +119,34 @@ traffic_control:
             # overlapping P4_WEST_ADVANCE geometry after passing 2104.
             bounds: {min_x: 7.6, max_x: 54.818, min_y: 91.75, max_y: 93.9}
 
+        - id: P4_RIGHT_TO_LEFT_DIRECT
+          direction_domain: P4_PASSING_EVENT
+          entry_a: HB_LEFT
+          entry_b: HB_RIGHT
+          capacity: 1
+          require_source_hb_unreserved: true
+          edges_a_to_b:
+            - "2101>2102"
+            - "2102>2103"
+            - "2103>2104"
+            - "2104>2105"
+            - "2105>2106"
+            - "2106>2107"
+            - "2107>2108"
+          edges_b_to_a:
+            - "2108>2107"
+            - "2107>2106"
+            - "2106>2105"
+            - "2105>2104"
+            - "2104>2103"
+            - "2103>2102"
+            - "2102>2101"
+          geometry:
+            # The managed conflict ends at 2106. The retained grant protects
+            # the approach from HB_RIGHT; geometry tracks occupancy only once
+            # the robot enters the shared conflict section.
+            bounds: {min_x: 7.6, max_x: 54.818, min_y: 91.75, max_y: 93.9}
+
   routes:
     - id: P4_LEFT_TO_RIGHT_VIA_GATE
       start_nodes: ["2101"]
@@ -148,5 +176,16 @@ traffic_control:
         - block_id: P4_SIDE_TO_LEFT
           direction: B_TO_A
           source_hb: HB_MIDDLE_SIDE
+          destination_hb: HB_LEFT
+          goal_node: "2101"
+
+    - id: P4_RIGHT_TO_LEFT_DIRECT_WHEN_CLEAR
+      start_nodes: ["2108"]
+      goal_nodes: ["2101"]
+      requires_no_opposite_jobs: true
+      steps:
+        - block_id: P4_RIGHT_TO_LEFT_DIRECT
+          direction: B_TO_A
+          source_hb: HB_RIGHT
           destination_hb: HB_LEFT
           goal_node: "2101"

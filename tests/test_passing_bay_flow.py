@@ -140,7 +140,11 @@ class PassingBayFlowTests(unittest.TestCase):
             "AGV_A1", state(*POSITIONS["2108"], node="2108", driving=False), received_at=5.0
         )
         gate.tick(now=5.0)
-        self.assertEqual(forwarder.goals[-1], ("AGV_B2", "6137"))
+        self.assertEqual(forwarder.goals[-1], ("AGV_B2", "2101"))
+        self.assertEqual(
+            gate.status()["jobs"][b2["job_id"]]["route_id"],
+            "P4_RIGHT_TO_LEFT_DIRECT_WHEN_CLEAR",
+        )
         tracker.ingest_state(
             "AGV_B2", state(*POSITIONS["2106"], node="2106", driving=True), received_at=5.2
         )
@@ -148,11 +152,6 @@ class PassingBayFlowTests(unittest.TestCase):
             "AGV_B1", state(*POSITIONS["2101"], node="2101", driving=False), received_at=6.0
         )
         gate.tick(now=6.0)
-        tracker.ingest_state(
-            "AGV_B2", state(*POSITIONS["6137"], node="6137", driving=False), received_at=6.2
-        )
-        gate.tick(now=6.2)
-        self.assertEqual(forwarder.goals[-1], ("AGV_B2", "2101"))
 
         tracker.ingest_state(
             "AGV_B2", state(*POSITIONS["2105"], node="2105", driving=True), received_at=6.5

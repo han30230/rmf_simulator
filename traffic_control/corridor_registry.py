@@ -163,15 +163,23 @@ class CorridorRegistry:
                     start_nodes=frozenset(str(item) for item in raw["start_nodes"]),
                     goal_nodes=frozenset(str(item) for item in raw["goal_nodes"]),
                     steps=tuple(steps),
+                    requires_no_opposite_jobs=bool(
+                        raw.get("requires_no_opposite_jobs", False)
+                    ),
                 )
             )
         return registry
 
+    def resolve_routes(self, start_node: str, goal_node: str) -> list[RouteIntent]:
+        return [
+            route
+            for route in self.routes
+            if start_node in route.start_nodes and goal_node in route.goal_nodes
+        ]
+
     def resolve_route(self, start_node: str, goal_node: str) -> RouteIntent | None:
-        for route in self.routes:
-            if start_node in route.start_nodes and goal_node in route.goal_nodes:
-                return route
-        return None
+        routes = self.resolve_routes(start_node, goal_node)
+        return routes[0] if routes else None
 
     def block_for_position(self, x: float, y: float) -> str | None:
         matches = self.blocks_for_position(x, y)
