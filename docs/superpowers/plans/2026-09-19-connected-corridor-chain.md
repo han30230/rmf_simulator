@@ -509,7 +509,7 @@ rg -n 'AGV_|CHAIN_|C1|C2|C3' traffic_control
 
 Expected: no scenario robot/node/block identifiers in production Python.
 
-- [ ] **Step 6: Commit and push only tracked deliverables**
+- [x] **Step 6: Commit and push only tracked deliverables**
 
 Explicitly stage production, tests, configuration, scripts, and docs. Confirm
 `.runtime` and `recording_260919.jsonl` remain unstaged. Commit with a message
