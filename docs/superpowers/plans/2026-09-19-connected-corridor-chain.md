@@ -132,7 +132,7 @@ Expected: all pass.
 - Consumes: `CorridorRegistry`, `ChainPath`, an availability callback with signature `Callable[[tuple[str, ...], Direction, str], bool]`.
 - Produces: `PlannedAuthority` and `CorridorChainPlanner.plan(path, available) -> PlannedAuthority | None`.
 
-- [ ] **Step 1: Write planner RED tests**
+- [x] **Step 1: Write planner RED tests**
 
 Prove that a clear chain chooses the final physical slot, a conflict on C3
 selects `SIDE_2`, a conflict on C2 selects `SIDE_1`, and no reachable refuge
@@ -146,11 +146,11 @@ self.assertEqual(leg.destination_slot, "SIDE_2")
 self.assertEqual(leg.goal_node, "S2")
 ```
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Expected: module-not-found failure.
 
-- [ ] **Step 3: Implement the pure planner**
+- [x] **Step 3: Implement the pure planner**
 
 Define:
 
@@ -172,7 +172,7 @@ For endpoint groups, retain the requested concrete slot. For intermediate
 groups, choose the first free configured member in stable YAML order. Call the
 availability callback with the full ordered interval and candidate slot.
 
-- [ ] **Step 4: Run GREEN**
+- [x] **Step 4: Run GREEN**
 
 Run the planner and registry modules; expected: all pass.
 
