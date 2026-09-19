@@ -14,6 +14,8 @@ COMPOSE_PATH = ROOT / "rmf_platform-main/docker-compose.p4-passing-bay.yml"
 DISPATCH_PATH = ROOT / "scripts/t4_dispatch_passing_bay.sh"
 START_2V1_PATH = ROOT / "scripts/start_p4_passing_bay_2v1.sh"
 DISPATCH_2V1_PATH = ROOT / "scripts/t4_dispatch_passing_bay_2v1.sh"
+START_2V2_PATH = ROOT / "scripts/start_p4_passing_bay_2v2.sh"
+DISPATCH_2V2_PATH = ROOT / "scripts/t4_dispatch_passing_bay_2v2.sh"
 
 
 def contains(geometry: dict, x: float, y: float) -> bool:
@@ -53,6 +55,36 @@ class PassingBayConfigurationTests(unittest.TestCase):
             requests,
             [
                 '"${script_dir}/t4_dispatch_via_arbiter.sh" AGV_A1 2108',
+                '"${script_dir}/t4_dispatch_via_arbiter.sh" AGV_B1 2101',
+                '"${script_dir}/t4_dispatch_via_arbiter.sh" AGV_B2 2101',
+            ],
+        )
+
+    def test_two_against_two_runtime_selects_all_four_robots(self) -> None:
+        self.assertTrue(START_2V2_PATH.is_file(), START_2V2_PATH)
+        self.assertTrue(DISPATCH_2V2_PATH.is_file(), DISPATCH_2V2_PATH)
+
+        start = START_2V2_PATH.read_text(encoding="utf-8")
+        self.assertIn(
+            "PASSING_BAY_DISPATCH_SCRIPT=t4_dispatch_passing_bay_2v2.sh",
+            start,
+        )
+        self.assertIn(
+            '/start_p4_passing_bay.sh" AGV_A1 AGV_A2 AGV_B1 AGV_B2',
+            start,
+        )
+
+        dispatch = DISPATCH_2V2_PATH.read_text(encoding="utf-8")
+        requests = [
+            line.strip()
+            for line in dispatch.splitlines()
+            if "t4_dispatch_via_arbiter.sh" in line
+        ]
+        self.assertEqual(
+            requests,
+            [
+                '"${script_dir}/t4_dispatch_via_arbiter.sh" AGV_A1 2108',
+                '"${script_dir}/t4_dispatch_via_arbiter.sh" AGV_A2 2108',
                 '"${script_dir}/t4_dispatch_via_arbiter.sh" AGV_B1 2101',
                 '"${script_dir}/t4_dispatch_via_arbiter.sh" AGV_B2 2101',
             ],

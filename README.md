@@ -60,6 +60,18 @@ B1은 A1이 2106을 통과하면 side bay에서 출발하고, B2는 A1이 2108�
 도착해 반대 방향 작업이 끝나면 side bay를 거치지 않고 `2108 → 2101`로
 직행한다.
 
+2대 대 2대 시나리오는 네 로봇을 등록하는 별도 스크립트를 사용한다.
+
+```bash
+./scripts/stop_p4_passing_bay.sh --all
+./scripts/start_p4_passing_bay_2v2.sh
+./scripts/t4_dispatch_passing_bay_2v2.sh
+```
+
+A1/A2는 `2101 → 2108`, B1/B2는 `2108 → 2101`로 이동한다. 같은 방향
+로봇은 안전한 선행 block까지 파이프라인으로 이동하고, 반대 방향 waiter가
+생기면 현재 batch를 닫아 방향을 전환한다.
+
 `setup_workspace.sh`는 다음을 준비한다.
 
 - 저장소 내부 `.venv`
@@ -160,7 +172,7 @@ docs/superpowers/plans/          구현 계획과 검증 항목
 - 정지·위치 추정 오차 및 telemetry 누락
 - 안전 PLC/EMS와의 연동
 - 통신 단절 및 재기동 복구
-- 2v1, 2v2, 다중 corridor, starvation 조건
+- 실제 로봇 2v1/2v2, 다중 corridor, starvation 조건
 
 telemetry가 release node를 놓치면 Arbiter는 fail-closed 상태를 유지하도록 설계되어 있다.
 

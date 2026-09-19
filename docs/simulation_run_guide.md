@@ -36,6 +36,18 @@ B2는 A1의 현재 단계와 이후 단계를 포함한 반대 방향 작업이 
 HB_RIGHT에서 기다린다. A1이 2108에 도착하면 대기 중인 경로를 다시
 평가하고, side bay를 거치지 않는 `2108 → 2101` 직행 작업을 제출한다.
 
+2대 대 2대 실행:
+
+```bash
+./scripts/stop_p4_passing_bay.sh --all
+./scripts/start_p4_passing_bay_2v2.sh
+./scripts/t4_dispatch_passing_bay_2v2.sh
+```
+
+A1/A2는 왼쪽에서 오른쪽으로, B1/B2는 오른쪽에서 왼쪽으로 이동한다.
+선행 block이 비면 같은 방향의 다음 로봇이 먼저 이동하고, 공유 conflict
+domain은 반대 방향 waiter가 생긴 시점에 현재 batch를 닫는다.
+
 핵심 로그 확인:
 
 ```bash
@@ -71,7 +83,9 @@ Docker container까지 모두 중지하려면 `--all`을 붙인다.
 4. A1 telemetry가 `lastNodeId=2106`을 보고하면 공유 conflict domain이 해제된다.
 5. A1은 2106에서 정지하지 않고 주행하며, B1은 `6137 → 2101`로 출발한다.
 6. 2대 대 1대에서는 A1 완료 후 B2가 `2108 → 2101`로 직행한다.
-7. 목적지 holding-bay 예약은 각 로봇이 실제 도착할 때 해제된다.
+7. 2대 대 2대에서는 A2가 2104까지 선행한 뒤 B1 완료를 기다리고, 이후
+   A2가 통과한 다음 B2가 직행한다.
+8. 목적지 holding-bay 예약은 각 로봇이 실제 도착할 때 해제된다.
 
 release-node telemetry가 누락되면 통로는 fail-closed 상태를 유지한다.
 

@@ -34,7 +34,7 @@ class HomeP4ConfigurationTests(unittest.TestCase):
             expected.add((index + 1, index))
         self.assertEqual(lanes, expected)
 
-    def test_three_robots_share_the_same_endpoint_coordinates(self) -> None:
+    def test_four_robots_share_the_same_endpoint_coordinates(self) -> None:
         scenario = yaml.safe_load(
             (
                 ROOT
@@ -45,7 +45,13 @@ class HomeP4ConfigurationTests(unittest.TestCase):
             robot["serial_number"]: robot["initial_position"]
             for robot in scenario["robots"]
         }
-        self.assertEqual(set(robots), {"AGV_A1", "AGV_B1", "AGV_B2"})
+        self.assertEqual(
+            set(robots),
+            {"AGV_A1", "AGV_A2", "AGV_B1", "AGV_B2"},
+        )
+        for robot_id in ("AGV_A1", "AGV_A2"):
+            self.assertAlmostEqual(float(robots[robot_id]["x"]), 6.833, places=3)
+            self.assertAlmostEqual(float(robots[robot_id]["y"]), 92.871, places=3)
         for robot_id in ("AGV_B1", "AGV_B2"):
             self.assertAlmostEqual(float(robots[robot_id]["x"]), 73.7274, places=3)
             self.assertAlmostEqual(float(robots[robot_id]["y"]), 92.8248, places=3)
@@ -55,7 +61,7 @@ class HomeP4ConfigurationTests(unittest.TestCase):
         )
         self.assertEqual(
             set(fleet["rmf_fleet"]["robots"]),
-            {"AGV_A1", "AGV_B1", "AGV_B2"},
+            {"AGV_A1", "AGV_A2", "AGV_B1", "AGV_B2"},
         )
 
     def test_arbiter_endpoints_match_navigation_graph(self) -> None:
