@@ -20,7 +20,9 @@ SCRIPTS = (
     ROOT / "scripts/launch_connected_corridor_chain_visualizer.sh",
     ROOT / "scripts/dispatch_connected_corridor_chain_1v3.sh",
     ROOT / "scripts/dispatch_connected_corridor_chain_2v2.sh",
+    ROOT / "scripts/dispatch_connected_corridor_chain_dynamic_2v2.sh",
 )
+DYNAMIC_SCENARIO = ROOT / "config/dynamic_connected_corridor_chain_2v2.yaml"
 
 
 class ConnectedCorridorChainConfigTests(unittest.TestCase):
@@ -61,7 +63,7 @@ class ConnectedCorridorChainConfigTests(unittest.TestCase):
         )
         self.assertNotIn("CHAIN_E1", positions)
         self.assertNotIn("CHAIN_E2", positions)
-        self.assertTrue(all(positions[node][1] > 50.0 for node in endpoint_slots))
+        self.assertTrue(all(positions[node][1] < 50.0 for node in endpoint_slots))
         self.assertTrue(all(len(adjacency[node]) == 1 for node in endpoint_slots))
         for side in ("L", "R"):
             for index in range(1, 5):
@@ -170,6 +172,22 @@ class ConnectedCorridorChainConfigTests(unittest.TestCase):
             self.assertNotIn("/home/han30230", content)
         compose = COMPOSE.read_text(encoding="utf-8")
         self.assertIn("connected_corridor_chain.yaml", compose)
+
+    def test_dynamic_scenario_is_configuration_driven(self) -> None:
+        raw = yaml.safe_load(DYNAMIC_SCENARIO.read_text(encoding="utf-8"))
+        self.assertEqual(raw["name"], "connected_chain_dynamic_2v2")
+        self.assertEqual(
+            [(step["robot"], step["goal"]) for step in raw["steps"]],
+            [
+                ("AGV_A1", "CHAIN_R4"),
+                ("AGV_B1", "CHAIN_L4"),
+                ("AGV_A2", "CHAIN_R3"),
+                ("AGV_B2", "CHAIN_L3"),
+            ],
+        )
+        self.assertEqual(raw["steps"][1]["when"]["type"], "robot_left_holding_bay")
+        self.assertEqual(raw["steps"][2]["when"]["status"], "ACTIVE")
+        self.assertEqual(raw["steps"][3]["when"]["status"], "ACTIVE")
 
 
 if __name__ == "__main__":

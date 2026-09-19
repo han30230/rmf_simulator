@@ -143,9 +143,9 @@ Docker container까지 모두 중지하려면 `--all`을 붙인다.
 양방향 1차선 본선이다. `C1 - SIDE1 - C2 - SIDE2 - C3` 구조이며 SIDE1과
 SIDE2는 본선 junction 옆의 물리 사이드 베이다. 종점과 사이드 베이만
 SafeStop으로 사용하므로 정상 스케줄링에서는 본선 위에 대기 작업을 만들지
-않는다. 좌우의 L1-L4/R1-R4는 각각 독립 junction에 연결된 leaf slot이다.
-한 slot으로 가는 경로가 다른 slot을 지나지 않으므로 대기·도착 로봇과 본선
-주행 로봇의 물리 경로가 겹치지 않는다.
+않는다. 좌우의 L1-L4/R1-R4는 본선 아래쪽의 독립 junction에 연결된 leaf
+slot이다. 한 slot으로 가는 경로가 다른 slot을 지나지 않으므로 대기·도착
+로봇과 본선 주행 로봇의 물리 경로가 겹치지 않는다.
 
 1대 대 3대:
 
@@ -164,6 +164,21 @@ SafeStop으로 사용하므로 정상 스케줄링에서는 본선 위에 대기
 ./scripts/launch_connected_corridor_chain_visualizer.sh
 ./scripts/dispatch_connected_corridor_chain_2v2.sh
 ```
+
+상태 기반 동적 2대 대 2대:
+
+```bash
+./scripts/stop_p4_passing_bay.sh --all
+./scripts/start_connected_corridor_chain.sh 2v2
+./scripts/launch_connected_corridor_chain_visualizer.sh
+./scripts/dispatch_connected_corridor_chain_dynamic_2v2.sh
+```
+
+동적 시나리오는 A1만 먼저 제출한다. A1이 출발 slot을 벗어나면 B1을 추가하고,
+B1이 ACTIVE가 되면 A2를, A2가 ACTIVE가 되면 B2를 추가한다. 반대 방향의 오래된
+대기 요청이 현재 direction batch를 닫으므로 실제 ACTIVE 순서는
+`A1 → B1 → A2 → B2`가 된다. 조건과 목적지는
+`config/dynamic_connected_corridor_chain_2v2.yaml`에서 바꿀 수 있다.
 
 현재 dispatch 예제는 먼저 허가된 같은 방향 batch가 최종 leaf slot까지
 도착한 뒤 반대 방향 batch를 출발시킨다. 1v3은 A1이 R4에 도착한 뒤
@@ -186,6 +201,11 @@ grep --line-buffered -E \
 movement authority의 중간 블록은 telemetry에 따라 롤링 해제되지만 마지막
 블록은 목적지 SafeStop 도착까지 유지된다. 이 규칙은 robot ID나 map node를
 검사하는 분기가 아니라 authority의 블록 순서와 YAML topology에 적용된다.
+
+`WAITING`/`RETRY` job은 `/traffic/jobs/{job_id}/cancel`로 취소한 뒤 새 목적지를
+제출할 수 있다. 이미 RMF에 전달된 `ACTIVE` job은 이 endpoint가 HTTP 409를
+반환한다. 운행 중 목적지 변경은 본선에서 즉시 반전시키지 않고 다음 SafeStop에
+도착한 뒤 새 intent를 제출하는 정책으로 구현해야 한다.
 
 ## 구성요소와 포트
 

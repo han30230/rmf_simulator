@@ -137,8 +137,8 @@ production Python은 로봇 이름이나 1v3 대수를 검사하지 않는다. �
 않으며, Arbiter가 현재 점유와 반대 방향 대기열을 보고 도달 가능한 가장 먼
 SafeStop까지 여러 블록을 하나의 movement authority로 원자적으로 예약한다.
 좌우 종점의 로봇 주차 위치는 본선 위에 연달아 놓지 않고, 각각 별도 junction에
-연결된 capacity-one leaf slot으로 구성한다. 따라서 대기 중인 로봇이나 이미
-도착한 로봇을 다른 로봇의 경로가 관통하지 않는다.
+연결된 본선 아래쪽 capacity-one leaf slot으로 구성한다. 따라서 대기 중인
+로봇이나 이미 도착한 로봇을 다른 로봇의 경로가 관통하지 않는다.
 
 ```bash
 ./scripts/stop_p4_passing_bay.sh --all
@@ -148,6 +148,17 @@ SafeStop까지 여러 블록을 하나의 movement authority로 원자적으로 
 # 별도 터미널
 ./scripts/dispatch_connected_corridor_chain_1v3.sh  # 또는 ..._2v2.sh
 ```
+
+실행 중 반대 방향 작업을 추가하면서 A1→B1→A2→B2 순서로 교대시키려면
+2v2 runtime에서 다음을 실행한다.
+
+```bash
+./scripts/dispatch_connected_corridor_chain_dynamic_2v2.sh
+```
+
+투입 순서와 조건은 `config/dynamic_connected_corridor_chain_2v2.yaml`에
+있다. 범용 runner는 고정 sleep 대신 robot holding-bay 이탈과 job 상태를
+polling하며, 각 조건은 독립 timeout을 사용한다.
 
 중간 블록은 로봇이 다음 구간으로 넘어가면 순서대로 해제한다. 권한의 마지막
 블록은 release node를 지나도 유지하며, 목적지 종점 또는 사이드 베이 안에
@@ -161,6 +172,11 @@ SafeStop까지 여러 블록을 하나의 movement authority로 원자적으로 
 포함되지 않으며, 현장 topology와 SafeStop/slot은 YAML로 정의한다.
 Visualizer는 내부 node ID를 바꾸지 않고 같은 map에 공통인 접두사만 화면에서
 줄여 표시한다. 예를 들어 `CHAIN_RJ1`은 `RJ1`로 보여 긴 label의 겹침을 줄인다.
+
+아직 RMF에 전달되지 않은 `WAITING` 또는 `RETRY` job은 cancel한 뒤 새 목적지로
+다시 제출할 수 있다. `ACTIVE` job은 본선에서 즉시 방향을 바꾸지 않도록 cancel을
+거부한다. 현장용 reroute는 다음 configured SafeStop 도착 후 새 작업을 적용하는
+방식으로 확장해야 한다.
 
 ```bash
 ./scripts/stop_p4_passing_bay.sh --all
