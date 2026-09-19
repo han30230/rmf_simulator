@@ -6,12 +6,27 @@ platform_dir="${workspace_dir}/rmf_platform-main"
 simulator_dir="${workspace_dir}/rmf_dev_tool-main/vda5050_robot_simulator"
 python_bin="${workspace_dir}/.venv/bin/python"
 runtime_dir="${workspace_dir}/.runtime"
-simulator_config="${runtime_dir}/p4_passing_bay_runtime.yaml"
 simulator_log="${runtime_dir}/simulator.log"
 arbiter_log="${runtime_dir}/arbiter.log"
 base_compose="${platform_dir}/docker-compose.yml"
 portable_compose="${platform_dir}/docker-compose.portable.yml"
-passing_compose="${platform_dir}/docker-compose.p4-passing-bay.yml"
+
+resolve_workspace_path() {
+  case "$1" in
+    /*) printf '%s\n' "$1" ;;
+    *) printf '%s/%s\n' "${workspace_dir}" "$1" ;;
+  esac
+}
+
+runtime_name="${PASSING_BAY_RUNTIME_NAME:-}"
+if [[ -n "${runtime_name}" ]]; then
+  simulator_config="${runtime_dir}/${runtime_name}_runtime.yaml"
+else
+  simulator_config="${runtime_dir}/p4_passing_bay_runtime.yaml"
+fi
+simulator_source="$(resolve_workspace_path "${PASSING_BAY_SIMULATOR_SCENARIO:-rmf_dev_tool-main/vda5050_robot_simulator/p4_scenario.yaml}")"
+passing_compose="$(resolve_workspace_path "${PASSING_BAY_COMPOSE_FILE:-rmf_platform-main/docker-compose.p4-passing-bay.yml}")"
+arbiter_config="$(resolve_workspace_path "${PASSING_BAY_ARBITER_CONFIG:-config/corridor_blocks_p4_passing_bay.yaml}")"
 robot_ids=("$@")
 if [[ "${#robot_ids[@]}" -eq 0 ]]; then
   robot_ids=(AGV_A1 AGV_B1)
@@ -105,14 +120,14 @@ done
 }
 
 cd "${simulator_dir}"
-"${python_bin}" - "${simulator_config}" "${robot_ids[@]}" <<'PY'
+"${python_bin}" - "${simulator_source}" "${simulator_config}" "${robot_ids[@]}" <<'PY'
 from pathlib import Path
 import sys
 import yaml
 
-source = Path("p4_scenario.yaml")
-target = Path(sys.argv[1])
-requested = sys.argv[2:]
+source = Path(sys.argv[1])
+target = Path(sys.argv[2])
+requested = sys.argv[3:]
 data = yaml.safe_load(source.read_text(encoding="utf-8"))
 data["robots"] = [
     robot for robot in data["robots"]
@@ -177,7 +192,7 @@ nohup env \
   PYTHON_BIN="${python_bin}" \
   RMF_API_BEARER_TOKEN="${rmf_api_bearer_token}" \
   ./scripts/run_direction_arbiter.sh \
-  config/corridor_blocks_p4_passing_bay.yaml \
+  "${arbiter_config}" \
   >"${arbiter_log}" 2>&1 &
 echo "$!" >"${runtime_dir}/arbiter.pid"
 wait_for_port 8200 Arbiter

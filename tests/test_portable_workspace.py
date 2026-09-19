@@ -36,6 +36,22 @@ class PortableWorkspaceTests(unittest.TestCase):
         self.assertIn("RMF_API_BEARER_TOKEN", script)
         self.assertIn("p4_passing_bay_runtime.yaml", script)
 
+    def test_start_script_accepts_config_driven_runtime_files(self) -> None:
+        script = (ROOT / "scripts/start_p4_passing_bay.sh").read_text(
+            encoding="utf-8"
+        )
+
+        for name in (
+            "PASSING_BAY_SIMULATOR_SCENARIO",
+            "PASSING_BAY_COMPOSE_FILE",
+            "PASSING_BAY_ARBITER_CONFIG",
+            "PASSING_BAY_RUNTIME_NAME",
+        ):
+            self.assertIn(name, script)
+        self.assertIn("p4_scenario.yaml", script)
+        self.assertIn("docker-compose.p4-passing-bay.yml", script)
+        self.assertIn("corridor_blocks_p4_passing_bay.yaml", script)
+
     def test_portable_compose_provides_an_mqtt_broker(self) -> None:
         compose = (
             ROOT / "rmf_platform-main" / "docker-compose.portable.yml"
@@ -61,6 +77,20 @@ class PortableWorkspaceTests(unittest.TestCase):
         self.assertIn("정지하지", readme)
         self.assertIn("start_p4_passing_bay.sh", run_guide)
         self.assertNotIn("/mnt/d/Documents", run_guide)
+
+    def test_docs_describe_distinct_staging_slots_and_one_against_three(self) -> None:
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        run_guide = (ROOT / "docs" / "simulation_run_guide.md").read_text(
+            encoding="utf-8"
+        )
+        for content in (readme, run_guide):
+            self.assertIn("start_p4_passing_bay_staging_2v2.sh", content)
+            self.assertIn("t4_dispatch_passing_bay_staging_2v2.sh", content)
+            self.assertIn("start_p4_passing_bay_staging_1v3.sh", content)
+            self.assertIn("t4_dispatch_passing_bay_staging_1v3.sh", content)
+            self.assertIn("launch_p4_passing_bay_staging_visualizer.sh", content)
+            self.assertIn("capacity 1", content)
+            self.assertIn("측량", content)
 
     def test_rmf_core_dockerfile_has_no_site_specific_proxy(self) -> None:
         dockerfile = (

@@ -75,6 +75,45 @@ A1뿐 아니라 같은 방향 후속 로봇 A2가 공유 충돌 구간의 `relea
 통과할 때까지 side bay에서 기다린다. 이후 B1이 `2101`로 출발하며, B2는
 반대 방향 작업이 모두 끝난 뒤 `2108 → 2101`로 직행한다.
 
+## 물리 staging slot 시나리오
+
+기본 P4 시나리오는 회귀 검증을 위해 보존한다. 실제 로봇처럼 시작점과
+목적지에서 서로 겹치지 않는 검증은 staging 전용 stack을 사용한다. 좌우에
+각각 세 개의 개별 slot이 있고 각 Holding Bay의 `capacity 1`을 Arbiter가
+관리한다.
+
+staging 2v2 실행:
+
+```bash
+./scripts/stop_p4_passing_bay.sh --all
+./scripts/start_p4_passing_bay_staging_2v2.sh
+./scripts/launch_p4_passing_bay_staging_visualizer.sh
+./scripts/t4_dispatch_passing_bay_staging_2v2.sh
+```
+
+A1/A2는 `P4_LS1/P4_LS2`에서 출발해 `P4_RS1/P4_RS3`에 도착하고,
+B1/B2는 `P4_RS1/P4_RS2`에서 출발해 `P4_LS1/P4_LS2`에 도착한다.
+B1은 A1과 A2가 충돌 경계를 통과할 때까지 6137에 머문다.
+
+staging 1v3 실행:
+
+```bash
+./scripts/stop_p4_passing_bay.sh --all
+./scripts/start_p4_passing_bay_staging_1v3.sh
+./scripts/launch_p4_passing_bay_staging_visualizer.sh
+./scripts/t4_dispatch_passing_bay_staging_1v3.sh
+```
+
+A1은 왼쪽에서 오른쪽으로 이동한다. B1은 먼저 6137로 피한 뒤 A1의
+`release_node` 통과 후 왼쪽으로 출발하고, B2/B3는 반대 방향 작업이
+끝나면 서로 다른 목적지 slot로 직행한다.
+
+slot 수, 좌표, block, direction domain과 route는
+`config/corridor_blocks_p4_passing_bay_staging.yaml` 및 staging map에 있다.
+production Python은 로봇 이름이나 1v3 대수를 검사하지 않는다. 실제 현장에
+적용할 때는 로봇 외형, 제동거리, 위치 오차와 안전 여유를 반영한 측량
+좌표로 simulation 값을 교체해야 한다.
+
 `setup_workspace.sh`는 다음을 준비한다.
 
 - 저장소 내부 `.venv`

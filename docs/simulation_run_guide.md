@@ -52,6 +52,39 @@ domain은 반대 방향 waiter가 생긴 시점에 현재 batch를 닫는다. B1
 반대 방향 현재·후속 route step을 확인하며, 실행 중인 step은 telemetry로
 `release_node`를 통과한 뒤에만 안전하게 끝난 것으로 간주한다.
 
+## 물리 staging slot 실행
+
+동일한 2101/2108 좌표에 여러 로봇을 겹쳐 놓지 않는 2v2는 다음과 같이
+실행한다.
+
+```bash
+./scripts/stop_p4_passing_bay.sh --all
+./scripts/start_p4_passing_bay_staging_2v2.sh
+./scripts/launch_p4_passing_bay_staging_visualizer.sh
+./scripts/t4_dispatch_passing_bay_staging_2v2.sh
+```
+
+1v3은 A1 한 대가 왼쪽에서 오른쪽으로, B1/B2/B3 세 대가 오른쪽에서
+왼쪽으로 이동한다.
+
+```bash
+./scripts/stop_p4_passing_bay.sh --all
+./scripts/start_p4_passing_bay_staging_1v3.sh
+./scripts/launch_p4_passing_bay_staging_visualizer.sh
+./scripts/t4_dispatch_passing_bay_staging_1v3.sh
+```
+
+각 staging Holding Bay는 `capacity 1`이고 서로 다른 graph node와 좌표를
+가진다. B1은 `P4_RS1 → 6137 → P4_LS1`로 이동한다. B2/B3는 A1의 반대
+방향 작업이 끝날 때까지 각자의 오른쪽 slot에 머물고, 이후
+`P4_LS2/P4_LS3`로 같은 방향 pipeline 주행을 한다. A1은 B1이 비운
+`P4_RS1`을 목적지로 사용한다.
+
+이 동작은 로봇 이름을 검사하는 production 분기가 아니라 YAML에 정의된
+Holding Bay, block endpoint, direction domain과 route step으로 결정된다.
+다른 현장에서는 slot 수와 route 조합을 설정으로 바꾸고, simulation 좌표는
+차체 크기·제동거리·정지 오차를 반영해 측량한 좌표로 교체해야 한다.
+
 핵심 로그 확인:
 
 ```bash

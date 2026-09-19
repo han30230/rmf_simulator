@@ -52,6 +52,7 @@ class GateJob:
     status: JobStatus = JobStatus.WAITING
     upstream_result: dict[str, Any] | None = None
     last_error: str | None = None
+    wait_for_guarded_route: bool = False
 
     @property
     def current_step(self):
@@ -225,6 +226,18 @@ class TaskGate:
             job.status = JobStatus.COMPLETE
             return {"decision": "COMPLETE"}
 
+        if self._guarded_route_is_pending(job):
+            self.arbiter.cancel(job.robot_id, step.block_id)
+            job.status = JobStatus.WAITING
+            logger.info(
+                "[TRAFFIC] TASK_HELD robot=%s job=%s block=%s "
+                "reason=guarded_route_pending",
+                job.robot_id,
+                job.job_id,
+                step.block_id,
+            )
+            return {"decision": Decision.WAIT.value}
+
         if (
             step.requires_opposite_routes_cleared
             and self._opposite_route_work_remains(step, exclude_job_id=job.job_id)
@@ -252,6 +265,12 @@ class TaskGate:
             )
         if decision is Decision.WAIT:
             job.status = JobStatus.WAITING
+            if (
+                job.step_index == 0
+                and not job.route.requires_no_opposite_jobs
+                and self._has_guarded_alternative(job)
+            ):
+                job.wait_for_guarded_route = True
             logger.info(
                 "[TRAFFIC] TASK_HELD robot=%s job=%s block=%s",
                 job.robot_id,
@@ -337,6 +356,39 @@ class TaskGate:
                         return False
         return True
 
+    def _has_guarded_alternative(self, job: GateJob) -> bool:
+        start_node = self.tracker.current_safe_node(job.robot_id)
+        if start_node is None:
+            return False
+        routes = self.registry.resolve_routes(
+            start_node,
+            _goal_node(job.original_payload),
+        )
+        return any(route.requires_no_opposite_jobs for route in routes)
+
+    def _guarded_route_is_pending(self, job: GateJob) -> bool:
+        if not job.wait_for_guarded_route or job.step_index != 0:
+            return False
+
+        start_node = self.tracker.current_safe_node(job.robot_id)
+        if start_node is None:
+            return True
+        routes = self.registry.resolve_routes(
+            start_node,
+            _goal_node(job.original_payload),
+        )
+        guarded = [route for route in routes if route.requires_no_opposite_jobs]
+        if not guarded:
+            job.wait_for_guarded_route = False
+            return False
+        if any(
+            self._route_is_eligible(route, exclude_job_id=job.job_id)
+            for route in guarded
+        ):
+            job.wait_for_guarded_route = False
+            return False
+        return True
+
     def _refresh_waiting_route(self, job: GateJob) -> None:
         if job.status is not JobStatus.WAITING or job.step_index != 0:
             return
@@ -356,6 +408,8 @@ class TaskGate:
             self.arbiter.cancel(job.robot_id, previous_step.block_id)
         previous_route_id = job.route.route_id
         job.route = selected
+        if selected.requires_no_opposite_jobs:
+            job.wait_for_guarded_route = False
         logger.info(
             "[TRAFFIC] ROUTE_SWITCH robot=%s job=%s from=%s to=%s",
             job.robot_id,
