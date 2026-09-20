@@ -5,11 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 import logging
+import os
 import threading
 import time
-from typing import Any
+from typing import Any, Mapping
 
 from .corridor_registry import CorridorRegistry
+from .deployment import MqttDeploymentConfig
 from .direction_arbiter import DirectionArbiter
 
 logger = logging.getLogger(__name__)
@@ -236,13 +238,25 @@ class MqttStateMonitor:
         port: int,
         topic: str,
         client_id: str = "direction_arbiter_state_monitor",
+        mqtt_config: MqttDeploymentConfig | None = None,
+        environ: Mapping[str, str] | None = None,
     ) -> None:
         import paho.mqtt.client as mqtt
 
         self.tracker = tracker
-        self.host = host
-        self.port = int(port)
+        values = os.environ if environ is None else environ
+        self.host = mqtt_config.host if mqtt_config is not None else host
+        self.port = int(mqtt_config.port if mqtt_config is not None else port)
+        self.keepalive = int(
+            mqtt_config.keepalive_sec if mqtt_config is not None else 60
+        )
         self.topic = topic
+        self.connection_topic = (
+            f"{topic[:-len('state')]}connection"
+            if topic.endswith("state")
+            else f"{topic}/connection"
+        )
+        self._connected = False
         if hasattr(mqtt, "CallbackAPIVersion"):
             self._client = mqtt.Client(
                 callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
@@ -251,10 +265,52 @@ class MqttStateMonitor:
         else:
             self._client = mqtt.Client(client_id=client_id)
         self._client.on_connect = self._on_connect
+        self._client.on_disconnect = self._on_disconnect
         self._client.on_message = self._on_message
+        if mqtt_config is not None:
+            self._client.reconnect_delay_set(
+                min_delay=1,
+                max_delay=mqtt_config.reconnect_max_delay_sec,
+            )
+            username = (
+                mqtt_config.username.resolve(values)
+                if mqtt_config.username is not None
+                else ""
+            )
+            password = (
+                mqtt_config.password.resolve(values)
+                if mqtt_config.password is not None
+                else ""
+            )
+            if username:
+                self._client.username_pw_set(username, password)
+            if bool(mqtt_config.cert_file) != bool(mqtt_config.key_file):
+                raise ValueError(
+                    "MQTT client certificate and key must be configured together"
+                )
+            if mqtt_config.tls_required:
+                if mqtt_config.ca_file is None:
+                    raise ValueError("MQTT TLS requires a CA file")
+                self._client.tls_set(
+                    ca_certs=str(mqtt_config.ca_file),
+                    certfile=(
+                        str(mqtt_config.cert_file)
+                        if mqtt_config.cert_file is not None
+                        else None
+                    ),
+                    keyfile=(
+                        str(mqtt_config.key_file)
+                        if mqtt_config.key_file is not None
+                        else None
+                    ),
+                )
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
 
     def start(self) -> None:
-        self._client.connect(self.host, self.port)
+        self._client.connect(self.host, self.port, keepalive=self.keepalive)
         self._client.loop_start()
 
     def stop(self) -> None:
@@ -264,16 +320,32 @@ class MqttStateMonitor:
     def _on_connect(self, client, userdata, flags, rc, *args) -> None:
         code = rc.value if hasattr(rc, "value") else rc
         if code == 0:
+            self._connected = True
             client.subscribe(self.topic, qos=1)
-            logger.info("[TRAFFIC] MQTT state subscription: %s", self.topic)
+            client.subscribe(self.connection_topic, qos=1)
+            logger.info(
+                "[TRAFFIC] MQTT subscriptions: %s, %s",
+                self.topic,
+                self.connection_topic,
+            )
         else:
+            self._connected = False
             logger.error("[TRAFFIC] MQTT connection failed rc=%s", rc)
+
+    def _on_disconnect(self, client, userdata, flags_or_rc, rc=None, *args) -> None:
+        self._connected = False
+        code = flags_or_rc if rc is None else rc
+        if hasattr(code, "value"):
+            code = code.value
+        if code:
+            logger.warning("[TRAFFIC] MQTT disconnected rc=%s", code)
 
     def _on_message(self, client, userdata, message) -> None:
         try:
             payload = json.loads(message.payload.decode("utf-8"))
             parts = message.topic.split("/")
             robot_id = parts[-2]
-            self.tracker.ingest_state(robot_id, payload)
+            if parts[-1] == "state":
+                self.tracker.ingest_state(robot_id, payload)
         except (IndexError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
             logger.error("[TRAFFIC] invalid state message topic=%s error=%s", message.topic, error)
