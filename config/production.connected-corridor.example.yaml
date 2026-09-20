@@ -1,0 +1,45 @@
+# Field template only. Production preflight intentionally rejects replacement
+# markers and the simulation navigation graph until site values are supplied.
+deployment:
+  mode: production
+mqtt:
+  host: REPLACE_ME_BROKER
+  port: 8883
+  keepalive_sec: 30
+  reconnect_max_delay_sec: 30
+  username: {env: FAB_MQTT_USER}
+  password: {env: FAB_MQTT_PASSWORD}
+  tls:
+    required: true
+    ca_file: REPLACE_ME_CA_FILE
+    client_cert_file: REPLACE_ME_CLIENT_CERT_FILE
+    client_key_file: REPLACE_ME_CLIENT_KEY_FILE
+robots:
+  REPLACE_ME_ROBOT:
+    manufacturer: REPLACE_ME_MANUFACTURER
+    serial_number: REPLACE_ME_SERIAL
+    allowed_map_ids: [REPLACE_ME_MAP_ID]
+    required: true
+calibration:
+  rmf: [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]
+  robot: [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]
+physical:
+  footprint_radius: 0.5
+  vicinity_radius: 0.7
+  max_linear_speed: 0.5
+  max_acceleration: 0.25
+  max_deceleration: 0.25
+telemetry:
+  state_timeout: 5.0
+  connection_timeout: 10.0
+  operational_checks_required: true
+rmf_api:
+  url: REPLACE_ME_RMF_API_URL
+  bearer_token: {env: RMF_API_TOKEN}
+paths:
+  fleet_config: ../rmf_platform-main/src/rmf_vda5050_fleet_adapter/config/connected_corridor_chain.yaml
+  nav_graph: ../rmf_platform-main/src/rmf_vda5050_fleet_adapter/map/connected_corridor_chain.yaml
+  corridor_config: corridor_blocks_connected_chain.yaml
+  compose_files:
+    - ../rmf_platform-main/docker-compose.yml
+    - ../rmf_platform-main/docker-compose.connected-corridor-chain.yml
