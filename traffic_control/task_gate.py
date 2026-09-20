@@ -107,6 +107,13 @@ class TaskGate:
             return {"decision": "BYPASS", "upstream": upstream}
 
         robot_id = _robot_id(payload)
+        eligibility = self.tracker.eligibility(robot_id)
+        if not eligibility.eligible:
+            return {
+                "decision": Decision.BLOCKED.value,
+                "reason": "robot_not_eligible",
+                "eligibility_reasons": list(eligibility.reasons),
+            }
         goal_node = _goal_node(payload)
         start_node = self.tracker.current_safe_node(robot_id)
         if start_node is None:
@@ -344,6 +351,14 @@ class TaskGate:
             }
 
     def _attempt_chain_leg(self, job: ChainGateJob) -> dict[str, Any]:
+        eligibility = self.tracker.eligibility(job.robot_id)
+        if not eligibility.eligible:
+            job.status = JobStatus.WAITING
+            return {
+                "decision": Decision.BLOCKED.value,
+                "reason": "robot_not_eligible",
+                "eligibility_reasons": list(eligibility.reasons),
+            }
         if job.active_plan is not None:
             decision = self.arbiter.decision_for_authority(job.robot_id)
             if decision is Decision.ADMIT:
@@ -511,6 +526,14 @@ class TaskGate:
         return False
 
     def _attempt_current_step(self, job: GateJob) -> dict[str, Any]:
+        eligibility = self.tracker.eligibility(job.robot_id)
+        if not eligibility.eligible:
+            job.status = JobStatus.WAITING
+            return {
+                "decision": Decision.BLOCKED.value,
+                "reason": "robot_not_eligible",
+                "eligibility_reasons": list(eligibility.reasons),
+            }
         self._refresh_waiting_route(job)
         step = job.current_step
         if step is None:

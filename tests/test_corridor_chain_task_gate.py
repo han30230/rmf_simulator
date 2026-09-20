@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from urllib.error import HTTPError
+import time
 import unittest
 
+from traffic_control.deployment import RobotDeploymentConfig
+from traffic_control.eligibility import RobotEligibilityPolicy
+from traffic_control.robot_tracker import RobotTracker
 from traffic_control.task_gate import TaskGate
 from traffic_control.models import Direction
 
@@ -117,6 +121,62 @@ class CorridorChainTaskGateTests(unittest.TestCase):
         self.assertEqual(result["decision"], "FORWARD_UNKNOWN")
         self.assertIsNotNone(arbiter.authority_for_robot("A1"))
         self.assertEqual(registry.holding_bays["RIGHT_1"].reservations, {"A1"})
+
+    def test_operational_policy_blocks_submission_until_connection_is_online(self) -> None:
+        registry, arbiter, _, _ = tracking_components()
+        policy = RobotEligibilityPolicy(
+            robots={
+                "A1": RobotDeploymentConfig(
+                    manufacturer="vendor",
+                    serial_number="A1",
+                    allowed_map_ids=("L1",),
+                )
+            },
+            state_timeout=5.0,
+            connection_timeout=5.0,
+        )
+        tracker = RobotTracker(
+            registry, arbiter, telemetry_timeout=5.0, eligibility_policy=policy
+        )
+        received_at = time.monotonic()
+        initial = state("L1", -1.0, 1.0, driving=False)
+        initial.update({
+            "headerId": 1,
+            "timestamp": "2026-09-20T00:00:01Z",
+            "manufacturer": "vendor",
+            "serialNumber": "A1",
+            "operatingMode": "AUTOMATIC",
+            "paused": False,
+            "safetyState": {"eStop": "NONE", "fieldViolation": False},
+            "errors": [],
+        })
+        initial["agvPosition"].update({
+            "mapId": "L1", "positionInitialized": True
+        })
+        tracker.ingest_state("A1", initial, received_at=received_at)
+        gate = TaskGate(
+            registry, arbiter, tracker, lambda request: {"success": True}
+        )
+
+        blocked = gate.submit(payload("A1", "R1"))
+
+        self.assertEqual(blocked["decision"], "BLOCKED")
+        self.assertEqual(blocked["reason"], "robot_not_eligible")
+        self.assertIn("connection.missing", blocked["eligibility_reasons"])
+
+        tracker.ingest_connection(
+            "A1",
+            {
+                "headerId": 1,
+                "timestamp": "2026-09-20T00:00:02Z",
+                "manufacturer": "vendor",
+                "serialNumber": "A1",
+                "connectionState": "ONLINE",
+            },
+            received_at=received_at,
+        )
+        admitted = gate.submit(payload("A1", "R1"))
+        self.assertEqual(admitted["decision"], "ADMIT")
 
 
 if __name__ == "__main__":

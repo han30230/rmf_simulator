@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 import logging
 import os
@@ -13,6 +13,7 @@ from typing import Any, Mapping
 from .corridor_registry import CorridorRegistry
 from .deployment import MqttDeploymentConfig
 from .direction_arbiter import DirectionArbiter
+from .eligibility import EligibilityResult, RobotEligibilityPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,21 @@ class RobotTelemetry:
     current_block: str | None = None
     current_hb: str | None = None
     faulted: bool = False
+    state_header_id: int | None = None
+    state_timestamp: str = ""
+    connection_received_at: float | None = None
+    connection_header_id: int | None = None
+    connection_timestamp: str = ""
+    connection_state: str = ""
+    manufacturer: str = ""
+    serial_number: str = ""
+    position_initialized: bool = False
+    map_id: str = ""
+    operating_mode: str = ""
+    e_stop: str = ""
+    field_violation: bool = False
+    paused: bool = False
+    error_levels: tuple[str, ...] = ()
 
 
 class RobotTracker:
@@ -39,10 +55,12 @@ class RobotTracker:
         arbiter: DirectionArbiter,
         *,
         telemetry_timeout: float = 5.0,
+        eligibility_policy: RobotEligibilityPolicy | None = None,
     ) -> None:
         self.registry = registry
         self.arbiter = arbiter
         self.telemetry_timeout = float(telemetry_timeout)
+        self.eligibility_policy = eligibility_policy
         self._robots: dict[str, RobotTelemetry] = {}
         self._lock = threading.RLock()
 
@@ -56,6 +74,19 @@ class RobotTracker:
         now = time.monotonic() if received_at is None else float(received_at)
         with self._lock:
             previous = self._robots.get(robot_id)
+            if not self._identity_matches(robot_id, payload):
+                logger.error("[TRAFFIC] rejected state identity robot=%s", robot_id)
+                return
+            header_id = self._header_id(payload)
+            timestamp = str(payload.get("timestamp") or "")
+            if previous is not None and not self._is_newer(
+                header_id,
+                timestamp,
+                previous.state_header_id,
+                previous.state_timestamp,
+            ):
+                logger.warning("[TRAFFIC] ignored out-of-order state robot=%s", robot_id)
+                return
             old_block = previous.current_block if previous else None
             last_node_id = str(payload.get("lastNodeId") or "")
             release = self.arbiter.release_node_for_robot(robot_id)
@@ -168,8 +199,140 @@ class RobotTracker:
                 current_block=block_id,
                 current_hb=hb_id if block_id is None else None,
                 faulted=False,
+                state_header_id=header_id,
+                state_timestamp=timestamp,
+                connection_received_at=(
+                    previous.connection_received_at if previous else None
+                ),
+                connection_header_id=(
+                    previous.connection_header_id if previous else None
+                ),
+                connection_timestamp=(
+                    previous.connection_timestamp if previous else ""
+                ),
+                connection_state=(previous.connection_state if previous else ""),
+                manufacturer=str(payload.get("manufacturer") or ""),
+                serial_number=str(payload.get("serialNumber") or ""),
+                position_initialized=bool(
+                    isinstance(position, dict)
+                    and position.get("positionInitialized", False)
+                ),
+                map_id=(
+                    str(position.get("mapId") or "")
+                    if isinstance(position, dict)
+                    else ""
+                ),
+                operating_mode=str(payload.get("operatingMode") or ""),
+                e_stop=str((payload.get("safetyState") or {}).get("eStop") or ""),
+                field_violation=bool(
+                    (payload.get("safetyState") or {}).get("fieldViolation", False)
+                ),
+                paused=bool(payload.get("paused", False)),
+                error_levels=tuple(
+                    str(item.get("errorLevel") or "").upper()
+                    for item in (payload.get("errors") or [])
+                    if isinstance(item, dict) and item.get("errorLevel")
+                ),
             )
             self._robots[robot_id] = telemetry
+            self._fault_if_unsafe_inside(robot_id, now)
+
+    def ingest_connection(
+        self,
+        robot_id: str,
+        payload: dict[str, Any],
+        *,
+        received_at: float | None = None,
+    ) -> None:
+        now = time.monotonic() if received_at is None else float(received_at)
+        with self._lock:
+            if not self._identity_matches(robot_id, payload):
+                logger.error("[TRAFFIC] rejected connection identity robot=%s", robot_id)
+                return
+            previous = self._robots.get(robot_id)
+            header_id = self._header_id(payload)
+            timestamp = str(payload.get("timestamp") or "")
+            if previous is not None and not self._is_newer(
+                header_id,
+                timestamp,
+                previous.connection_header_id,
+                previous.connection_timestamp,
+            ):
+                logger.warning(
+                    "[TRAFFIC] ignored out-of-order connection robot=%s", robot_id
+                )
+                return
+            if previous is None:
+                previous = RobotTelemetry(robot_id=robot_id, received_at=now)
+            self._robots[robot_id] = replace(
+                previous,
+                connection_received_at=now,
+                connection_header_id=header_id,
+                connection_timestamp=timestamp,
+                connection_state=str(payload.get("connectionState") or ""),
+                manufacturer=str(payload.get("manufacturer") or previous.manufacturer),
+                serial_number=str(payload.get("serialNumber") or previous.serial_number),
+            )
+            self._fault_if_unsafe_inside(robot_id, now)
+
+    @staticmethod
+    def _header_id(payload: dict[str, Any]) -> int | None:
+        value = payload.get("headerId")
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _is_newer(
+        header_id: int | None,
+        timestamp: str,
+        previous_header_id: int | None,
+        previous_timestamp: str,
+    ) -> bool:
+        if previous_timestamp and timestamp:
+            return timestamp > previous_timestamp
+        if previous_header_id is not None and header_id is not None:
+            return header_id > previous_header_id
+        return True
+
+    def _identity_matches(self, robot_id: str, payload: dict[str, Any]) -> bool:
+        if self.eligibility_policy is None:
+            return True
+        expected = self.eligibility_policy.robots.get(robot_id)
+        if expected is None:
+            return False
+        manufacturer = str(payload.get("manufacturer") or "")
+        serial_number = str(payload.get("serialNumber") or "")
+        return (
+            manufacturer == expected.manufacturer
+            and serial_number == expected.serial_number
+        )
+
+    def eligibility(
+        self, robot_id: str, *, now: float | None = None
+    ) -> EligibilityResult:
+        if self.eligibility_policy is None:
+            return EligibilityResult(True, ())
+        current = time.monotonic() if now is None else float(now)
+        with self._lock:
+            return self.eligibility_policy.evaluate(
+                self._robots.get(robot_id), current
+            )
+
+    def _fault_if_unsafe_inside(self, robot_id: str, now: float) -> None:
+        telemetry = self._robots.get(robot_id)
+        if telemetry is None or self.eligibility_policy is None:
+            return
+        authority = self.arbiter.authority_for_robot(robot_id)
+        if telemetry.current_block is None and authority is None:
+            return
+        result = self.eligibility_policy.evaluate(telemetry, now)
+        if result.eligible or telemetry.faulted:
+            return
+        reason = result.reasons[0]
+        telemetry.faulted = True
+        self.arbiter.fault(robot_id, reason=reason)
 
     def current_safe_node(self, robot_id: str) -> str | None:
         with self._lock:
@@ -222,6 +385,20 @@ class RobotTracker:
                     "current_block": state.current_block,
                     "current_hb": state.current_hb,
                     "faulted": state.faulted,
+                    "state_header_id": state.state_header_id,
+                    "connection_state": state.connection_state,
+                    "connection_received_at": state.connection_received_at,
+                    "position_initialized": state.position_initialized,
+                    "map_id": state.map_id,
+                    "operating_mode": state.operating_mode,
+                    "e_stop": state.e_stop,
+                    "field_violation": state.field_violation,
+                    "paused": state.paused,
+                    "error_levels": list(state.error_levels),
+                    "eligibility": {
+                        "eligible": self.eligibility(robot_id).eligible,
+                        "reasons": list(self.eligibility(robot_id).reasons),
+                    },
                 }
                 for robot_id, state in sorted(self._robots.items())
             }
@@ -347,5 +524,7 @@ class MqttStateMonitor:
             robot_id = parts[-2]
             if parts[-1] == "state":
                 self.tracker.ingest_state(robot_id, payload)
+            elif parts[-1] == "connection":
+                self.tracker.ingest_connection(robot_id, payload)
         except (IndexError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
             logger.error("[TRAFFIC] invalid state message topic=%s error=%s", message.topic, error)
