@@ -258,3 +258,27 @@ python3 -m json.tool
 ```
 
 실행 파일과 자세한 새 PC 설치법은 저장소 루트의 `README.md`를 우선 기준으로 한다.
+
+## Production과 시뮬레이션의 구분
+
+기존 `start_p4_*`, `start_connected_corridor_chain.sh`은 로컬 Simulator와 개발용
+MQTT/RMF 구성을 시작하는 시뮬레이션 명령이다. 실제 로봇 연결에는 이 launcher를
+사용하지 않는다.
+
+실차 profile은 다음 명령으로 먼저 검사한다.
+
+```bash
+.venv/bin/python scripts/validate_production_deployment.py /path/to/site-production.yaml
+```
+
+검사가 통과한 profile만 production launcher에 전달한다.
+
+```bash
+export RMF_API_BEARER_TOKEN='<site service token>'
+./scripts/start_production_corridor.sh /path/to/site-production.yaml
+```
+
+production launcher는 Simulator와 Visualizer를 실행하지 않고 외부 MQTT broker,
+RMF 서비스와 실제 Fleet Adapter만 사용한다. 모든 필수 로봇이 fresh telemetry로
+configured SafeStop에 정지한 clean-start 상태가 확인되기 전에는 `/ready`가 503을
+반환하고 Task Gate가 새 작업을 거부한다.

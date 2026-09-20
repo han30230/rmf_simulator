@@ -45,6 +45,7 @@ class DeploymentProfileTests(unittest.TestCase):
             "mqtt": {
                 "host": "mqtt.fab.example",
                 "port": 8883,
+                "state_topic": "uagv/v2.0.0/vendor/+/state",
                 "keepalive_sec": 30,
                 "reconnect_max_delay_sec": 30,
                 "username": {"env": "FAB_MQTT_USER"},
@@ -177,6 +178,16 @@ class DeploymentProfileTests(unittest.TestCase):
         self.assertIn("mqtt.username.unresolved", errors)
         self.assertIn("mqtt.password.unresolved", errors)
         self.assertIn("rmf_api.bearer_token.unresolved", errors)
+
+    def test_production_requires_an_explicit_vda5050_state_topic(self) -> None:
+        raw = self._raw()
+        raw["mqtt"].pop("state_topic")
+
+        errors = DeploymentProfile.load(
+            self._write(raw), environ=self._environment()
+        ).validate()
+
+        self.assertIn("mqtt.state_topic.placeholder", errors)
 
     def test_production_rejects_missing_client_key_and_nonpositive_values(self) -> None:
         raw = self._raw()

@@ -298,6 +298,35 @@ docs/superpowers/plans/          구현 계획과 검증 항목
 
 telemetry가 release node를 놓치면 Arbiter는 fail-closed 상태를 유지하도록 설계되어 있다.
 
+## 실차용 production profile
+
+시뮬레이션 실행 파일과 별도로 `config/production.connected-corridor.example.yaml`을
+현장 템플릿으로 사용한다. 예제의 `REPLACE_ME` 값, simulation 전용 map,
+누락된 secret 또는 좌표 보정값은 의도적으로 preflight에 실패한다.
+
+```bash
+.venv/bin/python scripts/validate_production_deployment.py \
+  config/production.connected-corridor.example.yaml
+```
+
+현장값을 모두 채운 뒤에는 Simulator를 시작하지 않는 launcher를 사용한다.
+MQTT 비밀번호, 인증서 private key와 RMF token은 Git에 저장하지 않고 환경변수
+또는 읽기 제한된 파일로 제공한다.
+
+```bash
+export RMF_API_BEARER_TOKEN='<site service token>'
+./scripts/start_production_corridor.sh /path/to/site-production.yaml
+
+curl -sS http://127.0.0.1:8200/health
+curl -sS http://127.0.0.1:8200/ready
+```
+
+`/health`는 프로세스 생존 여부이고 `/ready`는 MQTT/RMF 연결, 필수 로봇
+telemetry와 SafeStop clean-start 조건을 모두 만족해 새 작업을 받아도 되는지를
+나타낸다. 실제 적용 절차와 남은 제한은
+`docs/RMF_VDA5050_Passing_Bay_PoC_Simulation_and_Field_Guide_2026-09-20.docx`에
+정리되어 있다.
+
 ## Git에 포함하지 않는 항목
 
 - `.venv`, Python/ROS/Docker build cache

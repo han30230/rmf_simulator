@@ -18,8 +18,9 @@ import os
 from pathlib import Path
 import threading
 import time
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 from urllib import error as urllib_error
+from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 from uuid import uuid4
 
@@ -28,6 +29,9 @@ from .corridor_registry import CorridorRegistry
 from .direction_arbiter import DirectionArbiter
 from .models import Decision, RouteIntent, RouteStep
 from .robot_tracker import MqttStateMonitor, RobotTracker
+
+if TYPE_CHECKING:
+    from .readiness import RuntimeReadiness
 
 logger = logging.getLogger(__name__)
 
@@ -87,11 +91,13 @@ class TaskGate:
         arbiter: DirectionArbiter,
         tracker: RobotTracker,
         forwarder: Forwarder,
+        readiness: "RuntimeReadiness | None" = None,
     ) -> None:
         self.registry = registry
         self.arbiter = arbiter
         self.tracker = tracker
         self.forwarder = forwarder
+        self.readiness = readiness
         self._jobs: dict[str, GateJob] = {}
         self._chain_jobs: dict[str, ChainGateJob] = {}
         self._chain_planner = CorridorChainPlanner(registry)
@@ -105,6 +111,10 @@ class TaskGate:
         if not self.registry.enabled:
             upstream = self.forwarder(deepcopy(payload))
             return {"decision": "BYPASS", "upstream": upstream}
+
+        runtime_rejection = self._runtime_rejection()
+        if runtime_rejection is not None:
+            return runtime_rejection
 
         robot_id = _robot_id(payload)
         eligibility = self.tracker.eligibility(robot_id)
@@ -345,12 +355,26 @@ class TaskGate:
             )
             return {
                 "enabled": self.registry.enabled,
+                "deployment": (
+                    self.readiness.profile.redacted_snapshot()
+                    if self.readiness is not None
+                    else {"mode": "simulation"}
+                ),
+                "readiness": (
+                    self.readiness.ready()
+                    if self.readiness is not None
+                    else {"ready": True, "reason": "simulation"}
+                ),
                 "jobs": jobs,
                 "arbiter": self.arbiter.snapshot(),
                 "robots": self.tracker.snapshot(),
             }
 
     def _attempt_chain_leg(self, job: ChainGateJob) -> dict[str, Any]:
+        runtime_rejection = self._runtime_rejection()
+        if runtime_rejection is not None:
+            job.status = JobStatus.WAITING
+            return runtime_rejection
         eligibility = self.tracker.eligibility(job.robot_id)
         if not eligibility.eligible:
             job.status = JobStatus.WAITING
@@ -526,6 +550,10 @@ class TaskGate:
         return False
 
     def _attempt_current_step(self, job: GateJob) -> dict[str, Any]:
+        runtime_rejection = self._runtime_rejection()
+        if runtime_rejection is not None:
+            job.status = JobStatus.WAITING
+            return runtime_rejection
         eligibility = self.tracker.eligibility(job.robot_id)
         if not eligibility.eligible:
             job.status = JobStatus.WAITING
@@ -827,14 +855,36 @@ class TaskGate:
             None,
         )
 
+    def _runtime_rejection(self) -> dict[str, Any] | None:
+        if self.readiness is None:
+            return None
+        status = self.readiness.ready()
+        if status["ready"]:
+            return None
+        return {
+            "decision": Decision.BLOCKED.value,
+            "reason": "runtime_not_ready",
+            "readiness": status,
+        }
+
 
 class HttpTaskForwarder:
     """Small no-proxy JSON client for the existing RMF API server."""
 
-    def __init__(self, url: str, *, timeout: float = 10.0) -> None:
+    def __init__(
+        self,
+        url: str,
+        *,
+        timeout: float = 10.0,
+        bearer_token: str | None = None,
+    ) -> None:
         self.url = url
         self.timeout = float(timeout)
-        self.bearer_token = os.environ.get("RMF_API_BEARER_TOKEN", "").strip()
+        self.bearer_token = (
+            os.environ.get("RMF_API_BEARER_TOKEN", "")
+            if bearer_token is None
+            else bearer_token
+        ).strip()
         self._opener = urllib_request.build_opener(urllib_request.ProxyHandler({}))
 
     def __call__(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -851,6 +901,20 @@ class HttpTaskForwarder:
         with self._opener.open(req, timeout=self.timeout) as response:
             raw = response.read()
         return json.loads(raw.decode("utf-8")) if raw else {"success": True}
+
+    def probe(self) -> bool:
+        parsed = urllib_parse.urlsplit(self.url)
+        root = urllib_parse.urlunsplit(
+            (parsed.scheme, parsed.netloc, "/", "", "")
+        )
+        request = urllib_request.Request(root, method="GET")
+        try:
+            with self._opener.open(request, timeout=min(self.timeout, 2.0)):
+                return True
+        except urllib_error.HTTPError as error:
+            return error.code == 404
+        except (OSError, urllib_error.URLError):
+            return False
 
 
 class PeriodicGateRunner:
@@ -883,6 +947,23 @@ def create_app(gate: TaskGate):
     from fastapi import FastAPI, HTTPException, Query
 
     app = FastAPI(title="RMF Direction Arbiter Task Gate")
+
+    @app.get("/health")
+    def health():
+        if gate.readiness is None:
+            return {"healthy": True, "dependencies": {}}
+        return gate.readiness.health()
+
+    @app.get("/ready")
+    def ready():
+        status = (
+            gate.readiness.ready()
+            if gate.readiness is not None
+            else {"ready": True, "reason": "simulation"}
+        )
+        if not status["ready"]:
+            raise HTTPException(status_code=503, detail=status)
+        return status
 
     @app.post("/tasks/robot_task")
     def submit_task(payload: dict[str, Any]):
@@ -938,6 +1019,7 @@ def _goal_node(payload: dict[str, Any]) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="config/corridor_blocks.yaml")
+    parser.add_argument("--deployment-profile")
     parser.add_argument("--listen-host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8200)
     parser.add_argument(
@@ -955,23 +1037,67 @@ def main(argv: list[str] | None = None) -> int:
         level=getattr(logging, args.log_level.upper()),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    registry = CorridorRegistry.from_yaml(Path(args.config))
+    profile = None
+    if args.deployment_profile:
+        from .deployment import DeploymentProfile
+
+        profile = DeploymentProfile.load(Path(args.deployment_profile))
+        profile.require_valid()
+    config_path = (
+        profile.paths.corridor_config
+        if profile is not None and profile.paths.corridor_config is not None
+        else Path(args.config)
+    )
+    registry = CorridorRegistry.from_yaml(config_path)
     arbiter = DirectionArbiter(registry)
+    eligibility_policy = None
+    if profile is not None and profile.telemetry.operational_checks_required:
+        from .eligibility import RobotEligibilityPolicy
+
+        eligibility_policy = RobotEligibilityPolicy(
+            robots=profile.robots,
+            state_timeout=profile.telemetry.state_timeout,
+            connection_timeout=profile.telemetry.connection_timeout,
+        )
     tracker = RobotTracker(
         registry,
         arbiter,
         telemetry_timeout=float(registry.settings.get("telemetry_timeout", 5.0)),
+        eligibility_policy=eligibility_policy,
     )
-    gate = TaskGate(registry, arbiter, tracker, HttpTaskForwarder(args.upstream))
+    upstream = profile.rmf_api.url if profile is not None else args.upstream
+    token = (
+        profile.rmf_api.bearer_token.resolve(os.environ)
+        if profile is not None and profile.rmf_api.bearer_token is not None
+        else None
+    )
+    forwarder = HttpTaskForwarder(upstream, bearer_token=token)
     monitor = (
         MqttStateMonitor(
             tracker,
-            host=args.mqtt_host,
-            port=args.mqtt_port,
-            topic=args.mqtt_topic,
+            host=(profile.mqtt.host if profile is not None else args.mqtt_host),
+            port=(profile.mqtt.port if profile is not None else args.mqtt_port),
+            topic=(
+                profile.mqtt.state_topic if profile is not None else args.mqtt_topic
+            ),
+            mqtt_config=(profile.mqtt if profile is not None else None),
         )
         if registry.enabled
         else None
+    )
+    readiness = None
+    if profile is not None:
+        from .readiness import RuntimeReadiness
+
+        readiness = RuntimeReadiness(
+            profile,
+            registry,
+            tracker,
+            mqtt_connected=lambda: bool(monitor and monitor.is_connected),
+            rmf_probe=forwarder.probe,
+        )
+    gate = TaskGate(
+        registry, arbiter, tracker, forwarder, readiness=readiness
     )
     runner = PeriodicGateRunner(
         gate,

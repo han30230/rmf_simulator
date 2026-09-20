@@ -3,14 +3,24 @@ set -euo pipefail
 
 workspace_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 config_path="${1:-${workspace_dir}/config/corridor_blocks.yaml}"
+deployment_profile=""
+if [[ "${2:-}" == "--deployment-profile" ]]; then
+  deployment_profile="${3:?--deployment-profile requires a path}"
+elif [[ -n "${2:-}" ]]; then
+  deployment_profile="${2}"
+fi
 python_bin="${PYTHON_BIN:-python3}"
 
 cd "${workspace_dir}"
-exec "${python_bin}" -m traffic_control.task_gate \
-  --config "${config_path}" \
-  --listen-host 127.0.0.1 \
-  --port 8200 \
-  --upstream http://127.0.0.1:8100/tasks/robot_task \
-  --mqtt-host 127.0.0.1 \
-  --mqtt-port 1883 \
-  --mqtt-topic 'uagv/v2.0.0/inatech/+/state'
+args=("${python_bin}" -m traffic_control.task_gate
+  --config "${config_path}"
+  --listen-host 127.0.0.1
+  --port 8200
+  --upstream http://127.0.0.1:8100/tasks/robot_task
+  --mqtt-host 127.0.0.1
+  --mqtt-port 1883
+  --mqtt-topic 'uagv/v2.0.0/inatech/+/state')
+if [[ -n "${deployment_profile}" ]]; then
+  args+=(--deployment-profile "${deployment_profile}")
+fi
+exec "${args[@]}"

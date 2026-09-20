@@ -5,6 +5,7 @@ deployment:
 mqtt:
   host: REPLACE_ME_BROKER
   port: 8883
+  state_topic: REPLACE_ME_VDA5050_PREFIX/+/state
   keepalive_sec: 30
   reconnect_max_delay_sec: 30
   username: {env: FAB_MQTT_USER}

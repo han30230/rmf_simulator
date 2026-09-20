@@ -104,6 +104,7 @@ class MqttDeploymentConfig:
     port: int
     keepalive_sec: int
     reconnect_max_delay_sec: int
+    state_topic: str = ""
     username: SecretRef | None = None
     password: SecretRef | None = None
     ca_file: Path | None = None
@@ -215,6 +216,7 @@ class DeploymentProfile:
                 port=int(mqtt_raw.get("port", 1883)),
                 keepalive_sec=int(mqtt_raw.get("keepalive_sec", 60)),
                 reconnect_max_delay_sec=int(mqtt_raw.get("reconnect_max_delay_sec", 60)),
+                state_topic=str(mqtt_raw.get("state_topic", "")),
                 username=SecretRef.from_raw(mqtt_raw.get("username"), root=root),
                 password=SecretRef.from_raw(mqtt_raw.get("password"), root=root),
                 ca_file=_resolved_path(root, tls_raw.get("ca_file")),
@@ -267,6 +269,8 @@ class DeploymentProfile:
 
         if _is_placeholder(self.mqtt.host):
             errors.add("mqtt.host.placeholder")
+        if _is_placeholder(self.mqtt.state_topic):
+            errors.add("mqtt.state_topic.placeholder")
         for name in ("port", "keepalive_sec", "reconnect_max_delay_sec"):
             if getattr(self.mqtt, name) <= 0:
                 errors.add(f"mqtt.{name}.nonpositive")
@@ -363,6 +367,7 @@ class DeploymentProfile:
             "mqtt": {
                 "host": self.mqtt.host,
                 "port": self.mqtt.port,
+                "state_topic": self.mqtt.state_topic,
                 "username": "<redacted>",
                 "password": "<redacted>",
                 "tls_required": self.mqtt.tls_required,

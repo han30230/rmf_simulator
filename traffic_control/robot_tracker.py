@@ -320,6 +320,11 @@ class RobotTracker:
                 self._robots.get(robot_id), current
             )
 
+    def telemetry(self, robot_id: str) -> RobotTelemetry | None:
+        with self._lock:
+            item = self._robots.get(robot_id)
+            return replace(item) if item is not None else None
+
     def _fault_if_unsafe_inside(self, robot_id: str, now: float) -> None:
         telemetry = self._robots.get(robot_id)
         if telemetry is None or self.eligibility_policy is None:
