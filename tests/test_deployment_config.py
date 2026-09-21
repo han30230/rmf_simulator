@@ -82,7 +82,7 @@ class DeploymentProfileTests(unittest.TestCase):
                 "operational_checks_required": True,
             },
             "rmf_api": {
-                "url": "https://rmf.fab.example/tasks/robot_task",
+                "url": "http://127.0.0.1:8100/tasks/robot_task",
                 "bearer_token": {"env": "RMF_API_TOKEN"},
             },
             "paths": {
@@ -138,6 +138,83 @@ class DeploymentProfileTests(unittest.TestCase):
         self.assertIn("mqtt.host.placeholder", errors)
         self.assertIn("map.simulation_only", errors)
 
+    def test_production_rejects_reconstructed_map_and_identity_mismatch(self) -> None:
+        raw = self._raw()
+        raw["robots"]["ROBOT_01"]["serial_number"] = "SERIAL_OTHER"
+        raw["robots"]["ROBOT_01"]["allowed_map_ids"] = ["REPLACE_ME_MAP"]
+        self.map_path.write_text(
+            yaml.safe_dump({
+                "building_name": "reconstructed_lab",
+                "metadata": {"reconstructed_example": True},
+                "levels": {"L1": {"vertices": [], "lanes": []}},
+            }),
+            encoding="utf-8",
+        )
+
+        errors = DeploymentProfile.load(
+            self._write(raw), environ=self._environment()
+        ).validate()
+
+        self.assertIn("map.reconstructed_example", errors)
+        self.assertIn("robots.ROBOT_01.serial_mismatch", errors)
+        self.assertIn("robots.ROBOT_01.allowed_map_ids.placeholder", errors)
+
+    def test_production_requires_standard_state_topic_and_one_manufacturer(self) -> None:
+        raw = self._raw()
+        raw["mqtt"]["state_topic"] = "custom/state"
+        raw["robots"]["ROBOT_02"] = {
+            "manufacturer": "another_vendor",
+            "serial_number": "ROBOT_02",
+            "allowed_map_ids": ["FAB_L1"],
+            "required": True,
+        }
+
+        errors = DeploymentProfile.load(
+            self._write(raw), environ=self._environment()
+        ).validate()
+
+        self.assertIn("mqtt.state_topic.invalid", errors)
+        self.assertIn("robots.manufacturer.multiple", errors)
+
+    def test_production_rejects_robot_identity_that_breaks_mqtt_topics(self) -> None:
+        raw = self._raw()
+        raw["robots"]["ROBOT_01"]["manufacturer"] = "vendor/branch"
+        raw["robots"]["ROBOT_01"]["serial_number"] = "ROBOT_01/+"
+
+        errors = DeploymentProfile.load(
+            self._write(raw), environ=self._environment()
+        ).validate()
+
+        self.assertIn("robots.ROBOT_01.identity.topic_segment", errors)
+
+    def test_production_rejects_nonfinite_physical_and_timeout_values(self) -> None:
+        raw = self._raw()
+        raw["physical"]["max_linear_speed"] = float("nan")
+        raw["telemetry"]["state_timeout"] = float("inf")
+
+        errors = DeploymentProfile.load(
+            self._write(raw), environ=self._environment()
+        ).validate()
+
+        self.assertIn("physical.max_linear_speed.nonpositive", errors)
+        self.assertIn("telemetry.state_timeout.nonpositive", errors)
+
+    def test_production_rejects_bad_calibration_fit_and_scale(self) -> None:
+        raw = self._raw()
+        raw["calibration"].update({
+            "robot": [[0.0, 0.0], [10.0, 0.0], [0.0, -10.0]],
+            "max_residual": 0.01,
+            "min_scale": 0.9,
+            "max_scale": 1.1,
+        })
+
+        errors = DeploymentProfile.load(
+            self._write(raw), environ=self._environment()
+        ).validate()
+
+        self.assertIn("calibration.scale.out_of_range", errors)
+        self.assertIn("calibration.residual.excessive", errors)
+
     def test_production_requires_three_non_collinear_reference_points(self) -> None:
         raw = self._raw()
         raw["calibration"] = {
@@ -167,6 +244,26 @@ class DeploymentProfileTests(unittest.TestCase):
 
         self.assertIn("robots.identity.duplicate", errors)
         self.assertIn("robots.ROBOT_02.allowed_map_ids.empty", errors)
+
+    def test_production_requires_at_least_one_required_robot(self) -> None:
+        raw = self._raw()
+        raw["robots"]["ROBOT_01"]["required"] = False
+
+        errors = DeploymentProfile.load(
+            self._write(raw), environ=self._environment()
+        ).validate()
+
+        self.assertIn("robots.required.empty", errors)
+
+    def test_production_rejects_remotely_reachable_rmf_task_endpoint(self) -> None:
+        raw = self._raw()
+        raw["rmf_api"]["url"] = "https://rmf.fab.example/tasks/robot_task"
+
+        errors = DeploymentProfile.load(
+            self._write(raw), environ=self._environment()
+        ).validate()
+
+        self.assertIn("rmf_api.url.local_required", errors)
 
     def test_production_rejects_unresolved_secrets_and_insecure_tls(self) -> None:
         raw = self._raw()

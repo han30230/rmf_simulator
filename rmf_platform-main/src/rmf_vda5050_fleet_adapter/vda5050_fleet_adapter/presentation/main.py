@@ -154,6 +154,25 @@ def run_adapter(args: argparse.Namespace) -> None:
     fleet_handle = adapter.add_easy_fleet(fleet_config)
     adapter.start()
 
+    adapter_config = raw.get('adapter') or {}
+    robot_map_ids = adapter_config.get('robot_map_ids') or {}
+    if not isinstance(robot_map_ids, dict):
+        raise ValueError('adapter.robot_map_ids must be a mapping')
+    rmf_map_name = str(adapter_config.get('rmf_map_name') or _map_name)
+    transformations = fleet_config.transformations_to_robot_coordinates or {}
+    coordinate_transform = transformations.get(rmf_map_name)
+    if robot_map_ids:
+        missing_map_ids = set(fleet_config.known_robots) - set(robot_map_ids)
+        if missing_map_ids:
+            raise ValueError(
+                'adapter.robot_map_ids is missing robots: '
+                + ', '.join(sorted(missing_map_ids))
+            )
+        if coordinate_transform is None:
+            raise ValueError(
+                f'no RMF-to-robot coordinate transform for {rmf_map_name}'
+            )
+
     manager = raw['fleet_manager']
     mqtt = MqttClient(
         mqtt_config_from_mapping(manager),
@@ -185,10 +204,14 @@ def run_adapter(args: argparse.Namespace) -> None:
                 raw.get('adapter', {}).get('arrival_threshold', 0.5)
             ),
             action_handler=ToolPickDropHandler(),
+            coordinate_transform=coordinate_transform,
+            robot_map_id=str(robot_map_ids.get(robot_name) or ''),
+            rmf_map_name=rmf_map_name,
         )
         for robot_name in fleet_config.known_robots
     }
     registration_started: set[str] = set()
+    map_mismatch_logged: set[str] = set()
     period = 1.0 / float(
         raw['rmf_fleet'].get('robot_state_update_frequency', 10.0)
     )
@@ -200,8 +223,19 @@ def run_adapter(args: argparse.Namespace) -> None:
                 data = api.get_data(robot_name)
                 if data is None:
                     continue
+                if robot.robot_map_id and data.map_name != robot.robot_map_id:
+                    if robot_name not in map_mismatch_logged:
+                        logger.error(
+                            'Robot map mismatch: robot=%s expected=%s actual=%s',
+                            robot_name, robot.robot_map_id, data.map_name,
+                        )
+                        map_mismatch_logged.add(robot_name)
+                    continue
+                map_mismatch_logged.discard(robot_name)
                 state = rmf_easy.RobotState(
-                    data.map_name, data.position, data.battery_soc
+                    robot.rmf_map_name or data.map_name,
+                    data.position,
+                    data.battery_soc,
                 )
                 if robot.update_handle is None:
                     if robot_name not in registration_started:

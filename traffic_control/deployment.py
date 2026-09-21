@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import math
 import os
 from pathlib import Path
+import re
 from typing import Any, Literal, Mapping
+from urllib.parse import urlparse
 
 import yaml
 
@@ -68,6 +71,48 @@ def _points(value: Any) -> tuple[tuple[float, float], ...]:
     return tuple(result)
 
 
+def _similarity_fit(
+    source: tuple[tuple[float, float], ...],
+    target: tuple[tuple[float, float], ...],
+) -> tuple[float, float]:
+    """Return orientation-preserving similarity scale and point RMSE."""
+    count = len(source)
+    source_center = (
+        sum(point[0] for point in source) / count,
+        sum(point[1] for point in source) / count,
+    )
+    target_center = (
+        sum(point[0] for point in target) / count,
+        sum(point[1] for point in target) / count,
+    )
+    denominator = 0.0
+    real = 0.0
+    imaginary = 0.0
+    for source_point, target_point in zip(source, target):
+        sx = source_point[0] - source_center[0]
+        sy = source_point[1] - source_center[1]
+        tx = target_point[0] - target_center[0]
+        ty = target_point[1] - target_center[1]
+        denominator += sx * sx + sy * sy
+        real += sx * tx + sy * ty
+        imaginary += sx * ty - sy * tx
+    if denominator <= 0.0:
+        return math.nan, math.inf
+    real /= denominator
+    imaginary /= denominator
+    residual_squared = 0.0
+    for source_point, target_point in zip(source, target):
+        sx = source_point[0] - source_center[0]
+        sy = source_point[1] - source_center[1]
+        predicted_x = target_center[0] + real * sx - imaginary * sy
+        predicted_y = target_center[1] + imaginary * sx + real * sy
+        residual_squared += (
+            (predicted_x - target_point[0]) ** 2
+            + (predicted_y - target_point[1]) ** 2
+        )
+    return math.hypot(real, imaginary), math.sqrt(residual_squared / count)
+
+
 @dataclass(frozen=True)
 class SecretRef:
     env: str | None = None
@@ -125,6 +170,9 @@ class RobotDeploymentConfig:
 class CalibrationConfig:
     rmf: tuple[tuple[float, float], ...] = ()
     robot: tuple[tuple[float, float], ...] = ()
+    max_residual: float = 0.05
+    min_scale: float = 0.5
+    max_scale: float = 2.0
 
 
 @dataclass(frozen=True)
@@ -228,6 +276,11 @@ class DeploymentProfile:
             calibration=CalibrationConfig(
                 rmf=_points(calibration_raw.get("rmf")),
                 robot=_points(calibration_raw.get("robot")),
+                max_residual=_float(
+                    calibration_raw.get("max_residual"), 0.05
+                ),
+                min_scale=_float(calibration_raw.get("min_scale"), 0.5),
+                max_scale=_float(calibration_raw.get("max_scale"), 2.0),
             ),
             physical=PhysicalConfig(**{
                 name: _float(physical_raw.get(name))
@@ -271,6 +324,11 @@ class DeploymentProfile:
             errors.add("mqtt.host.placeholder")
         if _is_placeholder(self.mqtt.state_topic):
             errors.add("mqtt.state_topic.placeholder")
+        elif (
+            not re.fullmatch(r"[^#+]+/\+/state", self.mqtt.state_topic)
+            or "//" in self.mqtt.state_topic
+        ):
+            errors.add("mqtt.state_topic.invalid")
         for name in ("port", "keepalive_sec", "reconnect_max_delay_sec"):
             if getattr(self.mqtt, name) <= 0:
                 errors.add(f"mqtt.{name}.nonpositive")
@@ -291,37 +349,98 @@ class DeploymentProfile:
 
         if not self.robots:
             errors.add("robots.empty")
+        elif not any(robot.required for robot in self.robots.values()):
+            errors.add("robots.required.empty")
         identities: set[tuple[str, str]] = set()
+        manufacturers: set[str] = set()
         for robot_id, robot in self.robots.items():
             identity = (robot.manufacturer, robot.serial_number)
             if not all(identity) or any(_is_placeholder(item) for item in identity):
                 errors.add(f"robots.{robot_id}.identity.placeholder")
+            if any(
+                re.fullmatch(r"[^/+#]+", item) is None for item in identity
+            ):
+                errors.add(f"robots.{robot_id}.identity.topic_segment")
             if identity in identities:
                 errors.add("robots.identity.duplicate")
             identities.add(identity)
+            if robot.manufacturer:
+                manufacturers.add(robot.manufacturer)
+            if robot.serial_number != robot_id:
+                errors.add(f"robots.{robot_id}.serial_mismatch")
             if not robot.allowed_map_ids:
                 errors.add(f"robots.{robot_id}.allowed_map_ids.empty")
+            elif any(_is_placeholder(value) for value in robot.allowed_map_ids):
+                errors.add(f"robots.{robot_id}.allowed_map_ids.placeholder")
+        if len(manufacturers) > 1:
+            errors.add("robots.manufacturer.multiple")
+        if (
+            len(manufacturers) == 1
+            and re.fullmatch(r"[^#+]+/\+/state", self.mqtt.state_topic)
+            and self.mqtt.state_topic.split("/")[-3] not in manufacturers
+        ):
+            errors.add("mqtt.state_topic.manufacturer_mismatch")
 
         if len(self.calibration.rmf) != len(self.calibration.robot):
             errors.add("calibration.count.mismatch")
+        finite_calibration = True
         for name, points in (
             ("rmf", self.calibration.rmf), ("robot", self.calibration.robot)
         ):
             if len(points) < 3:
                 errors.add(f"calibration.{name}.insufficient")
+                finite_calibration = False
+            elif not all(math.isfinite(value) for point in points for value in point):
+                errors.add(f"calibration.{name}.nonfinite")
+                finite_calibration = False
             elif not _non_collinear(points):
                 errors.add(f"calibration.{name}.collinear")
+                finite_calibration = False
+        for name in ("max_residual", "min_scale", "max_scale"):
+            value = getattr(self.calibration, name)
+            if not math.isfinite(value) or value <= 0:
+                errors.add(f"calibration.{name}.invalid")
+                finite_calibration = False
+        if self.calibration.min_scale > self.calibration.max_scale:
+            errors.add("calibration.scale_range.invalid")
+            finite_calibration = False
+        if (
+            finite_calibration
+            and len(self.calibration.rmf) == len(self.calibration.robot)
+        ):
+            scale, residual = _similarity_fit(
+                self.calibration.rmf, self.calibration.robot
+            )
+            if not self.calibration.min_scale <= scale <= self.calibration.max_scale:
+                errors.add("calibration.scale.out_of_range")
+            if residual > self.calibration.max_residual:
+                errors.add("calibration.residual.excessive")
 
         for name in PhysicalConfig.__dataclass_fields__:
-            if getattr(self.physical, name) <= 0:
+            value = getattr(self.physical, name)
+            if not math.isfinite(value) or value <= 0:
                 errors.add(f"physical.{name}.nonpositive")
         for name in ("state_timeout", "connection_timeout"):
-            if getattr(self.telemetry, name) <= 0:
+            value = getattr(self.telemetry, name)
+            if not math.isfinite(value) or value <= 0:
                 errors.add(f"telemetry.{name}.nonpositive")
         if not self.telemetry.operational_checks_required:
             errors.add("telemetry.operational_checks_required")
         if _is_placeholder(self.rmf_api.url):
             errors.add("rmf_api.url.placeholder")
+        else:
+            parsed_rmf_url = urlparse(self.rmf_api.url)
+            try:
+                local_endpoint = (
+                    parsed_rmf_url.scheme == "http"
+                    and parsed_rmf_url.hostname == "127.0.0.1"
+                    and parsed_rmf_url.port == 8100
+                    and parsed_rmf_url.path == "/tasks/robot_task"
+                )
+            except ValueError:
+                local_endpoint = False
+            if not local_endpoint:
+                errors.add("rmf_api.url.local_required")
 
         required_paths = {
             "fleet_config": self.paths.fleet_config,
@@ -339,8 +458,11 @@ class DeploymentProfile:
         if self.paths.nav_graph is not None and self.paths.nav_graph.is_file():
             try:
                 nav = yaml.safe_load(self.paths.nav_graph.read_text(encoding="utf-8")) or {}
-                if bool((nav.get("metadata") or {}).get("simulation_only", False)):
+                metadata = nav.get("metadata") or {}
+                if bool(metadata.get("simulation_only", False)):
                     errors.add("map.simulation_only")
+                if bool(metadata.get("reconstructed_example", False)):
+                    errors.add("map.reconstructed_example")
             except (OSError, yaml.YAMLError, AttributeError):
                 errors.add("paths.nav_graph.unreadable")
         return tuple(sorted(errors))

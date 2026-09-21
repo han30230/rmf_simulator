@@ -274,14 +274,40 @@ MQTT/RMF 구성을 시작하는 시뮬레이션 명령이다. 실제 로봇 연�
 검사가 통과한 profile만 production launcher에 전달한다.
 
 ```bash
-export RMF_API_BEARER_TOKEN='<site service token>'
+export FAB_MQTT_USER='<site mqtt user>'
+export FAB_MQTT_PASSWORD='<site mqtt password>'
+export RMF_API_TOKEN='<site service token>'
 ./scripts/start_production_corridor.sh /path/to/site-production.yaml
 ```
+
+초기 build와 로봇 접속 제한시간은 각각
+`PRODUCTION_HEALTH_TIMEOUT_SECONDS`(기본 300초),
+`PRODUCTION_READY_TIMEOUT_SECONDS`(기본 900초)로 조정한다.
+모든 required robot의 RMF 등록이 확인되지 않거나 이후 readiness가 실패하면
+launcher는 같은 Compose 구성의 Adapter와 RMF 서비스를 함께 중지한다.
+production API server는 simulation 설정을 사용하지 않으며
+`127.0.0.1:8100`에만 bind한다. `rmf_api.url`은
+`http://127.0.0.1:8100/tasks/robot_task`로 설정하고, 해당 bearer token은
+Task Gate 외의 작업 제출 클라이언트에 제공하지 않는다.
 
 production launcher는 Simulator와 Visualizer를 실행하지 않고 외부 MQTT broker,
 RMF 서비스와 실제 Fleet Adapter만 사용한다. 모든 필수 로봇이 fresh telemetry로
 configured SafeStop에 정지한 clean-start 상태가 확인되기 전에는 `/ready`가 503을
 반환하고 Task Gate가 새 작업을 거부한다.
+
+launcher는 profile을 기준으로 runtime-only Fleet Adapter 설정과 Compose
+override를 `.runtime/production-field`에 생성한다. 이 과정에서 실제 nav graph,
+Corridor edge/release node/Holding Bay, robot roster와 charger node가 서로
+일치하는지 검사하고 MQTT/TLS·좌표 보정·물리 한계를 Fleet Adapter에 반영한다.
+좌표 보정 잔차와 scale 허용값은 production profile의 `max_residual`,
+`min_scale`, `max_scale`로 현장 측정 기준에 맞춰 명시한다. Block geometry를
+지나는 nav graph lane이 어느 Block에도 등록되지 않은 경우에도 기동을 거부한다.
+현재 현장 경로는 단일 RMF level과 로봇당 하나의 VDA5050 map ID를 지원한다.
+RMF 좌표로 계획한 경로는 reference coordinates의 RMF→robot 변환을 거쳐
+VDA5050 Order가 되며, 도착은 좌표계 간 직접 거리 비교가 아니라 실제 Order
+완료·lastNodeId·정지 상태로 판정한다.
+좌표 보정이 활성화된 로봇이 작업 시작 시 유효한 `lastNodeId`를 보내지 않으면
+로봇 좌표를 RMF graph 좌표에 직접 대입하지 않고 작업 발행을 거부한다.
 
 # VDA5050 장애 주입 검증
 

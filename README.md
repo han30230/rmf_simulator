@@ -314,18 +314,48 @@ MQTT 비밀번호, 인증서 private key와 RMF token은 Git에 저장하지 않
 또는 읽기 제한된 파일로 제공한다.
 
 ```bash
-export RMF_API_BEARER_TOKEN='<site service token>'
+export FAB_MQTT_USER='<site mqtt user>'
+export FAB_MQTT_PASSWORD='<site mqtt password>'
+export RMF_API_TOKEN='<site service token>'
 ./scripts/start_production_corridor.sh /path/to/site-production.yaml
 
 curl -sS http://127.0.0.1:8200/health
 curl -sS http://127.0.0.1:8200/ready
 ```
 
+초기 container build나 로봇 접속 시간이 더 필요하면
+`PRODUCTION_HEALTH_TIMEOUT_SECONDS`(기본 300초)와
+`PRODUCTION_READY_TIMEOUT_SECONDS`(기본 900초)를 조정할 수 있다.
+launcher는 모든 required robot이 Fleet Adapter에 등록된 뒤 Arbiter를 시작한다.
+기동이 실패하면 이 launcher가 올린 Adapter와 RMF 서비스들을 함께 중지해 8100
+직접 endpoint가 반쯤 열린 상태로 남지 않게 한다.
+production API server는 생성된 전용 설정으로 `127.0.0.1:8100`에만 bind하고
+실제 시간을 사용한다. profile의 `rmf_api.url`도
+`http://127.0.0.1:8100/tasks/robot_task`만 허용한다. 이 API token은 Task Gate
+프로세스에만 제공하고 현장 작업 클라이언트에는 배포하지 않는다.
+
+launcher는 profile의 Fleet config를 원본으로 삼되 MQTT/TLS, robot roster,
+reference coordinates, footprint, 속도·가감속 값을 `.runtime/production-field`의
+runtime-only 설정으로 합성한다. 같은 profile의 nav graph와 인증서를 컨테이너에
+mount하므로 Arbiter와 Fleet Adapter가 서로 다른 현장 설정으로 뜨지 않는다.
+preflight는 재구성 예제 맵, Fleet/profile robot 불일치, 존재하지 않는 charger,
+Holding Bay/edge/release node와 nav graph 불일치도 거절한다. 좌표 보정은
+`max_residual`, `min_scale`, `max_scale` 범위를 통과해야 하며, Block geometry를
+가로지르는 모든 directed lane이 관리 edge에 포함되어야 한다.
+
 `/health`는 프로세스 생존 여부이고 `/ready`는 MQTT/RMF 연결, 필수 로봇
 telemetry와 SafeStop clean-start 조건을 모두 만족해 새 작업을 받아도 되는지를
 나타낸다. 실제 적용 절차와 남은 제한은
 `docs/RMF_VDA5050_Passing_Bay_PoC_Simulation_and_Field_Guide_2026-09-20.docx`에
 정리되어 있다.
+
+현재 production 경로는 단일 RMF level과 로봇당 하나의 VDA5050 map ID를
+요구한다. RMF 작업은 반드시 8200 Task Gate로 제출하고 8100 RMF API를 현장
+클라이언트에 직접 노출하지 않는다. Arbiter 상태는 메모리 기반이므로 통로 내부
+재시작 후에는 자동 운행을 재개하지 않고 물리 위치 확인과 운영자 복구를 거친다.
+좌표 보정을 사용하는 로봇은 작업 시작 시 graph에 존재하는 `lastNodeId`를
+보고해야 한다. 값이 없으면 서로 다른 좌표계를 임의로 비교하지 않고 작업을
+거부하므로, 현장 PLC/로봇의 VDA5050 State 계약에서 이를 먼저 확인한다.
 
 ## Git에 포함하지 않는 항목
 

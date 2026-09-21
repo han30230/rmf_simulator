@@ -11,15 +11,42 @@ RUN_ARBITER = ROOT / "scripts/run_direction_arbiter.sh"
 
 
 class ProductionLauncherTests(unittest.TestCase):
-    def test_start_validates_before_launching_and_requires_external_token(self) -> None:
+    def test_start_validates_and_prepares_runtime_before_launching(self) -> None:
         text = START.read_text(encoding="utf-8")
 
         self.assertLess(
             text.index("validate_production_deployment.py"),
             text.index("docker compose"),
         )
-        self.assertIn("RMF_API_BEARER_TOKEN", text)
+        self.assertIn("prepare_production_runtime.py", text)
+        self.assertIn("RMF_FIELD_MQTT_USERNAME", text)
+        self.assertIn("production.compose.override.yml", text)
+        self.assertIn("Path(sys.argv[1]).expanduser().resolve()", text)
         self.assertIn("--deployment-profile", text)
+
+    def test_start_refuses_duplicate_runtime_and_cleans_up_failed_start(self) -> None:
+        text = START.read_text(encoding="utf-8")
+
+        self.assertIn("production_arbiter.pid", text)
+        self.assertIn("already running", text)
+        self.assertIn("cleanup_failed_start", text)
+        self.assertIn("Successfully added robot", text)
+        self.assertIn("rmf_api_server rmf_traffic_blockade", text)
+
+    def test_start_changes_to_repository_before_inline_python_imports(self) -> None:
+        text = START.read_text(encoding="utf-8")
+
+        self.assertLess(
+            text.index('cd "${workspace_dir}"'),
+            text.index("from traffic_control.deployment import DeploymentProfile"),
+        )
+
+    def test_start_uses_configurable_health_and_readiness_timeouts(self) -> None:
+        text = START.read_text(encoding="utf-8")
+
+        self.assertIn("PRODUCTION_HEALTH_TIMEOUT_SECONDS", text)
+        self.assertIn("PRODUCTION_READY_TIMEOUT_SECONDS", text)
+        self.assertNotIn("for _ in $(seq 1 120)", text)
 
     def test_start_never_launches_simulator_or_generates_a_development_jwt(self) -> None:
         text = START.read_text(encoding="utf-8")
@@ -33,6 +60,9 @@ class ProductionLauncherTests(unittest.TestCase):
 
         self.assertIn("production_arbiter.pid", text)
         self.assertIn("docker compose", text)
+        self.assertIn("/proc/${pid}/cmdline", text)
+        self.assertIn('"${profile}"', text)
+        self.assertIn('"${workspace_dir}"', text)
         self.assertNotIn("pkill", text)
         self.assertNotIn("killall", text)
 
