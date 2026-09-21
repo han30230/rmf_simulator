@@ -282,3 +282,56 @@ production launcher는 Simulator와 Visualizer를 실행하지 않고 외부 MQT
 RMF 서비스와 실제 Fleet Adapter만 사용한다. 모든 필수 로봇이 fresh telemetry로
 configured SafeStop에 정지한 clean-start 상태가 확인되기 전에는 `/ready`가 503을
 반환하고 Task Gate가 새 작업을 거부한다.
+
+# VDA5050 장애 주입 검증
+
+연결형 Corridor 시뮬레이터는 실제 로봇이 보내는 것과 같은 State 및
+Connection 메시지에 장애를 주입할 수 있다. 기본 예제는 안전을 위해
+`enabled: false`이며, 로봇과 노드 선택은 Python 코드가 아니라
+`rmf_dev_tool-main/vda5050_robot_simulator/connected_corridor_fault_scenarios.yaml`
+의 규칙으로 지정한다.
+
+```bash
+.venv/bin/python rmf_dev_tool-main/vda5050_robot_simulator/run.py \
+  --config connected_corridor_chain_scenario.yaml \
+  --fault-scenarios connected_corridor_fault_scenarios.yaml
+```
+
+지원하는 trigger는 `elapsed_at_least`, `at_node`, `driving`이며 함께 쓰면
+모두 만족해야 발화한다. action은 E-stop, 운전 모드, pause, map ID,
+positionInitialized, State 발행 중단, Connection 발행을 지원한다. 규칙은
+한 번 발화하며 상태 효과는 뒤의 복구 규칙이 덮어쓸 때까지 유지된다.
+
+실행 결과는 고정 대기 시간이 아니라 status 조건으로 판정한다.
+
+```bash
+.venv/bin/python scripts/run_connected_corridor_fault_scenario.py \
+  --scenario inside_estop --robot AGV_A1 \
+  --log .runtime/arbiter.log --timeout 120
+```
+
+Corridor 내부의 E-stop 또는 State timeout은 로봇과 관련 Block을 fault로
+잠그고 반대편 authority를 허용하지 않아야 한다. SafeStop의 MANUAL은 해당
+로봇의 새 authority만 막아야 하며 Block fault를 만들면 안 된다. 재시작 때
+Corridor 내부 로봇을 관측했다면 로봇이 나중에 SafeStop으로 보이더라도
+운영자 복구 전에는 `recovery.required`가 유지되어야 한다.
+
+## 2026-09-21 실제 시뮬레이션 결과
+
+- 정상 동적 2v2는 `AGV_A1 → AGV_B1 → AGV_A2 → AGV_B2` 순서로
+  활성화됐고, 최종 위치는 각각 `CHAIN_R4`, `CHAIN_L4`, `CHAIN_R3`,
+  `CHAIN_L3`였다. 네 job이 모두 COMPLETE였고 C1/C2/C3는 FREE,
+  최소 관측 로봇 간 거리는 7.2m였다.
+- C2 내부 E-stop은 A1을 `safety.estop`으로 ineligible 처리하고 미해제
+  C2/C3를 fault로 잠갔다. 반대 로봇 authority는 발급되지 않았다.
+- C2 내부 State 발행 중단은 `state.stale` 이후 `telemetry_timeout`으로
+  A1과 C2/C3를 잠갔다. Connection 발행은 State 억제와 독립적으로 유지됐다.
+- clean-start 이후 A1이 SafeStop에서 MANUAL로 바뀌면 A1 요청만
+  `robot_not_eligible`로 거절됐고 A2 요청은 ADMIT됐다. Block fault는 없었다.
+- Corridor 내부 로봇이 있는 상태에서 Arbiter를 재시작하면
+  `recovery.required`가 고정됐으며, 로봇이 종점 SafeStop에 도착해도 자동으로
+  task admission을 재개하지 않았다.
+
+VDA5050 Connection은 주기 heartbeat가 아니라 retained 상태 이벤트로 취급한다.
+따라서 오래된 `ONLINE` 수신 시각만으로 offline 판정을 내리지 않으며,
+명시적 `OFFLINE`/`CONNECTIONBROKEN` 또는 State timeout을 안전 정지 근거로 쓴다.

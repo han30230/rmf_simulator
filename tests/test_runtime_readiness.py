@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import unittest
 
 from traffic_control.models import Direction
+from traffic_control.eligibility import EligibilityResult
 from traffic_control.readiness import RuntimeReadiness
 
 from tests.test_movement_authority import state, tracking_components
@@ -102,6 +103,25 @@ class RuntimeReadinessTests(unittest.TestCase):
         self.assertTrue(health["healthy"])
         self.assertFalse(health["dependencies"]["mqtt"])
         self.assertFalse(health["dependencies"]["rmf_api"])
+
+    def test_safe_stop_ineligibility_after_clean_start_is_robot_local(self) -> None:
+        registry, _, _, tracker = tracking_components()
+        tracker.ingest_state(
+            "A1", state("L1", -1.0, 1.0, driving=False), received_at=1.0
+        )
+        readiness = RuntimeReadiness(
+            profile("A1"), registry, tracker,
+            mqtt_connected=lambda: True, rmf_probe=lambda: True,
+        )
+        self.assertTrue(readiness.ready(now=1.0)["ready"])
+        tracker.eligibility = lambda robot_id, now=None: EligibilityResult(
+            False, ("mode.not_automatic",)
+        )
+
+        result = readiness.ready(now=2.0)
+
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["reason"], "ready")
 
 
 if __name__ == "__main__":

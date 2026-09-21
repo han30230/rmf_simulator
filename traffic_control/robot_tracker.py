@@ -97,6 +97,7 @@ class RobotTracker:
             block_id = old_block
             hb_id = previous.current_hb if previous else None
             edge_states = list(payload.get("edgeStates") or [])
+            matching_blocks: list[str] = []
 
             if isinstance(position, dict) and position.get("x") is not None and position.get("y") is not None:
                 x = float(position["x"])
@@ -150,7 +151,8 @@ class RobotTracker:
                 elif (
                     old_block is not None
                     and observed_block is None
-                    and hb_id == destination_hb
+                    and hb_id is not None
+                    and (hb_id == destination_hb or not granted_blocks)
                 ):
                     if authority is not None:
                         self.arbiter.mark_authority_arrived(robot_id)
@@ -159,7 +161,13 @@ class RobotTracker:
 
                 if observed_block is not None:
                     block_id = observed_block
-                elif old_block is not None and hb_id != destination_hb:
+                elif (
+                    old_block is not None
+                    and (
+                        hb_id is None
+                        or (granted_blocks and hb_id != destination_hb)
+                    )
+                ):
                     # No safe exit evidence: retain unresolved occupancy fail-closed.
                     block_id = old_block
                 else:
@@ -184,8 +192,15 @@ class RobotTracker:
             if release_matches:
                 release_block, _ = release
                 self.arbiter.mark_cleared(robot_id, release_block)
-                block_id = None
                 hb_id = None
+                remaining = self.arbiter.granted_blocks_for_robot(robot_id)
+                next_block = next(
+                    (item for item in remaining if item in matching_blocks),
+                    None,
+                )
+                if next_block is not None:
+                    self.arbiter.mark_entered(robot_id, next_block)
+                block_id = next_block
 
             telemetry = RobotTelemetry(
                 robot_id=robot_id,

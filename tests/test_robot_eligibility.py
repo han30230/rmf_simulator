@@ -58,9 +58,6 @@ class RobotEligibilityPolicyTests(unittest.TestCase):
     def test_operational_failures_have_stable_reasons(self) -> None:
         cases = {
             "offline": ({"connection_state": "OFFLINE"}, "connection.offline"),
-            "stale_connection": (
-                {"connection_received_at": 80.0}, "connection.stale"
-            ),
             "stale_state": ({"received_at": 80.0}, "state.stale"),
             "estop": ({"e_stop": "AUTOACK"}, "safety.estop"),
             "field": ({"field_violation": True}, "safety.field_violation"),
@@ -100,6 +97,18 @@ class RobotEligibilityPolicyTests(unittest.TestCase):
         )
 
         self.assertTrue(result.eligible)
+
+    def test_retained_online_connection_does_not_require_heartbeats(self) -> None:
+        telemetry = replace(
+            healthy_telemetry(),
+            received_at=999.0,
+            connection_received_at=1.0,
+        )
+
+        result = self.policy.evaluate(telemetry, now=1000.0)
+
+        self.assertTrue(result.eligible)
+        self.assertNotIn("connection.stale", result.reasons)
 
 
 if __name__ == "__main__":

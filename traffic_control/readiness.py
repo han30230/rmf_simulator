@@ -105,9 +105,6 @@ class RuntimeReadiness:
                 return self._result(False, "recovery.required")
             self._clean_start_complete = True
 
-        reasons = self._eligibility_reasons(required, current)
-        if reasons:
-            return self._result(False, "robots.ineligible", reasons)
         return self._result(True, "ready")
 
     def _eligibility_reasons(

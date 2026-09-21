@@ -221,6 +221,28 @@ class MovementAuthorityTests(unittest.TestCase):
             self.assertNotIn("A1", block.occupants)
             self.assertNotIn("A1", block.reservations)
 
+    def test_release_node_transitions_directly_to_overlapping_next_block(self) -> None:
+        registry, arbiter, planner, tracker = tracking_components()
+        tracker.ingest_state(
+            "A1", state("L1", -1.0, 1.0, driving=False), received_at=1.0
+        )
+        arbiter.request_authority(
+            planned(registry, planner, "L1", "R1"),
+            robot_id="A1",
+            request_time=1.0,
+        )
+        tracker.ingest_state("A1", state("N0", 5.0, 0.0), received_at=2.0)
+
+        tracker.ingest_state("A1", state("N1", 10.0, 0.0), received_at=3.0)
+
+        snapshot = tracker.snapshot()["A1"]
+        authority = arbiter.authority_for_robot("A1")
+        assert authority is not None
+        self.assertEqual(authority.unreleased_blocks, ("C2", "C3"))
+        self.assertEqual(snapshot["current_block"], "C2")
+        self.assertNotIn("A1", registry.blocks["C1"].occupants)
+        self.assertIn("A1", registry.blocks["C2"].occupants)
+
     def test_timeout_faults_every_unreleased_authority_block(self) -> None:
         registry, arbiter, planner, tracker = tracking_components()
         tracker.ingest_state("A1", state("L1", -1.0, 1.0, driving=False), received_at=1.0)

@@ -27,6 +27,14 @@ fi
 simulator_source="$(resolve_workspace_path "${PASSING_BAY_SIMULATOR_SCENARIO:-rmf_dev_tool-main/vda5050_robot_simulator/p4_scenario.yaml}")"
 passing_compose="$(resolve_workspace_path "${PASSING_BAY_COMPOSE_FILE:-rmf_platform-main/docker-compose.p4-passing-bay.yml}")"
 arbiter_config="$(resolve_workspace_path "${PASSING_BAY_ARBITER_CONFIG:-config/corridor_blocks_p4_passing_bay.yaml}")"
+deployment_profile="${PASSING_BAY_DEPLOYMENT_PROFILE:-}"
+fault_scenarios="${PASSING_BAY_FAULT_SCENARIOS:-}"
+if [[ -n "${deployment_profile}" ]]; then
+  deployment_profile="$(resolve_workspace_path "${deployment_profile}")"
+fi
+if [[ -n "${fault_scenarios}" ]]; then
+  fault_scenarios="$(resolve_workspace_path "${fault_scenarios}")"
+fi
 robot_ids=("$@")
 if [[ "${#robot_ids[@]}" -eq 0 ]]; then
   robot_ids=(AGV_A1 AGV_B1)
@@ -142,7 +150,11 @@ target.write_text(
 )
 PY
 
-nohup "${python_bin}" run.py --config "${simulator_config}" \
+simulator_args=("${python_bin}" run.py --config "${simulator_config}")
+if [[ -n "${fault_scenarios}" ]]; then
+  simulator_args+=(--fault-scenarios "${fault_scenarios}")
+fi
+nohup "${simulator_args[@]}" \
   >"${simulator_log}" 2>&1 &
 echo "$!" >"${runtime_dir}/simulator.pid"
 
@@ -188,11 +200,15 @@ PY
 )"
 
 cd "${workspace_dir}"
+arbiter_args=("${arbiter_config}")
+if [[ -n "${deployment_profile}" ]]; then
+  arbiter_args+=(--deployment-profile "${deployment_profile}")
+fi
 nohup env \
   PYTHON_BIN="${python_bin}" \
   RMF_API_BEARER_TOKEN="${rmf_api_bearer_token}" \
   ./scripts/run_direction_arbiter.sh \
-  "${arbiter_config}" \
+  "${arbiter_args[@]}" \
   >"${arbiter_log}" 2>&1 &
 echo "$!" >"${runtime_dir}/arbiter.pid"
 wait_for_port 8200 Arbiter

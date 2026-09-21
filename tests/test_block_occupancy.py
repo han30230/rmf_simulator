@@ -92,6 +92,22 @@ def overlapping_source_components(direction: Direction) -> tuple[DirectionArbite
 
 
 class BlockOccupancyTests(unittest.TestCase):
+    def test_unreserved_faulted_robot_can_be_observed_at_safe_stop(self) -> None:
+        arbiter, tracker = make_components()
+        tracker.ingest_state("A1", state(5.0), received_at=1.0)
+        self.assertEqual(tracker.snapshot()["A1"]["current_block"], "TOP_1")
+
+        tracker.ingest_state(
+            "A1", state(10.0, last_node="N1", driving=False), received_at=2.0
+        )
+
+        robot = tracker.snapshot()["A1"]
+        block = arbiter.snapshot()["blocks"]["TOP_1"]
+        self.assertIsNone(robot["current_block"])
+        self.assertEqual(robot["current_hb"], "HB1")
+        self.assertEqual(block["occupants"], [])
+        self.assertEqual(block["fault_reason"], "unreserved_robot_detected_inside")
+
     def test_grant_preserves_source_bay_until_departure_in_both_directions(self) -> None:
         for direction, source, source_x, inside_x in [
             (Direction.A_TO_B, "LEFT", 0.0, 1.0),

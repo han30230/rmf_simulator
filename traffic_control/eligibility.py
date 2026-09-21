@@ -50,8 +50,6 @@ class RobotEligibilityPolicy:
             reasons.add("state.stale")
         if telemetry.connection_received_at is None:
             reasons.add("connection.missing")
-        elif now - telemetry.connection_received_at > self.connection_timeout:
-            reasons.add("connection.stale")
         if telemetry.connection_state != "ONLINE":
             reasons.add("connection.offline")
         if not telemetry.position_initialized:
