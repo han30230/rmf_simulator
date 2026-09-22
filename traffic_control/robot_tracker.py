@@ -440,10 +440,13 @@ class RobotTracker:
         return sorted(expired)
 
     def snapshot(self) -> dict[str, Any]:
+        now = time.monotonic()
         with self._lock:
             return {
                 robot_id: {
                     "received_at": state.received_at,
+                    "state_age_sec": max(0.0, now - state.received_at),
+                    "state_timestamp": state.state_timestamp,
                     "position": (
                         {"x": state.x, "y": state.y}
                         if state.x is not None and state.y is not None
@@ -457,6 +460,8 @@ class RobotTracker:
                     "state_header_id": state.state_header_id,
                     "connection_state": state.connection_state,
                     "connection_received_at": state.connection_received_at,
+                    "connection_timestamp": state.connection_timestamp,
+                    "safe_node": self.current_safe_node(robot_id),
                     "position_initialized": state.position_initialized,
                     "map_id": state.map_id,
                     "operating_mode": state.operating_mode,
