@@ -86,6 +86,10 @@ class RuntimeReadiness:
         if any(item is None for item in telemetry.values()):
             return self._result(False, "telemetry.pending")
 
+        reasons = self._eligibility_reasons(required, current)
+        if reasons:
+            return self._result(False, "robots.ineligible", reasons)
+
         if not self._clean_start_complete:
             states = tuple(item for item in telemetry.values() if item is not None)
             if any(
@@ -96,9 +100,6 @@ class RuntimeReadiness:
             ):
                 self._recovery_required = True
                 return self._result(False, "recovery.required")
-            reasons = self._eligibility_reasons(required, current)
-            if reasons:
-                return self._result(False, "robots.ineligible", reasons)
             unconfirmed = tuple(
                 sorted(
                     item.robot_id
