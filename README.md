@@ -327,6 +327,27 @@ lane이 있으면 warning을 출력한다. DSR의 `1019`/`1024`처럼 junction �
 node를 Holding Bay로 사용할 때는 실제 대기 위치와 통행 간섭을 확인하고,
 필요하면 본선 밖 staging node로 옮긴다.
 
+Strict lab에서는 주행 중 `edgeStates`가 비어 있으면 `state.edge_missing`으로
+로봇을 ineligible 처리한다. 본선/분기점에서 geometry만으로 주행 위치를
+추정하지 않기 위한 fail-safe다. `/traffic/status`에서 `state_age_sec`,
+`state_timestamp`, `safe_node`, `edge_ids`를 확인할 수 있다.
+
+TaskGate는 기본적으로 `.runtime/dsr_lab_events.jsonl`에 JSONL audit log를
+남긴다. 경로는 `DSR_EVENT_LOG` 환경변수로 변경할 수 있다.
+
+재기동 또는 telemetry fault 이후 `recovery.required`가 걸리면 자동 해제하지
+않는다. 모든 required robot을 정지된 configured SafeStop으로 옮기고 상태를
+확인한 뒤 운영자가 아래 endpoint를 명시적으로 호출한다.
+
+```bash
+curl -sS -X POST http://127.0.0.1:18200/traffic/recovery/ack |
+  python3 -m json.tool
+```
+
+로봇이 주행 중이거나 managed block 안에 있거나 SafeStop이 아니면 recovery
+ack는 409로 거부된다. 성공 시 기존 in-memory gate job/Arbiter 상태는 폐기하고
+새 작업부터 다시 받는다.
+
 Lab PoC 동안 managed task는 반드시 TaskGate
 `http://127.0.0.1:18200/tasks/robot_task`로 보낸다. 기존 RMF API `:8100`으로
 직접 제출하면 Arbiter를 우회하므로, UI/Robotpilot endpoint 전환 전에는
