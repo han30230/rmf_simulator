@@ -189,6 +189,7 @@ class TelemetryConfig:
     state_timeout: float = 5.0
     connection_timeout: float = 10.0
     operational_checks_required: bool = False
+    require_edge_state_when_driving: bool = True
 
 
 @dataclass(frozen=True)
@@ -291,6 +292,9 @@ class DeploymentProfile:
                 connection_timeout=_float(telemetry_raw.get("connection_timeout"), 10.0),
                 operational_checks_required=bool(
                     telemetry_raw.get("operational_checks_required", False)
+                ),
+                require_edge_state_when_driving=bool(
+                    telemetry_raw.get("require_edge_state_when_driving", True)
                 ),
             ),
             rmf_api=RmfApiConfig(
