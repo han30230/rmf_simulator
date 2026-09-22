@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -325,7 +326,7 @@ class DeploymentProfileTests(unittest.TestCase):
     def test_cli_returns_two_for_incomplete_committed_example(self) -> None:
         result = subprocess.run(
             [
-                str(ROOT / ".venv/bin/python"),
+                sys.executable,
                 str(ROOT / "scripts/validate_production_deployment.py"),
                 str(ROOT / "config/production.connected-corridor.example.yaml"),
             ],
