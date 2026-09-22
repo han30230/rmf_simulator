@@ -90,7 +90,7 @@ class RuntimeReadiness:
             states = tuple(item for item in telemetry.values() if item is not None)
             if any(
                 item.current_block is not None
-                or item.current_hb is None
+                or self.tracker.current_safe_node(item.robot_id) is None
                 or item.driving
                 or item.faulted
                 for item in states
