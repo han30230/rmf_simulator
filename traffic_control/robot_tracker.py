@@ -96,7 +96,9 @@ class RobotTracker:
             y: float | None = None
             block_id = old_block
             hb_id = previous.current_hb if previous else None
+            driving = bool(payload.get("driving", False))
             edge_states = list(payload.get("edgeStates") or [])
+            matching_edge_blocks = self.registry.blocks_for_edges(edge_states)
             matching_blocks: list[str] = []
 
             if isinstance(position, dict) and position.get("x") is not None and position.get("y") is not None:
@@ -104,7 +106,11 @@ class RobotTracker:
                 y = float(position["y"])
                 matching_blocks = self.registry.blocks_for_position(x, y)
                 granted_blocks = self.arbiter.granted_blocks_for_robot(robot_id)
-                granted_block = next(
+                edge_granted_block = next(
+                    (item for item in granted_blocks if item in matching_edge_blocks),
+                    None,
+                )
+                geometry_granted_block = next(
                     (item for item in granted_blocks if item in matching_blocks),
                     None,
                 )
@@ -113,7 +119,13 @@ class RobotTracker:
                     robot_id
                 )
                 source_hb = self.arbiter.source_holding_bay_for_robot(robot_id)
-                hb_id = self.registry.holding_bay_for_position(x, y)
+                node_hb = (
+                    self.registry.holding_bay_for_node(last_node_id)
+                    if last_node_id and not driving
+                    else None
+                )
+                position_hb = self.registry.holding_bay_for_position(x, y)
+                hb_id = node_hb or position_hb
                 if release_matches:
                     observed_block = None
                     hb_id = None
@@ -126,10 +138,16 @@ class RobotTracker:
                     # Existing occupancy is still retained below unless this
                     # is the destination; returning to source is not an exit.
                     observed_block = None
+                elif old_block in matching_edge_blocks:
+                    observed_block = old_block
+                elif edge_granted_block is not None:
+                    observed_block = edge_granted_block
+                elif len(matching_edge_blocks) == 1:
+                    observed_block = matching_edge_blocks[0]
                 elif old_block in matching_blocks:
                     observed_block = old_block
-                elif granted_block in matching_blocks:
-                    observed_block = granted_block
+                elif geometry_granted_block is not None:
+                    observed_block = geometry_granted_block
                 else:
                     observed_block = matching_blocks[0] if matching_blocks else None
 
@@ -175,7 +193,7 @@ class RobotTracker:
 
                 if hb_id is not None and block_id is None:
                     self.arbiter.occupy_holding_bay(hb_id, robot_id)
-            elif bool(payload.get("driving", False)) and not release_matches:
+            elif driving and not release_matches:
                 observed_block = self.registry.block_for_edges(edge_states)
                 if observed_block is not None and observed_block != old_block:
                     try:
@@ -195,9 +213,14 @@ class RobotTracker:
                 hb_id = None
                 remaining = self.arbiter.granted_blocks_for_robot(robot_id)
                 next_block = next(
-                    (item for item in remaining if item in matching_blocks),
+                    (item for item in remaining if item in matching_edge_blocks),
                     None,
                 )
+                if next_block is None:
+                    next_block = next(
+                        (item for item in remaining if item in matching_blocks),
+                        None,
+                    )
                 if next_block is not None:
                     self.arbiter.mark_entered(robot_id, next_block)
                 block_id = next_block
@@ -208,7 +231,7 @@ class RobotTracker:
                 x=x if x is not None else (previous.x if previous else None),
                 y=y if y is not None else (previous.y if previous else None),
                 last_node_id=last_node_id,
-                driving=bool(payload.get("driving", False)),
+                driving=driving,
                 node_states=list(payload.get("nodeStates") or []),
                 edge_states=edge_states,
                 current_block=block_id,
@@ -357,7 +380,11 @@ class RobotTracker:
     def current_safe_node(self, robot_id: str) -> str | None:
         with self._lock:
             telemetry = self._robots.get(robot_id)
-            if telemetry is None or telemetry.current_block is not None:
+            if (
+                telemetry is None
+                or telemetry.current_block is not None
+                or telemetry.driving
+            ):
                 return None
             if telemetry.current_hb is not None:
                 return self.registry.holding_bays[telemetry.current_hb].node_id
@@ -543,6 +570,13 @@ class MqttStateMonitor:
             parts = message.topic.split("/")
             robot_id = parts[-2]
             if parts[-1] == "state":
+                if bool(getattr(message, "retain", False)):
+                    logger.warning(
+                        "[TRAFFIC] ignored retained state robot=%s topic=%s",
+                        robot_id,
+                        message.topic,
+                    )
+                    return
                 self.tracker.ingest_state(robot_id, payload)
             elif parts[-1] == "connection":
                 self.tracker.ingest_connection(robot_id, payload)
