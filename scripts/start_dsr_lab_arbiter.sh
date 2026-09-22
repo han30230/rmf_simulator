@@ -10,6 +10,7 @@ PROFILE="$1"
 PORT="${DSR_ARBITER_PORT:-18200}"
 CONTAINER="${WAVE_ADAPTER_CONTAINER:-Wave_adapter}"
 EXPECTED_REVISION="${EXPECTED_WAVE_NAV_REVISION:-}"
+EVENT_LOG="${DSR_EVENT_LOG:-$ROOT/.runtime/dsr-lab/arbiter-events.jsonl}"
 
 cd "$ROOT"
 
@@ -60,4 +61,5 @@ exec .venv/bin/python -m traffic_control.task_gate \
   --deployment-profile "$PROFILE" \
   --listen-host 127.0.0.1 \
   --port "$PORT" \
+  --event-log "$EVENT_LOG" \
   --log-level INFO
