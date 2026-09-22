@@ -13,6 +13,8 @@ EXPECTED_REVISION="${EXPECTED_WAVE_NAV_REVISION:-}"
 EVENT_LOG="${DSR_EVENT_LOG:-$ROOT/.runtime/dsr-lab/arbiter-events.jsonl}"
 
 cd "$ROOT"
+mkdir -p .runtime
+EVENT_LOG="${DSR_EVENT_LOG:-$ROOT/.runtime/dsr_lab_events.jsonl}"
 
 if [[ ! -x ".venv/bin/python" ]]; then
   echo "ERROR missing .venv; create/activate the repository virtualenv first" >&2
