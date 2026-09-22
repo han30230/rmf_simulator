@@ -139,5 +139,61 @@ class RuntimeReadiness:
             "clean_start_complete": self._clean_start_complete,
         }
 
+    def recovery_check(self, *, now: float | None = None) -> dict[str, Any]:
+        """Check whether an operator recovery acknowledgement is safe."""
+        current = time.monotonic() if now is None else float(now)
+        validation_errors = tuple(self.profile.validate())
+        if validation_errors:
+            return self._result(False, "preflight.invalid", validation_errors)
+        if not self._mqtt_ok():
+            return self._result(False, "mqtt.disconnected")
+        if not self._rmf_ok(current):
+            return self._result(False, "rmf.unavailable")
+
+        required = tuple(
+            robot_id
+            for robot_id, config in self.profile.robots.items()
+            if config.required
+        )
+        telemetry = {
+            robot_id: self.tracker.telemetry(robot_id) for robot_id in required
+        }
+        if any(item is None for item in telemetry.values()):
+            return self._result(False, "telemetry.pending")
+
+        states = tuple(item for item in telemetry.values() if item is not None)
+        if any(
+            item.current_block is not None
+            or item.current_hb is None
+            or item.driving
+            for item in states
+        ):
+            return self._result(False, "recovery.robot_not_safe")
+
+        reasons = self._eligibility_reasons(required, current)
+        if reasons:
+            return self._result(False, "robots.ineligible", reasons)
+        if any(
+            block.occupants or block.reservations
+            for block in self.registry.blocks.values()
+        ):
+            return self._result(False, "recovery.arbiter_not_clear")
+        return self._result(True, "recovery.safe_to_ack")
+
+    def acknowledge_recovery(self, *, now: float | None = None) -> dict[str, Any]:
+        status = self.recovery_check(now=now)
+        if not status["ready"]:
+            return status
+        required = tuple(
+            robot_id
+            for robot_id, config in self.profile.robots.items()
+            if config.required
+        )
+        if not all(self.tracker.clear_fault_if_safe(robot_id) for robot_id in required):
+            return self._result(False, "recovery.robot_not_safe")
+        self._recovery_required = False
+        self._clean_start_complete = True
+        return self._result(True, "ready")
+
     def can_accept_tasks(self, *, now: float | None = None) -> bool:
         return bool(self.ready(now=now)["ready"])
