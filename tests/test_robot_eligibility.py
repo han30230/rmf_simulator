@@ -63,6 +63,10 @@ class RobotEligibilityPolicyTests(unittest.TestCase):
             "field": ({"field_violation": True}, "safety.field_violation"),
             "manual": ({"operating_mode": "MANUAL"}, "mode.not_automatic"),
             "paused": ({"paused": True}, "state.paused"),
+            "driving_without_edge": (
+                {"driving": True, "edge_states": []},
+                "state.edge_missing",
+            ),
             "fatal": ({"error_levels": ("FATAL",)}, "errors.blocking"),
             "wrong_map": ({"map_id": "OTHER"}, "position.map_mismatch"),
             "uninitialized": (
@@ -90,6 +94,18 @@ class RobotEligibilityPolicyTests(unittest.TestCase):
             replace(healthy_telemetry(), robot_id="R2"), now=100.0
         )
         self.assertIn("robot.unregistered", result.reasons)
+
+    def test_driving_robot_with_edge_state_is_eligible(self) -> None:
+        result = self.policy.evaluate(
+            replace(
+                healthy_telemetry(),
+                driving=True,
+                edge_states=[{"edgeId": "A>B"}],
+            ),
+            now=100.0,
+        )
+
+        self.assertTrue(result.eligible)
 
     def test_warning_is_not_blocking_when_policy_only_blocks_fatal(self) -> None:
         result = self.policy.evaluate(
