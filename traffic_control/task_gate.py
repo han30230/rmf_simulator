@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 import json
 import logging
@@ -36,6 +37,32 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 Forwarder = Callable[[dict[str, Any]], dict[str, Any]]
+
+
+class _JsonLineFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        return json.dumps(
+            {
+                "timestamp": datetime.fromtimestamp(
+                    record.created, tz=timezone.utc
+                ).isoformat().replace("+00:00", "Z"),
+                "level": record.levelname,
+                "logger": record.name,
+                "message": record.getMessage(),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+
+def _configure_event_log(path: str | None) -> None:
+    if not path:
+        return
+    target = Path(path).expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(target, encoding="utf-8")
+    handler.setFormatter(_JsonLineFormatter())
+    logging.getLogger("traffic_control").addHandler(handler)
 
 
 class JobStatus(str, Enum):
@@ -1102,12 +1129,17 @@ def main(argv: list[str] | None = None) -> int:
         "--mqtt-topic", default="uagv/v2.0.0/inatech/+/state"
     )
     parser.add_argument("--log-level", default="INFO")
+    parser.add_argument(
+        "--event-log",
+        help="optional JSONL audit log for traffic_control events",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper()),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    _configure_event_log(args.event_log)
     profile = None
     if args.deployment_profile:
         from .deployment import DeploymentProfile
