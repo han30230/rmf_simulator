@@ -177,6 +177,24 @@ class DsrFieldHardeningTests(unittest.TestCase):
 
         self.assertIsNone(self.tracker.current_safe_node("SIM_A"))
 
+    def test_non_managed_live_edge_does_not_fall_back_to_corridor_geometry(self) -> None:
+        self.tracker.ingest_state(
+            "SIM_A",
+            state_payload(
+                robot_id="SIM_A",
+                header_id=5,
+                last_node_id="A",
+                x=5.0,
+                y=0.0,
+                driving=True,
+                edge_ids=("SIDE>BRANCH",),
+            ),
+        )
+
+        state = self.tracker.snapshot()["SIM_A"]
+        self.assertIsNone(state["current_block"])
+        self.assertIsNone(state["current_hb"])
+
     def test_edge_and_active_grant_override_conflicting_geometry(self) -> None:
         decision = self.arbiter.request(
             "SIM_A",
