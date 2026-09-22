@@ -377,12 +377,12 @@ class BlockOccupancyTests(unittest.TestCase):
 
         self.assertEqual(arbiter.snapshot()["blocks"]["TOP_1"]["occupants"], ["A1"])
 
-    def test_initial_holding_bay_position_infers_safe_node(self) -> None:
+    def test_geometry_only_holding_bay_does_not_infer_safe_node(self) -> None:
         _, tracker = make_components()
 
         tracker.ingest_state("A1", state(0.0, last_node="", driving=False), received_at=1.0)
 
-        self.assertEqual(tracker.current_safe_node("A1"), "N0")
+        self.assertIsNone(tracker.current_safe_node("A1"))
 
     def test_missing_position_does_not_create_false_exit(self) -> None:
         arbiter, tracker = make_components()
