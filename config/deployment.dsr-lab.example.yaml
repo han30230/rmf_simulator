@@ -45,6 +45,7 @@ telemetry:
   state_timeout: 5.0
   connection_timeout: 10.0
   operational_checks_required: true
+  require_edge_state_when_driving: true
 
 rmf_api:
   url: "http://127.0.0.1:8100/tasks/robot_task"
