@@ -1,0 +1,35 @@
+# P4 two-robot passing-bay proof-of-concept navigation graph.
+# Simulation only: replace with a surveyed company graph before field use.
+building_name: p4_single_passing_bay_poc
+metadata:
+  simulation_only: true
+levels:
+  L1:
+    elevation: 0.0
+    vertices:
+      - [6.833, 92.871, {name: '2101', is_charger: true}]
+      - [12.5, 92.871, {name: '2102'}]
+      - [18.46, 92.871, {name: '2103'}]
+      - [30.424, 92.871, {name: '2104'}]
+      - [42.508, 92.871, {name: '2105'}]
+      - [54.818, 92.871, {name: '2106'}]
+      - [66.612, 92.871, {name: '2107'}]
+      - [73.7274, 92.8248, {name: '2108', is_charger: true}]
+      - [42.508, 91.100, {name: '6137'}]
+    lanes:
+      - [0, 1, {graph_idx: 0}]
+      - [1, 0, {graph_idx: 0}]
+      - [1, 2, {graph_idx: 0}]
+      - [2, 1, {graph_idx: 0}]
+      - [2, 3, {graph_idx: 0}]
+      - [3, 2, {graph_idx: 0}]
+      - [3, 4, {graph_idx: 0}]
+      - [4, 3, {graph_idx: 0}]
+      - [4, 5, {graph_idx: 0}]
+      - [5, 4, {graph_idx: 0}]
+      - [5, 6, {graph_idx: 0}]
+      - [6, 5, {graph_idx: 0}]
+      - [6, 7, {graph_idx: 0}]
+      - [7, 6, {graph_idx: 0}]
+      - [4, 8, {graph_idx: 0}]
+      - [8, 4, {graph_idx: 0}]

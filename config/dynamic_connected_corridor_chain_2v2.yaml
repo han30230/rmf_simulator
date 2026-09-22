@@ -1,0 +1,22 @@
+name: connected_chain_dynamic_2v2
+steps:
+  - robot: AGV_A1
+    goal: CHAIN_R4
+  - robot: AGV_B1
+    goal: CHAIN_L4
+    when:
+      type: robot_left_holding_bay
+      robot: AGV_A1
+      holding_bay: CHAIN_LEFT_SLOT_1
+  - robot: AGV_A2
+    goal: CHAIN_R3
+    when:
+      type: job_status
+      robot: AGV_B1
+      status: ACTIVE
+  - robot: AGV_B2
+    goal: CHAIN_L3
+    when:
+      type: job_status
+      robot: AGV_A2
+      status: ACTIVE

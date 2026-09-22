@@ -10,14 +10,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
-import math
 import threading
 from typing import Any
 import uuid
 
 from vda5050_fleet_adapter.usecase.actions.action_handler import ActionHandler
 from vda5050_fleet_adapter.usecase.command_ack_hsm import (
-    CommandAckHsm, CommandKind, QueuedCommand, TaskContext, order_ack_guard,
+    CommandAckHsm, CommandKind, QueuedCommand, TaskContext,
+    action_ack_guard, cancel_order_ack_guard, order_ack_guard,
 )
 from vda5050_fleet_adapter.usecase.graph_utils import (
     DirectedGraph, build_vda5050_nodes_edges, compute_path, find_nearest_node,
@@ -54,6 +54,9 @@ class RobotAdapter:
         *,
         arrival_threshold: float = 0.5,
         action_handler: ActionHandler | None = None,
+        coordinate_transform: Any = None,
+        robot_map_id: str = '',
+        rmf_map_name: str = '',
     ) -> None:
         if api is None:
             raise ValueError('RobotAdapter requires a RobotAPI')
@@ -67,6 +70,9 @@ class RobotAdapter:
         self.nav_graph = nav_graph or DirectedGraph()
         self.arrival_threshold = float(arrival_threshold)
         self._action_handler = action_handler
+        self.coordinate_transform = coordinate_transform
+        self.robot_map_id = str(robot_map_id)
+        self.rmf_map_name = str(rmf_map_name)
         self._execution_lock = threading.RLock()
         self.execution: Any | None = None
         self.update_handle: Any | None = None
@@ -92,17 +98,13 @@ class RobotAdapter:
         with self._execution_lock:
             execution = self.execution
             if execution is not None and self._nav.is_navigating:
-                target = self._nav.target_position
-                distance = math.inf
-                if target is not None:
-                    distance = math.hypot(
-                        data.position[0] - target[0],
-                        data.position[1] - target[1],
-                    )
                 if (
                     not data.driving
                     and data.last_node_id == self._nav.target_node
-                    and distance <= self.arrival_threshold
+                    and self._nav.cmd_id is not None
+                    and self.api.is_command_completed(
+                        self.name, self._nav.cmd_id
+                    )
                 ):
                     execution.finished()
                     self.execution = None
@@ -137,6 +139,15 @@ class RobotAdapter:
             raise ValueError('cannot resolve RMF destination to graph node')
 
         start_name = self.last_node_id
+        if (
+            start_name not in self.nav_nodes
+            and self.position is not None
+            and self.coordinate_transform is not None
+        ):
+            raise ValueError(
+                'cannot infer an RMF start node from robot-map coordinates; '
+                'wait for a configured lastNodeId'
+            )
         if start_name not in self.nav_nodes and self.position is not None:
             start_name = find_nearest_node(
                 self.nav_nodes, self.position[0], self.position[1]
@@ -164,9 +175,12 @@ class RobotAdapter:
         self.cmd_id += 1
         cmd_id = self.cmd_id
         order_id = f'order_{cmd_id}_{uuid.uuid4().hex[:8]}'
-        map_name = str(getattr(destination, 'map', '') or 'L1')
+        map_name = self.robot_map_id or str(
+            getattr(destination, 'map', '') or 'L1'
+        )
+        order_nodes = self._nav_nodes_in_robot_coordinates()
         vda_nodes, vda_edges = build_vda5050_nodes_edges(
-            path, self.nav_nodes, map_name,
+            path, order_nodes, map_name,
             base_end_index=len(path) - 1,
             edges=self.nav_edges,
         )
@@ -196,6 +210,22 @@ class RobotAdapter:
         )
         self._command_hsm.enqueue(command)
 
+    def _nav_nodes_in_robot_coordinates(self) -> dict[str, dict]:
+        if self.coordinate_transform is None:
+            return self.nav_nodes
+        transformed: dict[str, dict] = {}
+        for name, node in self.nav_nodes.items():
+            position = self.coordinate_transform.apply([
+                float(node['x']), float(node['y']), 0.0,
+            ])
+            transformed[name] = {
+                **node,
+                'x': float(position[0]),
+                'y': float(position[1]),
+                'attributes': dict(node.get('attributes') or {}),
+            }
+        return transformed
+
     def stop(self, activity: Any) -> None:
         with self._execution_lock:
             if self.execution is None:
@@ -206,7 +236,29 @@ class RobotAdapter:
             self._nav = NavigationState()
         self._command_hsm.cancel_pending()
         self.cmd_id += 1
-        self.api.pause(self.name, self.cmd_id)
+        cmd_id = self.cmd_id
+        action_id = f'cancel_{cmd_id}_{uuid.uuid4().hex[:8]}'
+        action_finished = action_ack_guard(action_id)
+        order_cleared = cancel_order_ack_guard()
+        self._command_hsm.enqueue(QueuedCommand(
+            event_id=self._command_hsm.next_event_id(),
+            kind=CommandKind.CANCEL_ORDER,
+            cmd_id=cmd_id,
+            send=lambda: self.api.stop(
+                self.name, cmd_id, action_id=action_id
+            ),
+            description='cancel active navigation order',
+            ack_guard=lambda state, sent_at: (
+                action_finished(state, sent_at)
+                and order_cleared(state, sent_at)
+            ),
+            ack_description=(
+                'state reports cancelOrder FINISHED, stopped, and no '
+                'remaining nodes or edges'
+            ),
+            action_id=action_id,
+            target_kind='order',
+        ))
 
     def execute_action(
         self, category: str, description: dict, execution: Any

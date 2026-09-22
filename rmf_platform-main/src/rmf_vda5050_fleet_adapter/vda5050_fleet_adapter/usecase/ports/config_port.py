@@ -18,6 +18,12 @@ class MqttConfig:
     broker_port: int = 1883
     keepalive_sec: int = 60
     reconnect_max_delay_sec: int = 60
+    username: str = ''
+    password: str = ''
+    ca_file: str = ''
+    cert_file: str = ''
+    key_file: str = ''
+    tls_required: bool = False
 
 
 @dataclass(frozen=True)

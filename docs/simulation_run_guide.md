@@ -1,245 +1,363 @@
-# RMF + VDA5050 시뮬레이션 실행 가이드
+# RMF + VDA5050 Passing Bay 실행 가이드
 
-## 1. 전체 구성
+이 문서는 현재 `feature/p4-single-passing-bay-poc` 기준이다. 모든 경로는 저장소 위치를 자동으로 계산하므로 특정 PC의 절대경로에 의존하지 않는다.
 
-| 환경 | 구성요소 |
-| --- | --- |
-| WSL2 Ubuntu | Docker 기반 RMF Core, VDA5050 Fleet Adapter, Python Robot Simulator |
-| Windows | `vda5050_gui.py` 로봇 경로 시각화, `rmf_graph_editor` 맵 편집 GUI |
+## 자동 실행
 
-RMF Core의 주요 서비스는 다음과 같다.
-
-- `rmf_traffic_schedule`: 로봇 궤적 및 계획 관리
-- `rmf_traffic_blockade`: 배타 구간 조정
-- `rmf_task_dispatcher`: 태스크 분배
-- `rmf_api_server`: REST/WebSocket API (`localhost:8100`)
-
-Fleet Adapter와 Robot Simulator는 MQTT를 통해 VDA5050 메시지를 주고받는다.
-
-## 2. 사전 준비: MQTT 브로커
-
-`rmf_platform-main`과 `rmf_dev_tool-main`에는 MQTT 브로커가 포함되어 있지 않다. Fleet Adapter와 Robot Simulator 모두 `localhost:1883`을 사용하므로, 호스트 OS에 Mosquitto 등을 별도로 설치하고 실행해야 한다.
-
-## 3. 실행 순서
-
-### T1 — RMF Core 시작 (WSL2)
+최초 1회:
 
 ```bash
-cd /mnt/d/Documents/ICS_code/rmf_platform-main/rmf_platform-main
-sudo service docker start
-
-docker compose up \
-  rmf_traffic_schedule \
-  rmf_traffic_blockade \
-  rmf_task_dispatcher \
-  rmf_api_server \
-  -d
+cd ~/rmf-work/rmf_passing_bay_poc
+./scripts/setup_workspace.sh
 ```
 
-### T2 — Fleet Adapter 시작 (WSL2)
-
-BEFORE 실행 (`penalty=0`):
+Passing-bay 전체 스택 시작:
 
 ```bash
-cd /mnt/d/Documents/ICS_code/rmf_platform-main/rmf_platform-main
-
-docker compose run --rm \
-  -v "$(pwd)/fleet_config/p4_edit_before.yaml:/sim_config.yaml:ro" \
-  -v "$(pwd)/map/p4_edit_node_add.yaml:/sim_map.yaml:ro" \
-  vda5050_fleet_adapter \
-  bash -c "cd /vda5050_ws && \
-    rm -rf build/vda5050_fleet_adapter install/vda5050_fleet_adapter && \
-    colcon build --packages-select vda5050_fleet_adapter && \
-    source install/setup.bash && \
-    ros2 run vda5050_fleet_adapter fleet_adapter \
-      -c /sim_config.yaml -n /sim_map.yaml"
+./scripts/start_p4_passing_bay.sh
 ```
 
-AFTER 실행 (`penalty=50`)은 `p4_edit_before.yaml` 대신 `p4_edit_after.yaml`을 마운트한다.
-
-Corridor 설정 실행:
+작업 투입:
 
 ```bash
-cd /mnt/d/Documents/ICS_code/rmf_platform-main/rmf_platform-main
-
-docker compose run --rm \
-  -v "$(pwd)/fleet_config/p4_edit_corridor_on.yaml:/sim_config.yaml:ro" \
-  -v "$(pwd)/map/p4_edit_node_add.yaml:/sim_map.yaml:ro" \
-  vda5050_fleet_adapter \
-  bash -c "cd /vda5050_ws && \
-    rm -rf build/vda5050_fleet_adapter install/vda5050_fleet_adapter && \
-    colcon build --packages-select vda5050_fleet_adapter && \
-    source install/setup.bash && \
-    ros2 run vda5050_fleet_adapter fleet_adapter \
-      -c /sim_config.yaml -n /sim_map.yaml"
+./scripts/t4_dispatch_passing_bay.sh
 ```
 
-### T3 — Robot Simulator 시작 (WSL2)
+2대 대 1대 실행:
 
 ```bash
-cd /mnt/d/Documents/ICS_code/rmf_dev_tool-main/rmf_dev_tool-main/vda5050_robot_simulator
-~/sim_venv/bin/python run.py --config p4_scenario.yaml
+./scripts/stop_p4_passing_bay.sh --all
+./scripts/start_p4_passing_bay_2v1.sh
+./scripts/t4_dispatch_passing_bay_2v1.sh
 ```
 
-### T4 — Task 발행 (WSL2)
+2대 대 1대에서는 A1이 2106을 통과하면 B1이 `6137 → 2101`로 출발한다.
+B2는 A1의 현재 단계와 이후 단계를 포함한 반대 방향 작업이 끝날 때까지
+HB_RIGHT에서 기다린다. A1이 2108에 도착하면 대기 중인 경로를 다시
+평가하고, side bay를 거치지 않는 `2108 → 2101` 직행 작업을 제출한다.
 
-Fleet Adapter 로그에서 Commission initialized 된 로봇 수를 확인한 뒤 실행한다.
+2대 대 2대 실행:
 
 ```bash
-for pair in \
-  "AGV_A1 1602" "AGV_A2 1602" "AGV_A3 1602" \
-  "AGV_B1 1599" "AGV_B2 1599" "AGV_B3 1599"; do
-  robot=$(echo "$pair" | awk '{print $1}')
-  dest=$(echo "$pair" | awk '{print $2}')
-
-  curl -s --noproxy "*" \
-    -X POST http://localhost:8100/tasks/robot_task \
-    -H "Content-Type: application/json" \
-    -d "{\"type\":\"robot_task_request\",\"robot\":\"${robot}\",\"fleet\":\"TOOL\",\"request\":{\"unix_millis_earliest_start_time\":0,\"category\":\"patrol\",\"priority\":{\"type\":\"default\",\"value\":0},\"description\":{\"places\":[\"${dest}\"],\"rounds\":1}}}" \
-    2>/dev/null
-
-  sleep 0.3
-done
+./scripts/stop_p4_passing_bay.sh --all
+./scripts/start_p4_passing_bay_2v2.sh
+./scripts/t4_dispatch_passing_bay_2v2.sh
 ```
 
-> 확인 필요: 위 명령은 목적지 `1599/1602`를 사용하지만 `p4_scenario.yaml` 주석은 `2101/2112`를 출발·목적지로 설명한다. 실제 사용 맵과 Fleet Adapter 설정에 맞는 번호를 사용해야 한다.
+A1/A2는 왼쪽에서 오른쪽으로, B1/B2는 오른쪽에서 왼쪽으로 이동한다.
+선행 block이 비면 같은 방향의 다음 로봇이 먼저 이동하고, 공유 conflict
+domain은 반대 방향 waiter가 생긴 시점에 현재 batch를 닫는다. B1은
+`6137`에 먼저 들어간 뒤 A1/A2의 공유 충돌 구간 통과를 기다린다. 설정된
+`requires_opposite_routes_cleared` 정책은 같은 direction domain에 남아 있는
+반대 방향 현재·후속 route step을 확인하며, 실행 중인 step은 telemetry로
+`release_node`를 통과한 뒤에만 안전하게 끝난 것으로 간주한다.
 
-## 4. GUI 시각화 (Windows CMD)
+## 물리 staging slot 실행
 
-```bat
-D:
-cd Documents\ICS_code\rmf_dev_tool-main\rmf_dev_tool-main\vda5050_gui
-python vda5050_gui.py
-```
-
-GUI 설정:
-
-1. `Mode` → `Live`
-2. `MQTT` → `Connect`
-3. Host: `127.0.0.1`
-4. Port: `1883`
-5. Prefix: `uagv/v2.0.0/inatech`
-6. `File` → `Open` → `p4_edit_node_add.yaml`
-
-실시간 MQTT 모드에서는 브로커 주소만 필요하다. 정적 로그 열기 모드까지 사용하려면 `vda5050_robot_simulator/logs/`도 함께 복사한다.
-
-## 5. 결과 저장
+동일한 2101/2108 좌표에 여러 로봇을 겹쳐 놓지 않는 2v2는 다음과 같이
+실행한다.
 
 ```bash
-FAID=$(docker ps --format "{{.ID}} {{.Names}}" | grep fleet | awk '{print $1}')
-LABEL="before"  # 또는 after
-RESULT_FILE="/mnt/d/Documents/ICS_code/${LABEL}_result.txt"
-
-echo "=== ${LABEL} ===" | tee "$RESULT_FILE"
-echo "negotiation: $(docker logs "$FAID" 2>&1 | grep -c 'negotiat')" \
-  | tee -a "$RESULT_FILE"
-
-docker logs "$FAID" 2>&1 | grep "3-tier path" | head -10 \
-  | tee -a "$RESULT_FILE"
+./scripts/stop_p4_passing_bay.sh --all
+./scripts/start_p4_passing_bay_staging_2v2.sh
+./scripts/launch_p4_passing_bay_staging_visualizer.sh
+./scripts/t4_dispatch_passing_bay_staging_2v2.sh
 ```
 
-## 6. 맵 에디터 (`rmf_graph_editor`)
+1v3은 A1 한 대가 왼쪽에서 오른쪽으로, B1/B2/B3 세 대가 오른쪽에서
+왼쪽으로 이동한다.
 
-### 실행
-
-```bat
-D:
-cd Documents\ICS_code\rmf_dev_tool-main\rmf_dev_tool-main\rmf_graph_editor
-pip install pyyaml
-python main.py
+```bash
+./scripts/stop_p4_passing_bay.sh --all
+./scripts/start_p4_passing_bay_staging_1v3.sh
+./scripts/launch_p4_passing_bay_staging_visualizer.sh
+./scripts/t4_dispatch_passing_bay_staging_1v3.sh
 ```
 
-파일 열기: `Ctrl+O` → `p4_edit_node_add.yaml`
+각 staging Holding Bay는 `capacity 1`이고 서로 다른 graph node와 좌표를
+가진다. B1은 `P4_RS1 → 6137 → P4_LS1`로 이동한다. B2/B3는 A1의 반대
+방향 작업이 끝날 때까지 각자의 오른쪽 slot에 머물고, 이후
+`P4_LS2/P4_LS3`로 같은 방향 pipeline 주행을 한다. A1은 B1이 비운
+`P4_RS1`을 목적지로 사용한다.
 
-### 주요 조작
+주행 도중 B2/B3 작업을 추가하려면 같은 staging 1v3 stack에서 다음을
+실행한다.
 
-| 키/동작 | 기능 |
-| --- | --- |
-| `S` | 선택 모드, 노드·레인 선택 및 드래그 이동 |
-| `N` | 노드 추가 |
-| `E` | 엣지 추가: 출발 노드 → 도착 노드 |
-| `D` | 선택 노드·레인 삭제 |
-| `F` | 화면 전체 맞춤 |
-| `Ctrl+Z` / `Ctrl+Y` | 실행 취소 / 다시 실행, 최대 50단계 |
-| `Ctrl+S` | 저장 |
-| 마우스 휠 | 확대·축소 |
-| 더블클릭 | 전체 속성 편집 대화상자 |
-| `Ctrl+O` | 파일 열기 |
+```bash
+./scripts/t4_dispatch_passing_bay_staging_dynamic_1v3.sh
+```
 
-### 양방향 Lane 추가
+A1/B1을 먼저 투입한 뒤 B1의 `HB_MIDDLE_SIDE` 도착 조건으로 B2를,
+A1의 `last_node_id=2105` 조건으로 B3를 투입한다. timeout은 오류 감지용이며
+작업 투입 시점은 고정 sleep이 아니라 `/traffic/status` 상태로 결정한다.
 
-1. `S` 모드에서 기존 단방향 lane을 클릭하고 `start/end` 노드를 확인한다.
-2. `E` 모드로 전환한다.
-3. 기존 `end` 노드에서 `start` 노드 방향으로 반대 lane을 추가한다.
-4. 오른쪽 패널에서 `speed_limit`, corridor 폭 등을 설정한다.
-5. `Ctrl+S`로 저장한다.
+이 동작은 로봇 이름을 검사하는 production 분기가 아니라 YAML에 정의된
+Holding Bay, block endpoint, direction domain과 route step으로 결정된다.
+다른 현장에서는 slot 수와 route 조합을 설정으로 바꾸고, simulation 좌표는
+차체 크기·제동거리·정지 오차를 반영해 측량한 좌표로 교체해야 한다.
 
-### 주요 노드 속성
+## 다중 Corridor 실행
 
-| 속성 | 설명 | 비고 |
-| --- | --- | --- |
-| `name` | Waypoint 이름 | Task 목적지 이름으로 사용 |
-| `is_charger` | 충전기 여부 | Fleet 등록에 최소 1개 필요 |
-| `is_holding_point` | 대기 가능 지점 | 로봇 대기 허용 |
-| `mutex` | 동시 진입 제한 그룹 | 같은 그룹 lane의 배타 진입 |
-| `narrow_corridor` | 좁은 복도 표시 | `CongestionAwareLaneCloser` 연동 |
+P4와 P5 두 개의 독립 통로를 동시에 실행한다.
 
-### 주요 Lane 속성
+```bash
+./scripts/stop_p4_passing_bay.sh --all
+./scripts/start_p4_p5_multi_corridor.sh
+./scripts/launch_p4_p5_multi_corridor_visualizer.sh
+./scripts/t4_dispatch_p4_p5_multi_corridor.sh
+```
 
-| 속성 | 설명 |
-| --- | --- |
-| `speed_limit` | 최대 속도(m/s) |
-| `rotationAllowed` | 구간 내 회전 허용 여부 |
-| `corridor.leftWidth/rightWidth` | 복도 폭 및 충돌 감지 범위(m) |
-| `mutex` | 동시 진입 제한 그룹명 |
+Visualizer에는 서로 연결되지 않은 두 navigation graph가 표시된다. P4는
+왼쪽에서 오른쪽으로 교행을 시작하고 P5는 오른쪽에서 왼쪽으로 직행을
+시작하므로, 서로 반대인 direction domain이 동시에 활성화되는 것을 확인할
+수 있다. 각 corridor는 고유한 holding bay, block ID, direction domain을
+가지며 Arbiter의 판정 로직은 공유한다. 새 corridor나 통로당 최대 4대의
+slot을 추가할 때는 map과 YAML route/capacity를 확장하고 production Python에
+로봇 ID나 node ID 조건을 추가하지 않는다.
 
-### 노드 색상 범례
-
-| 색상 | 의미 |
-| --- | --- |
-| 파란색 | `NONE`, 일반 waypoint |
-| 노란색 | `CHGE`, 충전 스테이션 |
-| 주황색 | `PICKDROP`, 픽업·드롭 위치 |
-| 초록색 | `PARK`, 주차 스팟 |
-| 보라 테두리 | `is_holding_point=true` |
-
-## 7. 주요 설정 파일
-
-| 파일 | 경로 | 용도 |
-| --- | --- | --- |
-| `p4_edit_node_add.yaml` | `rmf_platform-main/map/` | 시뮬레이션 맵 |
-| `p4_edit_before.yaml` | `rmf_platform-main/fleet_config/` | BEFORE 설정, penalty=0 |
-| `p4_edit_after.yaml` | `rmf_platform-main/fleet_config/` | AFTER 설정, penalty=50 |
-| `p4_edit_corridor_on.yaml` | `rmf_platform-main/fleet_config/` | Corridor Manager 설정 |
-| `p4_scenario.yaml` | `rmf_dev_tool-main/vda5050_robot_simulator/` | 로봇 초기 위치 및 시뮬레이터 설정 |
-| `config.yaml` | `src/rmf_vda5050_fleet_adapter/vda5050_fleet_adapter/config/` | Fleet Adapter 설정 |
-
-## 8. 이전 PC에서 옮겨야 할 구성
+다중 corridor map:
 
 ```text
-rmf_platform-main/
-├── docker-compose.yml
-├── docker/Dockerfile
-├── cyclonedds.xml
-├── cyclonedds_rmf.xml
-├── src/rmf_core/
-├── src/rmf_vda5050_fleet_adapter/
-├── src/rmf_battery_management/
-├── src/rmf_commission_manager/
-├── src/rmf_vda5050_rmf_bridge/
-└── src/rmf_dev_tool/rmf_web_custom/
-
-rmf_dev_tool-main/
-├── vda5050_robot_simulator/
-└── vda5050_gui/
+rmf_platform-main/src/rmf_vda5050_fleet_adapter/map/p4_p5_multi_passing_bay.yaml
 ```
 
-### 현재 확인된 경로 문제
+핵심 로그 확인:
 
-`docker-compose.yml`은 다음 맵을 참조한다.
+```bash
+tail -F .runtime/arbiter.log |
+grep --line-buffered -E \
+  'TASK_RELEASED|ROBOT_CLEARED_BLOCK|TASK_COMPLETED|BLOCK_FAULT'
+```
+
+종료:
+
+```bash
+./scripts/stop_p4_passing_bay.sh
+```
+
+Docker container까지 모두 중지하려면 `--all`을 붙인다.
+
+## 연결된 장거리 Corridor 실행
+
+`connected_corridor_chain.yaml`은 서로 분리된 통로가 아니라 하나의 긴
+양방향 1차선 본선이다. `C1 - SIDE1 - C2 - SIDE2 - C3` 구조이며 SIDE1과
+SIDE2는 본선 junction 옆의 물리 사이드 베이다. 종점과 사이드 베이만
+SafeStop으로 사용하므로 정상 스케줄링에서는 본선 위에 대기 작업을 만들지
+않는다. 좌우의 L1-L4/R1-R4는 본선 아래쪽의 독립 junction에 연결된 leaf
+slot이다. 한 slot으로 가는 경로가 다른 slot을 지나지 않으므로 대기·도착
+로봇과 본선 주행 로봇의 물리 경로가 겹치지 않는다.
+
+1대 대 3대:
+
+```bash
+./scripts/stop_p4_passing_bay.sh --all
+./scripts/start_connected_corridor_chain.sh 1v3
+./scripts/launch_connected_corridor_chain_visualizer.sh
+./scripts/dispatch_connected_corridor_chain_1v3.sh
+```
+
+2대 대 2대:
+
+```bash
+./scripts/stop_p4_passing_bay.sh --all
+./scripts/start_connected_corridor_chain.sh 2v2
+./scripts/launch_connected_corridor_chain_visualizer.sh
+./scripts/dispatch_connected_corridor_chain_2v2.sh
+```
+
+상태 기반 동적 2대 대 2대:
+
+```bash
+./scripts/stop_p4_passing_bay.sh --all
+./scripts/start_connected_corridor_chain.sh 2v2
+./scripts/launch_connected_corridor_chain_visualizer.sh
+./scripts/dispatch_connected_corridor_chain_dynamic_2v2.sh
+```
+
+동적 시나리오는 A1만 먼저 제출한다. A1이 출발 slot을 벗어나면 B1을 추가하고,
+B1이 ACTIVE가 되면 A2를, A2가 ACTIVE가 되면 B2를 추가한다. 반대 방향의 오래된
+대기 요청이 현재 direction batch를 닫으므로 실제 ACTIVE 순서는
+`A1 → B1 → A2 → B2`가 된다. 조건과 목적지는
+`config/dynamic_connected_corridor_chain_2v2.yaml`에서 바꿀 수 있다.
+
+현재 dispatch 예제는 먼저 허가된 같은 방향 batch가 최종 leaf slot까지
+도착한 뒤 반대 방향 batch를 출발시킨다. 1v3은 A1이 R4에 도착한 뒤
+B1/B2/B3가 L4/L3/L2로 이동하고, 2v2는 A1/A2가 R4/R3에 도착한 뒤
+B1/B2가 L4/L3로 이동한다. 목적지는 dispatch 데이터이며 production Python은
+이 robot ID나 node ID를 검사하지 않는다. 반대 방향 로봇이 없는 clear
+chain에서는 사이드 베이에 들르지 않고 최종 leaf slot까지 직행한다.
+
+상태와 이벤트는 다음 명령으로 확인한다.
+
+```bash
+curl -s --noproxy '*' http://127.0.0.1:8200/traffic/status |
+python3 -m json.tool
+
+tail -F .runtime/arbiter.log |
+grep --line-buffered -E \
+  'AUTHORITY_ADMIT|TASK_RELEASED|ROBOT_CLEARED_BLOCK|TASK_COMPLETED|BLOCK_FAULT|ROBOT_FAULT'
+```
+
+movement authority의 중간 블록은 telemetry에 따라 롤링 해제되지만 마지막
+블록은 목적지 SafeStop 도착까지 유지된다. 이 규칙은 robot ID나 map node를
+검사하는 분기가 아니라 authority의 블록 순서와 YAML topology에 적용된다.
+
+`WAITING`/`RETRY` job은 `/traffic/jobs/{job_id}/cancel`로 취소한 뒤 새 목적지를
+제출할 수 있다. 이미 RMF에 전달된 `ACTIVE` job은 이 endpoint가 HTTP 409를
+반환한다. 운행 중 목적지 변경은 본선에서 즉시 반전시키지 않고 다음 SafeStop에
+도착한 뒤 새 intent를 제출하는 정책으로 구현해야 한다.
+
+## 구성요소와 포트
+
+| 구성요소 | 역할 | 포트/통신 |
+| --- | --- | --- |
+| Mosquitto | VDA5050 MQTT broker | TCP 1883 |
+| Robot Simulator | AGV_A1/B1/B2 state 발행, order 수행 | MQTT |
+| Fleet Adapter | MQTT state/order와 RMF 변환 | ROS 2 + MQTT |
+| RMF Schedule/Dispatcher | 경로 schedule과 task 배정 | ROS 2 |
+| RMF API Server | REST task endpoint | HTTP 8100 |
+| Direction Arbiter | Corridor/Holding Bay 진입 제어 | HTTP 8200 + MQTT |
+
+## Passing-bay 상태 흐름
+
+1. A1이 `2101 → 2104`로 이동한다.
+2. B1이 `2108 → 6137`로 이동해 side bay에서 대기한다.
+3. A1은 하나의 task로 `2104 → 2108`을 계속 주행한다.
+4. A1 telemetry가 `lastNodeId=2106`을 보고하면 공유 conflict domain이 해제된다.
+5. 1대 대 1대와 2대 대 1대에서는 A1이 2106에서 정지하지 않고 주행하며,
+   B1은 `6137 → 2101`로 출발한다.
+6. 2대 대 1대에서는 A1 완료 후 B2가 `2108 → 2101`로 직행한다.
+7. 2대 대 2대에서는 B1이 6137에 머무는 동안 A2도 통과한다. A2가 설정된
+   release node 2106을 지난 뒤 B1이 2101로 출발하고, 반대 방향 작업이 모두
+   끝나면 B2가 side bay를 거치지 않고 직행한다.
+8. 목적지 holding-bay 예약은 각 로봇이 실제 도착할 때 해제된다.
+
+release-node telemetry가 누락되면 통로는 fail-closed 상태를 유지한다.
+
+## GUI
+
+```bash
+cd ~/rmf-work/rmf_passing_bay_poc
+source .venv/bin/activate
+python rmf_dev_tool-main/vda5050_gui/vda5050_gui.py
+```
+
+외부 스크립트가 Simulator를 실행하므로 GUI에서는 **Monitor** 탭을 사용한다. 맵은 다음 파일을 연다.
 
 ```text
-src/rmf_vda5050_fleet_adapter/map/map_dsr_0427.yaml
+rmf_platform-main/src/rmf_vda5050_fleet_adapter/map/p4_passing_bay.yaml
 ```
 
-이 파일이 실제 워크스페이스에 없으면 `vda5050_fleet_adapter`, `battery_management`, `rmf_web_dashboard`의 volume mount 또는 실행이 실패한다. 반면 수동 T2 명령은 최상위의 `map/p4_edit_node_add.yaml`과 `fleet_config/p4_edit_corridor_on.yaml`을 사용한다. 어느 구조가 실제 기준인지 확인하고 경로를 통일해야 한다.
+## 수동 진단
+
+```bash
+docker compose -f rmf_platform-main/docker-compose.yml ps
+docker logs --tail 200 vda5050_fleet_adapter
+curl -s --noproxy '*' http://127.0.0.1:8200/traffic/status |
+python3 -m json.tool
+```
+
+실행 파일과 자세한 새 PC 설치법은 저장소 루트의 `README.md`를 우선 기준으로 한다.
+
+## Production과 시뮬레이션의 구분
+
+기존 `start_p4_*`, `start_connected_corridor_chain.sh`은 로컬 Simulator와 개발용
+MQTT/RMF 구성을 시작하는 시뮬레이션 명령이다. 실제 로봇 연결에는 이 launcher를
+사용하지 않는다.
+
+실차 profile은 다음 명령으로 먼저 검사한다.
+
+```bash
+.venv/bin/python scripts/validate_production_deployment.py /path/to/site-production.yaml
+```
+
+검사가 통과한 profile만 production launcher에 전달한다.
+
+```bash
+export FAB_MQTT_USER='<site mqtt user>'
+export FAB_MQTT_PASSWORD='<site mqtt password>'
+export RMF_API_TOKEN='<site service token>'
+./scripts/start_production_corridor.sh /path/to/site-production.yaml
+```
+
+초기 build와 로봇 접속 제한시간은 각각
+`PRODUCTION_HEALTH_TIMEOUT_SECONDS`(기본 300초),
+`PRODUCTION_READY_TIMEOUT_SECONDS`(기본 900초)로 조정한다.
+모든 required robot의 RMF 등록이 확인되지 않거나 이후 readiness가 실패하면
+launcher는 같은 Compose 구성의 Adapter와 RMF 서비스를 함께 중지한다.
+production API server는 simulation 설정을 사용하지 않으며
+`127.0.0.1:8100`에만 bind한다. `rmf_api.url`은
+`http://127.0.0.1:8100/tasks/robot_task`로 설정하고, 해당 bearer token은
+Task Gate 외의 작업 제출 클라이언트에 제공하지 않는다.
+
+production launcher는 Simulator와 Visualizer를 실행하지 않고 외부 MQTT broker,
+RMF 서비스와 실제 Fleet Adapter만 사용한다. 모든 필수 로봇이 fresh telemetry로
+configured SafeStop에 정지한 clean-start 상태가 확인되기 전에는 `/ready`가 503을
+반환하고 Task Gate가 새 작업을 거부한다.
+
+launcher는 profile을 기준으로 runtime-only Fleet Adapter 설정과 Compose
+override를 `.runtime/production-field`에 생성한다. 이 과정에서 실제 nav graph,
+Corridor edge/release node/Holding Bay, robot roster와 charger node가 서로
+일치하는지 검사하고 MQTT/TLS·좌표 보정·물리 한계를 Fleet Adapter에 반영한다.
+좌표 보정 잔차와 scale 허용값은 production profile의 `max_residual`,
+`min_scale`, `max_scale`로 현장 측정 기준에 맞춰 명시한다. Block geometry를
+지나는 nav graph lane이 어느 Block에도 등록되지 않은 경우에도 기동을 거부한다.
+현재 현장 경로는 단일 RMF level과 로봇당 하나의 VDA5050 map ID를 지원한다.
+RMF 좌표로 계획한 경로는 reference coordinates의 RMF→robot 변환을 거쳐
+VDA5050 Order가 되며, 도착은 좌표계 간 직접 거리 비교가 아니라 실제 Order
+완료·lastNodeId·정지 상태로 판정한다.
+좌표 보정이 활성화된 로봇이 작업 시작 시 유효한 `lastNodeId`를 보내지 않으면
+로봇 좌표를 RMF graph 좌표에 직접 대입하지 않고 작업 발행을 거부한다.
+
+# VDA5050 장애 주입 검증
+
+연결형 Corridor 시뮬레이터는 실제 로봇이 보내는 것과 같은 State 및
+Connection 메시지에 장애를 주입할 수 있다. 기본 예제는 안전을 위해
+`enabled: false`이며, 로봇과 노드 선택은 Python 코드가 아니라
+`rmf_dev_tool-main/vda5050_robot_simulator/connected_corridor_fault_scenarios.yaml`
+의 규칙으로 지정한다.
+
+```bash
+.venv/bin/python rmf_dev_tool-main/vda5050_robot_simulator/run.py \
+  --config connected_corridor_chain_scenario.yaml \
+  --fault-scenarios connected_corridor_fault_scenarios.yaml
+```
+
+지원하는 trigger는 `elapsed_at_least`, `at_node`, `driving`이며 함께 쓰면
+모두 만족해야 발화한다. action은 E-stop, 운전 모드, pause, map ID,
+positionInitialized, State 발행 중단, Connection 발행을 지원한다. 규칙은
+한 번 발화하며 상태 효과는 뒤의 복구 규칙이 덮어쓸 때까지 유지된다.
+
+실행 결과는 고정 대기 시간이 아니라 status 조건으로 판정한다.
+
+```bash
+.venv/bin/python scripts/run_connected_corridor_fault_scenario.py \
+  --scenario inside_estop --robot AGV_A1 \
+  --log .runtime/arbiter.log --timeout 120
+```
+
+Corridor 내부의 E-stop 또는 State timeout은 로봇과 관련 Block을 fault로
+잠그고 반대편 authority를 허용하지 않아야 한다. SafeStop의 MANUAL은 해당
+로봇의 새 authority만 막아야 하며 Block fault를 만들면 안 된다. 재시작 때
+Corridor 내부 로봇을 관측했다면 로봇이 나중에 SafeStop으로 보이더라도
+운영자 복구 전에는 `recovery.required`가 유지되어야 한다.
+
+## 2026-09-21 실제 시뮬레이션 결과
+
+- 정상 동적 2v2는 `AGV_A1 → AGV_B1 → AGV_A2 → AGV_B2` 순서로
+  활성화됐고, 최종 위치는 각각 `CHAIN_R4`, `CHAIN_L4`, `CHAIN_R3`,
+  `CHAIN_L3`였다. 네 job이 모두 COMPLETE였고 C1/C2/C3는 FREE,
+  최소 관측 로봇 간 거리는 7.2m였다.
+- C2 내부 E-stop은 A1을 `safety.estop`으로 ineligible 처리하고 미해제
+  C2/C3를 fault로 잠갔다. 반대 로봇 authority는 발급되지 않았다.
+- C2 내부 State 발행 중단은 `state.stale` 이후 `telemetry_timeout`으로
+  A1과 C2/C3를 잠갔다. Connection 발행은 State 억제와 독립적으로 유지됐다.
+- clean-start 이후 A1이 SafeStop에서 MANUAL로 바뀌면 A1 요청만
+  `robot_not_eligible`로 거절됐고 A2 요청은 ADMIT됐다. Block fault는 없었다.
+- Corridor 내부 로봇이 있는 상태에서 Arbiter를 재시작하면
+  `recovery.required`가 고정됐으며, 로봇이 종점 SafeStop에 도착해도 자동으로
+  task admission을 재개하지 않았다.
+
+VDA5050 Connection은 주기 heartbeat가 아니라 retained 상태 이벤트로 취급한다.
+따라서 오래된 `ONLINE` 수신 시각만으로 offline 판정을 내리지 않으며,
+명시적 `OFFLINE`/`CONNECTIONBROKEN` 또는 State timeout을 안전 정지 근거로 쓴다.

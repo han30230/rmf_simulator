@@ -200,7 +200,9 @@ class Vda5050RobotAPI(RobotAPI):
         )
         return RobotAPIResult.SUCCESS
 
-    def stop(self, robot_name: str, cmd_id: int) -> RobotAPIResult:
+    def stop(
+        self, robot_name: str, cmd_id: int, *, action_id: str = ''
+    ) -> RobotAPIResult:
         if not self._mqtt.is_connected:
             logger.warning('MQTT not connected, will retry stop')
             return RobotAPIResult.RETRY
@@ -208,7 +210,7 @@ class Vda5050RobotAPI(RobotAPI):
             logger.warning('Robot %s not connected, will retry stop', robot_name)
             return RobotAPIResult.RETRY
         action = Action(
-            'cancelOrder', f'cancel_{cmd_id}_{uuid.uuid4().hex[:8]}',
+            'cancelOrder', action_id or f'cancel_{cmd_id}_{uuid.uuid4().hex[:8]}',
             BlockingType.HARD,
         )
         self._mqtt.publish(

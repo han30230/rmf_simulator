@@ -1,0 +1,72 @@
+# DSR lab PoC corridor based on WAVE nav graph revision 228.
+# Managed main corridor: 1019 <-> 1024.
+# NOTE: 1019/1024 are junction-like endpoints. Verify physical waiting safety
+# before using them as real holding positions; prefer off-mainline staging nodes
+# when available.
+traffic_control:
+  enabled: true
+  telemetry_timeout: 5.0
+  tick_interval: 0.25
+  unmatched_route_policy: BLOCKED
+
+  holding_bays:
+    HB_1019:
+      node_id: "1019"
+      capacity: 1
+      geometry:
+        circle: {x: 0.0, y: 12.0, radius: 0.6}
+
+    HB_1024:
+      node_id: "1024"
+      capacity: 1
+      geometry:
+        circle: {x: 20.0, y: 12.0, radius: 0.6}
+
+  groups:
+    DSR_TEST_CORRIDOR:
+      blocks:
+        - id: DSR_1019_1024
+          direction_domain: DSR_1019_1024
+          entry_a: HB_1019
+          entry_b: HB_1024
+          capacity: 1
+
+          edges_a_to_b:
+            - "1019>1020"
+            - "1020>1021"
+            - "1021>1022"
+            - "1022>1023"
+            - "1023>1024"
+
+          edges_b_to_a:
+            - "1024>1023"
+            - "1023>1022"
+            - "1022>1021"
+            - "1021>1020"
+            - "1020>1019"
+
+          # Broad geometry is only a fallback. Live VDA5050 edgeStates take
+          # precedence in RobotTracker so side branches are not misclassified.
+          geometry:
+            bounds: {min_x: 0.6, max_x: 19.4, min_y: 11.0, max_y: 13.0}
+
+  routes:
+    - id: DSR_1019_TO_1024
+      start_nodes: ["1019"]
+      goal_nodes: ["1024"]
+      steps:
+        - block_id: DSR_1019_1024
+          direction: A_TO_B
+          source_hb: HB_1019
+          destination_hb: HB_1024
+          goal_node: "1024"
+
+    - id: DSR_1024_TO_1019
+      start_nodes: ["1024"]
+      goal_nodes: ["1019"]
+      steps:
+        - block_id: DSR_1019_1024
+          direction: B_TO_A
+          source_hb: HB_1024
+          destination_hb: HB_1019
+          goal_node: "1019"
