@@ -179,6 +179,33 @@ class DsrFieldHardeningTests(unittest.TestCase):
 
         self.assertNotIn("SIM_A", self.tracker.snapshot())
 
+    def test_stale_live_state_timestamp_is_ignored_in_strict_monitor(self) -> None:
+        monitor = MqttStateMonitor(
+            self.tracker,
+            host="127.0.0.1",
+            port=1883,
+            topic="uagv/v2/YujinRobot/+/state",
+            state_max_age_seconds=10.0,
+        )
+        payload = state_payload(
+            robot_id="SIM_A",
+            header_id=99,
+            last_node_id="A",
+            x=0.0,
+            y=0.0,
+            driving=False,
+        )
+        payload["timestamp"] = "2020-01-01T00:00:00Z"
+        message = FakeMessage(
+            "uagv/v2/YujinRobot/SIM_A/state",
+            payload,
+            retain=False,
+        )
+
+        monitor._on_message(None, None, message)
+
+        self.assertNotIn("SIM_A", self.tracker.snapshot())
+
     def test_live_state_is_ingested(self) -> None:
         monitor = MqttStateMonitor(
             self.tracker,
