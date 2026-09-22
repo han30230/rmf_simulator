@@ -99,6 +99,12 @@ class RobotTracker:
             hb_id = previous.current_hb if previous else None
             driving = bool(payload.get("driving", False))
             edge_states = list(payload.get("edgeStates") or [])
+            edge_ids = [
+                str(item.get("edgeId"))
+                for item in edge_states
+                if isinstance(item, dict) and item.get("edgeId") is not None
+            ]
+            has_topological_edge_evidence = any(">" in edge_id for edge_id in edge_ids)
             matching_edge_blocks = self.registry.blocks_for_edges(edge_states)
             matching_blocks: list[str] = []
 
@@ -145,13 +151,15 @@ class RobotTracker:
                     observed_block = edge_granted_block
                 elif len(matching_edge_blocks) == 1:
                     observed_block = matching_edge_blocks[0]
-                elif edge_states:
-                    # When a driving robot reports VDA5050 edge state, do not
-                    # override that evidence with broad geometry. This avoids
-                    # classifying a side branch as the managed main corridor.
-                    # If the robot was already inside a managed block, retain
-                    # that occupancy fail-closed until a configured safe exit
-                    # is observed.
+                elif has_topological_edge_evidence:
+                    # Only treat edgeIds as authoritative when they carry the
+                    # configured topological A>B identity. Some VDA5050
+                    # implementations use opaque order-local edgeIds; those
+                    # cannot safely be compared with corridor YAML and must
+                    # fall back to the existing geometry/grant evidence.
+                    # For a known topological side branch, retain any existing
+                    # managed occupancy fail-closed but do not enter a broad
+                    # corridor solely because its geometry overlaps.
                     observed_block = old_block
                 elif old_block in matching_blocks:
                     observed_block = old_block
