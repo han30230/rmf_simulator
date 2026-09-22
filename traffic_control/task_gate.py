@@ -1051,6 +1051,15 @@ def create_app(gate: TaskGate):
 
     @app.post("/traffic/reset")
     def reset_traffic(force: bool = Query(default=False)):
+        strict_mode = (
+            gate.readiness is not None
+            and gate.readiness.profile.mode in {"lab", "production"}
+        )
+        if force and strict_mode:
+            raise HTTPException(
+                status_code=403,
+                detail="force reset is disabled in strict deployment mode",
+            )
         if not gate.reset(force=force):
             raise HTTPException(status_code=409, detail="robot is still inside a block")
         return {"reset": True, "force": force}
