@@ -2,7 +2,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PROFILE="${1:-$ROOT/config/deployment.dsr-lab.example.yaml}"
+if [[ $# -lt 1 ]]; then
+  echo "usage: $0 /path/to/dsr-lab-profile.yaml" >&2
+  exit 2
+fi
+PROFILE="$1"
 PORT="${DSR_ARBITER_PORT:-18200}"
 CONTAINER="${WAVE_ADAPTER_CONTAINER:-Wave_adapter}"
 EXPECTED_REVISION="${EXPECTED_WAVE_NAV_REVISION:-}"
