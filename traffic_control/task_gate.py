@@ -1230,6 +1230,11 @@ def main(argv: list[str] | None = None) -> int:
                 profile.mqtt.state_topic if profile is not None else args.mqtt_topic
             ),
             mqtt_config=(profile.mqtt if profile is not None else None),
+            state_max_age_seconds=(
+                max(5.0, profile.telemetry.state_timeout * 2.0)
+                if profile is not None and profile.mode in {"lab", "production"}
+                else None
+            ),
         )
         if registry.enabled
         else None
