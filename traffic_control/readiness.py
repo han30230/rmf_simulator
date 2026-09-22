@@ -90,7 +90,6 @@ class RuntimeReadiness:
             states = tuple(item for item in telemetry.values() if item is not None)
             if any(
                 item.current_block is not None
-                or self.tracker.current_safe_node(item.robot_id) is None
                 or item.driving
                 or item.faulted
                 for item in states
@@ -100,6 +99,15 @@ class RuntimeReadiness:
             reasons = self._eligibility_reasons(required, current)
             if reasons:
                 return self._result(False, "robots.ineligible", reasons)
+            unconfirmed = tuple(
+                sorted(
+                    item.robot_id
+                    for item in states
+                    if self.tracker.current_safe_node(item.robot_id) is None
+                )
+            )
+            if unconfirmed:
+                return self._result(False, "safe_stop.unconfirmed", unconfirmed)
             if any(block.occupants for block in self.registry.blocks.values()):
                 self._recovery_required = True
                 return self._result(False, "recovery.required")
