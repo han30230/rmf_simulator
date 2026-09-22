@@ -9,6 +9,7 @@ import os
 import threading
 import time
 from typing import Any, Mapping
+from uuid import uuid4
 
 from .corridor_registry import CorridorRegistry
 from .deployment import MqttDeploymentConfig
@@ -461,7 +462,7 @@ class MqttStateMonitor:
         host: str,
         port: int,
         topic: str,
-        client_id: str = "direction_arbiter_state_monitor",
+        client_id: str | None = None,
         mqtt_config: MqttDeploymentConfig | None = None,
         environ: Mapping[str, str] | None = None,
     ) -> None:
@@ -481,13 +482,16 @@ class MqttStateMonitor:
             else f"{topic}/connection"
         )
         self._connected = False
+        effective_client_id = client_id or (
+            f"direction_arbiter_{os.getpid()}_{uuid4().hex[:8]}"
+        )
         if hasattr(mqtt, "CallbackAPIVersion"):
             self._client = mqtt.Client(
                 callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-                client_id=client_id,
+                client_id=effective_client_id,
             )
         else:
-            self._client = mqtt.Client(client_id=client_id)
+            self._client = mqtt.Client(client_id=effective_client_id)
         self._client.on_connect = self._on_connect
         self._client.on_disconnect = self._on_disconnect
         self._client.on_message = self._on_message
