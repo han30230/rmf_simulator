@@ -162,6 +162,25 @@ class DsrFieldHardeningTests(unittest.TestCase):
         self.assertEqual(state["last_node_id"], "A")
         self.assertEqual(state["current_hb"], "HB_A")
 
+    def test_holding_geometry_without_matching_last_node_is_not_safe_stop(self) -> None:
+        self.tracker.ingest_state(
+            "SIM_A",
+            state_payload(
+                robot_id="SIM_A",
+                header_id=7,
+                last_node_id="UNKNOWN",
+                x=0.0,
+                y=0.0,
+                driving=False,
+            ),
+        )
+
+        self.assertEqual(
+            self.tracker.snapshot()["SIM_A"]["current_hb"],
+            "HB_A",
+        )
+        self.assertIsNone(self.tracker.current_safe_node("SIM_A"))
+
     def test_driving_robot_is_not_a_safe_stop_even_if_last_node_is_holding_bay(self) -> None:
         self.tracker.ingest_state(
             "SIM_A",
