@@ -90,7 +90,16 @@ class ReadinessSafeStopTests(unittest.TestCase):
         result = self._readiness(tracker, reg).ready()
 
         self.assertFalse(result["ready"])
-        self.assertEqual(result["reason"], "recovery.required")
+        self.assertEqual(result["reason"], "safe_stop.unconfirmed")
+        self.assertFalse(result["recovery_required"])
+
+        tracker.ingest_state("SIM_A", {
+            **payload("A"),
+            "headerId": 2,
+            "timestamp": "2026-09-22T00:00:02Z",
+        })
+        recovered = self._readiness(tracker, reg).ready()
+        self.assertTrue(recovered["ready"])
 
     def test_matching_last_node_is_clean_start(self) -> None:
         reg = registry()
