@@ -398,6 +398,45 @@ class TaskGate:
                     job.status = JobStatus.CANCELLED
             return True
 
+    def acknowledge_recovery(self) -> dict[str, Any]:
+        """Discard stale in-memory work only after strict safe-stop verification."""
+        if self.readiness is None:
+            return {
+                "recovered": False,
+                "reason": "strict_readiness_not_configured",
+            }
+        with self._lock:
+            check = self.readiness.recovery_check()
+            if not check["ready"]:
+                return {
+                    "recovered": False,
+                    "reason": "recovery_not_safe",
+                    "readiness": check,
+                }
+            if not self.arbiter.reset(force=False):
+                return {
+                    "recovered": False,
+                    "reason": "arbiter_not_clear",
+                }
+            for job in self._jobs.values():
+                if job.status not in {JobStatus.COMPLETE, JobStatus.CANCELLED}:
+                    job.status = JobStatus.CANCELLED
+            for job in self._chain_jobs.values():
+                if job.status not in {JobStatus.COMPLETE, JobStatus.CANCELLED}:
+                    job.status = JobStatus.CANCELLED
+            status = self.readiness.acknowledge_recovery()
+            if not status["ready"]:
+                return {
+                    "recovered": False,
+                    "reason": "recovery_ack_failed",
+                    "readiness": status,
+                }
+            logger.warning("[TRAFFIC] RECOVERY_ACKNOWLEDGED")
+            return {
+                "recovered": True,
+                "readiness": status,
+            }
+
     def status(self) -> dict[str, Any]:
         with self._lock:
             jobs = {
@@ -1075,6 +1114,13 @@ def create_app(gate: TaskGate):
         if not gate.cancel(job_id):
             raise HTTPException(status_code=409, detail="job cannot be cancelled")
         return gate.status()["jobs"][job_id]
+
+    @app.post("/traffic/recovery/ack")
+    def acknowledge_recovery():
+        result = gate.acknowledge_recovery()
+        if not result.get("recovered"):
+            raise HTTPException(status_code=409, detail=result)
+        return result
 
     @app.post("/traffic/reset")
     def reset_traffic(force: bool = Query(default=False)):
