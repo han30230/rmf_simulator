@@ -286,6 +286,40 @@ docs/superpowers/specs/          설계 문서
 docs/superpowers/plans/          구현 계획과 검증 항목
 ```
 
+## DSR Lab 적용 전 하드닝 절차
+
+DSR에서는 `simulation` 모드로 TaskGate를 띄우지 않는다. `lab` deployment
+profile은 production과 같은 telemetry/robot readiness 검사를 사용하되,
+실험실의 평문 MQTT(1883)를 위해 TLS와 인증 secret을 강제하지 않는다.
+
+1. 실행 중인 `Wave_adapter`의 runtime navigation graph를 snapshot으로 복사한다.
+2. `scripts/check_wave_runtime_graph.py`로 runtime graph와 snapshot fingerprint,
+   corridor node/edge를 비교한다. 불일치하면 TaskGate를 시작하지 않는다.
+3. `config/deployment.dsr-lab.example.yaml`을 복사해 현장값을 확인한 profile을
+   만든다. 예제의 calibration/physical 값은 simulator 기준이므로 실물 투입
+   전에 반드시 측정값으로 교체한다.
+4. 아래 launcher로 시작한다. profile을 명시하지 않으면 실행을 거부한다.
+
+```bash
+EXPECTED_WAVE_NAV_REVISION=228 \
+  ./scripts/start_dsr_lab_arbiter.sh /path/to/dsr-lab.yaml
+```
+
+MQTT `state`의 retained snapshot은 RobotTracker에 넣지 않는다. 주행 중
+VDA5050 `edgeStates`가 존재하면 geometry보다 우선하며, 관리 대상이 아닌
+side-branch edge를 broad corridor geometry로 재분류하지 않는다. 주행 중인
+로봇은 `lastNodeId`가 Holding Bay여도 safe stop으로 취급하지 않는다.
+
+`check_wave_runtime_graph.py`는 Holding Bay node에 관리되지 않은 incident
+lane이 있으면 warning을 출력한다. DSR의 `1019`/`1024`처럼 junction 성격의
+node를 Holding Bay로 사용할 때는 실제 대기 위치와 통행 간섭을 확인하고,
+필요하면 본선 밖 staging node로 옮긴다.
+
+Lab PoC 동안 managed task는 반드시 TaskGate
+`http://127.0.0.1:18200/tasks/robot_task`로 보낸다. 기존 RMF API `:8100`으로
+직접 제출하면 Arbiter를 우회하므로, UI/Robotpilot endpoint 전환 전에는
+수동 실험 task만 18200을 사용한다.
+
 ## 실제 로봇 적용 전 주의
 
 이 저장소의 JWT 생성은 로컬 시뮬레이션 전용이다. 실제 시스템에서는 현장 인증 서버의 service token을 사용해야 한다. 또한 아래 항목을 별도 검증해야 한다.
