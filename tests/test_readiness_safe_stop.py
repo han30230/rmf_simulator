@@ -105,7 +105,8 @@ class ReadinessSafeStopTests(unittest.TestCase):
         tracker = RobotTracker(reg, arbiter)
         tracker.ingest_state("SIM_A", payload("UNKNOWN"))
 
-        result = self._readiness(tracker, reg).ready()
+        readiness = self._readiness(tracker, reg)
+        result = readiness.ready()
 
         self.assertFalse(result["ready"])
         self.assertEqual(result["reason"], "safe_stop.unconfirmed")
@@ -116,7 +117,7 @@ class ReadinessSafeStopTests(unittest.TestCase):
             "headerId": 2,
             "timestamp": "2026-09-22T00:00:02Z",
         })
-        recovered = self._readiness(tracker, reg).ready()
+        recovered = readiness.ready()
         self.assertTrue(recovered["ready"])
 
     def test_readiness_rechecks_operational_eligibility_after_clean_start(self) -> None:
