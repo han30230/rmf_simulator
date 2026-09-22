@@ -404,7 +404,12 @@ class RobotTracker:
             ):
                 return None
             if telemetry.current_hb is not None:
-                return self.registry.holding_bays[telemetry.current_hb].node_id
+                expected_node = self.registry.holding_bays[
+                    telemetry.current_hb
+                ].node_id
+                if telemetry.last_node_id != expected_node:
+                    return None
+                return expected_node
             hb_id = self.registry.holding_bay_for_node(telemetry.last_node_id)
             return telemetry.last_node_id if hb_id is not None else None
 
