@@ -51,4 +51,4 @@ rmf_api:
 
 paths:
   nav_graph: WAVE_nav_graph_rev228.yaml
-  corridor_config: corridor_blocks_dsr.yaml
+  corridor_config: corridor_blocks_dsr_rev228.yaml
