@@ -145,6 +145,14 @@ class RobotTracker:
                     observed_block = edge_granted_block
                 elif len(matching_edge_blocks) == 1:
                     observed_block = matching_edge_blocks[0]
+                elif edge_states:
+                    # When a driving robot reports VDA5050 edge state, do not
+                    # override that evidence with broad geometry. This avoids
+                    # classifying a side branch as the managed main corridor.
+                    # If the robot was already inside a managed block, retain
+                    # that occupancy fail-closed until a configured safe exit
+                    # is observed.
+                    observed_block = old_block
                 elif old_block in matching_blocks:
                     observed_block = old_block
                 elif geometry_granted_block is not None:
