@@ -418,6 +418,20 @@ class RobotTracker:
             item = self._robots.get(robot_id)
             return replace(item) if item is not None else None
 
+    def clear_fault_if_safe(self, robot_id: str) -> bool:
+        """Clear the local fault latch only when the robot is stopped at a SafeStop."""
+        with self._lock:
+            telemetry = self._robots.get(robot_id)
+            if (
+                telemetry is None
+                or telemetry.current_block is not None
+                or telemetry.current_hb is None
+                or telemetry.driving
+            ):
+                return False
+            telemetry.faulted = False
+            return True
+
     def _fault_if_unsafe_inside(self, robot_id: str, now: float) -> None:
         telemetry = self._robots.get(robot_id)
         if telemetry is None or self.eligibility_policy is None:
