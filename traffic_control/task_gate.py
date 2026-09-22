@@ -100,13 +100,69 @@ class TaskGate:
         self.readiness = readiness
         self._jobs: dict[str, GateJob] = {}
         self._chain_jobs: dict[str, ChainGateJob] = {}
+        self._idempotency: dict[str, tuple[str, dict[str, Any] | None]] = {}
         self._chain_planner = CorridorChainPlanner(registry)
         self._lock = threading.RLock()
 
-    def submit(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Submit, queue, or bypass one RMF robot task request."""
+    def submit(
+        self,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Submit one task, optionally deduplicating HTTP retries by key."""
         if not isinstance(payload, dict):
             raise TypeError("task payload must be a mapping")
+
+        normalized_key = str(idempotency_key or "").strip()
+        if not normalized_key:
+            return self._submit_once(payload)
+        if len(normalized_key) > 200:
+            raise ValueError("idempotency key is too long")
+
+        fingerprint = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        with self._lock:
+            cached = self._idempotency.get(normalized_key)
+            if cached is not None:
+                cached_fingerprint, cached_result = cached
+                if cached_fingerprint != fingerprint:
+                    raise ValueError(
+                        "idempotency key was already used for a different payload"
+                    )
+                if cached_result is None:
+                    return {
+                        "decision": Decision.BLOCKED.value,
+                        "reason": "duplicate_request_in_progress",
+                        "idempotent_replay": True,
+                    }
+                replay = deepcopy(cached_result)
+                replay["idempotent_replay"] = True
+                return replay
+            self._idempotency[normalized_key] = (fingerprint, None)
+
+        try:
+            result = self._submit_once(payload)
+        except Exception:
+            with self._lock:
+                current = self._idempotency.get(normalized_key)
+                if current is not None and current[0] == fingerprint:
+                    self._idempotency.pop(normalized_key, None)
+            raise
+
+        with self._lock:
+            self._idempotency[normalized_key] = (
+                fingerprint,
+                deepcopy(result),
+            )
+        return result
+
+    def _submit_once(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Submit, queue, or bypass one RMF robot task request."""
 
         if not self.registry.enabled:
             upstream = self.forwarder(deepcopy(payload))
@@ -944,7 +1000,7 @@ class PeriodicGateRunner:
 
 
 def create_app(gate: TaskGate):
-    from fastapi import FastAPI, HTTPException, Query
+    from fastapi import FastAPI, Header, HTTPException, Query
 
     app = FastAPI(title="RMF Direction Arbiter Task Gate")
 
@@ -966,9 +1022,15 @@ def create_app(gate: TaskGate):
         return status
 
     @app.post("/tasks/robot_task")
-    def submit_task(payload: dict[str, Any]):
+    def submit_task(
+        payload: dict[str, Any],
+        idempotency_key: str | None = Header(
+            default=None,
+            alias="Idempotency-Key",
+        ),
+    ):
         try:
-            return gate.submit(payload)
+            return gate.submit(payload, idempotency_key=idempotency_key)
         except (KeyError, TypeError, ValueError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
