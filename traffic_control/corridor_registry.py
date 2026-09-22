@@ -380,17 +380,23 @@ class CorridorRegistry:
                 return hb_id
         return None
 
-    def block_for_edges(self, edge_states: list[dict[str, Any]]) -> str | None:
+    def blocks_for_edges(self, edge_states: list[dict[str, Any]]) -> list[str]:
+        """Return every managed block referenced by the reported VDA5050 edges."""
         edge_ids = {
             str(item.get("edgeId"))
             for item in edge_states
             if isinstance(item, dict) and item.get("edgeId") is not None
         }
-        matches = [
+        if not edge_ids:
+            return []
+        return [
             block_id
             for block_id, block in self.blocks.items()
             if edge_ids & (block.edges_a_to_b | block.edges_b_to_a)
         ]
+
+    def block_for_edges(self, edge_states: list[dict[str, Any]]) -> str | None:
+        matches = self.blocks_for_edges(edge_states)
         return matches[0] if len(matches) == 1 else None
 
 
