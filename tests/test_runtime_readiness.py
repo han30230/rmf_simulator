@@ -74,6 +74,54 @@ class RuntimeReadinessTests(unittest.TestCase):
         self.assertFalse(second["ready"])
         self.assertTrue(second["recovery_required"])
 
+    def test_operator_can_ack_recovery_after_robot_returns_safe(self) -> None:
+        registry, arbiter, planner, tracker = tracking_components()
+        readiness = RuntimeReadiness(
+            profile("A1"),
+            registry,
+            tracker,
+            mqtt_connected=lambda: True,
+            rmf_probe=lambda: True,
+        )
+        path = registry.resolve_chain_path("L1", "R1")
+        assert path is not None
+        plan = planner.plan(path, lambda *_: True)
+        assert plan is not None
+        arbiter.request_authority(plan, robot_id="A1")
+        tracker.ingest_state(
+            "A1", state("N1", 5.0, 1.0, driving=True), received_at=1.0
+        )
+        self.assertEqual(readiness.ready(now=1.0)["reason"], "recovery.required")
+
+        arbiter.reset(force=True)
+        tracker.ingest_state(
+            "A1", state("L1", -1.0, 1.0, driving=False), received_at=2.0
+        )
+
+        recovered = readiness.acknowledge_recovery(now=2.0)
+
+        self.assertTrue(recovered["ready"])
+        self.assertEqual(recovered["reason"], "ready")
+
+    def test_operator_cannot_ack_recovery_while_robot_is_moving(self) -> None:
+        registry, _, _, tracker = tracking_components()
+        readiness = RuntimeReadiness(
+            profile("A1"),
+            registry,
+            tracker,
+            mqtt_connected=lambda: True,
+            rmf_probe=lambda: True,
+        )
+        tracker.ingest_state(
+            "A1", state("L1", -1.0, 1.0, driving=True), received_at=1.0
+        )
+        readiness._recovery_required = True
+
+        result = readiness.acknowledge_recovery(now=1.0)
+
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["reason"], "recovery.robot_not_safe")
+
     def test_dependency_failures_keep_runtime_not_ready(self) -> None:
         registry, _, _, tracker = tracking_components()
         tracker.ingest_state(
