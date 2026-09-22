@@ -50,7 +50,12 @@ if ss -lnt | grep -qE "[:.]$PORT([[:space:]]|$)"; then
   exit 2
 fi
 
+if ss -lnt | grep -qE '(^|[[:space:]])(0\.0\.0\.0|\[::\]):8100([[:space:]]|$)'; then
+  echo "WARNING RMF API :8100 is externally bound; managed DSR tasks must still be sent only to TaskGate :$PORT" >&2
+fi
+
 echo "Starting DSR TaskGate on 127.0.0.1:$PORT using strict lab profile"
+echo "Managed task endpoint: http://127.0.0.1:$PORT/tasks/robot_task"
 exec .venv/bin/python -m traffic_control.task_gate \
   --deployment-profile "$PROFILE" \
   --listen-host 127.0.0.1 \
