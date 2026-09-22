@@ -195,6 +195,23 @@ class DsrFieldHardeningTests(unittest.TestCase):
         self.assertIsNone(state["current_block"])
         self.assertIsNone(state["current_hb"])
 
+    def test_opaque_edge_id_keeps_geometry_fallback(self) -> None:
+        self.tracker.ingest_state(
+            "SIM_A",
+            state_payload(
+                robot_id="SIM_A",
+                header_id=6,
+                last_node_id="A",
+                x=5.0,
+                y=0.0,
+                driving=True,
+                edge_ids=("order-local-edge-7",),
+            ),
+        )
+
+        state = self.tracker.snapshot()["SIM_A"]
+        self.assertEqual(state["current_block"], "GEOMETRY_BLOCK")
+
     def test_edge_and_active_grant_override_conflicting_geometry(self) -> None:
         decision = self.arbiter.request(
             "SIM_A",
