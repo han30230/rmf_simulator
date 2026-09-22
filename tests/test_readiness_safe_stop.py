@@ -5,6 +5,7 @@ import unittest
 
 from traffic_control.corridor_registry import CorridorRegistry
 from traffic_control.direction_arbiter import DirectionArbiter
+from traffic_control.eligibility import EligibilityResult
 from traffic_control.readiness import RuntimeReadiness
 from traffic_control.robot_tracker import RobotTracker
 
@@ -67,6 +68,23 @@ def payload(last_node: str) -> dict:
     }
 
 
+class ToggleEligibilityTracker:
+    def __init__(self, inner: RobotTracker) -> None:
+        self.inner = inner
+        self.allowed = True
+
+    def telemetry(self, robot_id: str):
+        return self.inner.telemetry(robot_id)
+
+    def current_safe_node(self, robot_id: str):
+        return self.inner.current_safe_node(robot_id)
+
+    def eligibility(self, robot_id: str, *, now: float | None = None):
+        if self.allowed:
+            return EligibilityResult(True, ())
+        return EligibilityResult(False, ("state.stale",))
+
+
 class ReadinessSafeStopTests(unittest.TestCase):
     def _readiness(self, tracker: RobotTracker, reg: CorridorRegistry):
         profile = SimpleNamespace(
@@ -100,6 +118,23 @@ class ReadinessSafeStopTests(unittest.TestCase):
         })
         recovered = self._readiness(tracker, reg).ready()
         self.assertTrue(recovered["ready"])
+
+    def test_readiness_rechecks_operational_eligibility_after_clean_start(self) -> None:
+        reg = registry()
+        arbiter = DirectionArbiter(reg)
+        inner = RobotTracker(reg, arbiter)
+        inner.ingest_state("SIM_A", payload("A"))
+        tracker = ToggleEligibilityTracker(inner)
+
+        readiness = self._readiness(tracker, reg)
+        self.assertTrue(readiness.ready()["ready"])
+
+        tracker.allowed = False
+        result = readiness.ready()
+
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["reason"], "robots.ineligible")
+        self.assertIn("SIM_A:state.stale", result["details"])
 
     def test_matching_last_node_is_clean_start(self) -> None:
         reg = registry()
