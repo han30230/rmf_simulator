@@ -107,7 +107,14 @@ class RobotTracker:
                 if isinstance(item, dict) and item.get("edgeId") is not None
             ]
             has_topological_edge_evidence = any(">" in edge_id for edge_id in edge_ids)
-            matching_edge_blocks = self.registry.blocks_for_edges(edge_states)
+            # VDA5050 edgeStates may retain the previously released edge
+            # after the robot has stopped at a node. Treat edge evidence as
+            # authoritative only while the robot reports driving=true.
+            matching_edge_blocks = (
+                self.registry.blocks_for_edges(edge_states)
+                if driving
+                else []
+            )
             matching_blocks: list[str] = []
 
             if isinstance(position, dict) and position.get("x") is not None and position.get("y") is not None:
