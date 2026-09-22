@@ -4,7 +4,9 @@ import json
 import unittest
 
 from traffic_control.corridor_registry import CorridorRegistry
+from traffic_control.deployment import RobotDeploymentConfig
 from traffic_control.direction_arbiter import DirectionArbiter
+from traffic_control.eligibility import RobotEligibilityPolicy
 from traffic_control.models import Decision, Direction
 from traffic_control.robot_tracker import MqttStateMonitor, RobotTracker
 
@@ -111,6 +113,47 @@ class DsrFieldHardeningTests(unittest.TestCase):
         self.registry = make_registry()
         self.arbiter = DirectionArbiter(self.registry)
         self.tracker = RobotTracker(self.registry, self.arbiter)
+
+    def test_unregistered_robot_inside_managed_block_faults_closed(self) -> None:
+        reg = make_registry()
+        arbiter = DirectionArbiter(reg)
+        policy = RobotEligibilityPolicy(
+            robots={
+                "SIM_A": RobotDeploymentConfig(
+                    manufacturer="YujinRobot",
+                    serial_number="SIM_A",
+                    allowed_map_ids=("L1",),
+                    required=True,
+                )
+            },
+            state_timeout=5.0,
+            connection_timeout=10.0,
+        )
+        tracker = RobotTracker(
+            reg,
+            arbiter,
+            eligibility_policy=policy,
+        )
+
+        tracker.ingest_state(
+            "SIM_X",
+            state_payload(
+                robot_id="SIM_X",
+                header_id=8,
+                last_node_id="",
+                x=5.0,
+                y=0.0,
+                driving=True,
+            ),
+        )
+
+        status = arbiter.snapshot()["blocks"]["GEOMETRY_BLOCK"]
+        self.assertEqual(status["state"], "BLOCKED")
+        self.assertIn("SIM_X", status["occupants"])
+        self.assertEqual(
+            status["fault_reason"],
+            "untrusted_robot_detected_inside",
+        )
 
     def test_retained_state_is_ignored_by_mqtt_monitor(self) -> None:
         monitor = MqttStateMonitor(
