@@ -152,7 +152,7 @@ class RuntimeReadinessTests(unittest.TestCase):
         self.assertFalse(health["dependencies"]["mqtt"])
         self.assertFalse(health["dependencies"]["rmf_api"])
 
-    def test_safe_stop_ineligibility_after_clean_start_is_robot_local(self) -> None:
+    def test_ineligibility_after_clean_start_blocks_runtime(self) -> None:
         registry, _, _, tracker = tracking_components()
         tracker.ingest_state(
             "A1", state("L1", -1.0, 1.0, driving=False), received_at=1.0
@@ -168,8 +168,9 @@ class RuntimeReadinessTests(unittest.TestCase):
 
         result = readiness.ready(now=2.0)
 
-        self.assertTrue(result["ready"])
-        self.assertEqual(result["reason"], "ready")
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["reason"], "robots.ineligible")
+        self.assertIn("A1:mode.not_automatic", result["details"])
 
 
 if __name__ == "__main__":
