@@ -292,17 +292,29 @@ DSR에서는 `simulation` 모드로 TaskGate를 띄우지 않는다. `lab` deplo
 profile은 production과 같은 telemetry/robot readiness 검사를 사용하되,
 실험실의 평문 MQTT(1883)를 위해 TLS와 인증 secret을 강제하지 않는다.
 
-1. 실행 중인 `Wave_adapter`의 runtime navigation graph를 snapshot으로 복사한다.
+1. 실행 중인 `Wave_adapter`의 runtime navigation graph를 snapshot으로 캡처한다.
+
+```bash
+python3 scripts/capture_wave_runtime_graph.py \
+  --container Wave_adapter \
+  --output config/WAVE_nav_graph_rev228.yaml \
+  --expected-revision 228
+```
+
 2. `scripts/check_wave_runtime_graph.py`로 runtime graph와 snapshot fingerprint,
    corridor node/edge를 비교한다. 불일치하면 TaskGate를 시작하지 않는다.
 3. `config/deployment.dsr-lab.example.yaml`을 복사해 현장값을 확인한 profile을
    만든다. 예제의 calibration/physical 값은 simulator 기준이므로 실물 투입
    전에 반드시 측정값으로 교체한다.
-4. 아래 launcher로 시작한다. profile을 명시하지 않으면 실행을 거부한다.
+4. 기본 corridor는 `config/corridor_blocks_dsr_rev228.yaml`이다. 양 끝의
+   `1019/1024`가 실제 대기 위치로 부적절하면
+   `config/corridor_blocks_dsr_rev228_staging_candidate.yaml`의
+   `1057/1052` staging 후보를 현장에서 확인한 뒤 사용한다.
+5. 아래 launcher로 시작한다. profile을 명시하지 않으면 실행을 거부한다.
 
 ```bash
 EXPECTED_WAVE_NAV_REVISION=228 \
-  ./scripts/start_dsr_lab_arbiter.sh /path/to/dsr-lab.yaml
+  bash scripts/start_dsr_lab_arbiter.sh /path/to/dsr-lab.yaml
 ```
 
 MQTT `state`의 retained snapshot은 RobotTracker에 넣지 않는다. 주행 중
@@ -319,6 +331,24 @@ Lab PoC 동안 managed task는 반드시 TaskGate
 `http://127.0.0.1:18200/tasks/robot_task`로 보낸다. 기존 RMF API `:8100`으로
 직접 제출하면 Arbiter를 우회하므로, UI/Robotpilot endpoint 전환 전에는
 수동 실험 task만 18200을 사용한다.
+
+실험 task는 직접 `curl`보다 전용 helper를 사용한다.
+
+```bash
+bash scripts/check_dsr_gate.sh
+bash scripts/dispatch_dsr_task.sh yujin_robot_1 1024
+```
+
+HTTP 재전송이 예상되는 클라이언트는 `Idempotency-Key`를 사용한다. 같은
+key와 같은 payload가 다시 들어오면 TaskGate는 upstream에 두 번 전달하지
+않고 최초 결과를 재사용한다. 같은 key로 다른 payload를 보내면 요청을
+거부한다.
+
+TaskGate 재시작 시 메모리의 reservation/job 상태는 복구하지 않는다. strict
+`lab` readiness는 required robot이 managed block 내부, 주행 중, fault
+상태이거나 known safe stop 밖에 있으면 `recovery.required`로 새 task를
+거부한다. 이때 `/traffic/reset?force=true`로 강제 해제하지 말고 로봇의
+실제 위치를 확인해 safe stop으로 이동시킨 뒤 TaskGate를 재기동한다.
 
 ## 실제 로봇 적용 전 주의
 
