@@ -76,6 +76,7 @@ class RobotTracker:
         with self._lock:
             previous = self._robots.get(robot_id)
             if not self._identity_matches(robot_id, payload):
+                self._fail_closed_on_untrusted_occupancy(robot_id, payload)
                 logger.error("[TRAFFIC] rejected state identity robot=%s", robot_id)
                 return
             header_id = self._header_id(payload)
@@ -350,6 +351,43 @@ class RobotTracker:
         if previous_header_id is not None and header_id is not None:
             return header_id > previous_header_id
         return True
+
+    def _fail_closed_on_untrusted_occupancy(
+        self,
+        robot_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        edge_states = list(payload.get("edgeStates") or [])
+        edge_ids = [
+            str(item.get("edgeId"))
+            for item in edge_states
+            if isinstance(item, dict) and item.get("edgeId") is not None
+        ]
+        matches = self.registry.blocks_for_edges(edge_states)
+        if not matches and any(">" in edge_id for edge_id in edge_ids):
+            # Explicit topological edge evidence says this robot is not on a
+            # configured managed edge. Do not override it with broad geometry.
+            return
+        if not matches:
+            position = payload.get("agvPosition")
+            if (
+                isinstance(position, dict)
+                and position.get("x") is not None
+                and position.get("y") is not None
+            ):
+                try:
+                    matches = self.registry.blocks_for_position(
+                        float(position["x"]),
+                        float(position["y"]),
+                    )
+                except (TypeError, ValueError):
+                    matches = []
+        for block_id in matches:
+            self.arbiter.report_unexpected_occupancy(
+                robot_id,
+                block_id,
+                reason="untrusted_robot_detected_inside",
+            )
 
     def _identity_matches(self, robot_id: str, payload: dict[str, Any]) -> bool:
         if self.eligibility_policy is None:
