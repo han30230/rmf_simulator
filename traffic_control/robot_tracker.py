@@ -514,6 +514,11 @@ class RobotTracker:
                     "connection_state": state.connection_state,
                     "connection_received_at": state.connection_received_at,
                     "connection_timestamp": state.connection_timestamp,
+                    "edge_ids": [
+                        str(item.get("edgeId"))
+                        for item in state.edge_states
+                        if isinstance(item, dict) and item.get("edgeId") is not None
+                    ],
                     "safe_node": self.current_safe_node(robot_id),
                     "position_initialized": state.position_initialized,
                     "map_id": state.map_id,
