@@ -100,16 +100,38 @@ def _fingerprint(raw: dict[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _validate_corridor(raw_graph: dict[str, Any], corridor_path: Path) -> list[str]:
+def _validate_corridor(
+    raw_graph: dict[str, Any], corridor_path: Path
+) -> tuple[list[str], list[str]]:
     graph = _normalized_graph(raw_graph)
     node_names = {item[0] for item in graph["nodes"]}
     edges = {tuple(item) for item in graph["edges"]}
     registry = CorridorRegistry.from_yaml(corridor_path)
 
     errors: list[str] = []
+    warnings: list[str] = []
+    managed_edges: set[tuple[str, str]] = set()
+    for block in registry.blocks.values():
+        for edge in block.edges_a_to_b | block.edges_b_to_a:
+            parts = tuple(edge.split(">", 1))
+            if len(parts) == 2:
+                managed_edges.add(parts)
+
     for hb_id, bay in registry.holding_bays.items():
         if bay.node_id not in node_names:
             errors.append(f"holding_bay_node_missing:{hb_id}:{bay.node_id}")
+            continue
+        unmanaged_incident = sorted(
+            f"{start}>{end}"
+            for start, end in edges
+            if (start == bay.node_id or end == bay.node_id)
+            and (start, end) not in managed_edges
+        )
+        if unmanaged_incident:
+            warnings.append(
+                "holding_bay_has_unmanaged_incident_lanes:"
+                f"{hb_id}:{bay.node_id}:{','.join(unmanaged_incident)}"
+            )
 
     for block_id, block in registry.blocks.items():
         for edge in sorted(block.edges_a_to_b | block.edges_b_to_a):
@@ -121,7 +143,7 @@ def _validate_corridor(raw_graph: dict[str, Any], corridor_path: Path) -> list[s
         for node in sorted(route.start_nodes | route.goal_nodes):
             if node not in node_names:
                 errors.append(f"route_node_missing:{route.route_id}:{node}")
-    return errors
+    return errors, warnings
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -167,10 +189,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.corridor is not None:
         try:
-            corridor_errors = _validate_corridor(runtime_raw, args.corridor)
+            corridor_errors, corridor_warnings = _validate_corridor(
+                runtime_raw, args.corridor
+            )
         except (OSError, ValueError, yaml.YAMLError) as error:
             print(f"ERROR corridor.preflight:{error}", file=sys.stderr)
             return 2
+        for warning in corridor_warnings:
+            print(f"WARNING {warning}")
         for error in corridor_errors:
             print(f"ERROR {error}", file=sys.stderr)
         failed = failed or bool(corridor_errors)
