@@ -345,10 +345,14 @@ key와 같은 payload가 다시 들어오면 TaskGate는 upstream에 두 번 전
 거부한다.
 
 TaskGate 재시작 시 메모리의 reservation/job 상태는 복구하지 않는다. strict
-`lab` readiness는 required robot이 managed block 내부, 주행 중, fault
-상태이거나 known safe stop 밖에 있으면 `recovery.required`로 새 task를
-거부한다. 이때 `/traffic/reset?force=true`로 강제 해제하지 말고 로봇의
-실제 위치를 확인해 safe stop으로 이동시킨 뒤 TaskGate를 재기동한다.
+`lab` readiness에서 required robot이 managed block 내부, 주행 중 또는
+fault 상태로 시작하면 `recovery.required`를 latch해 새 task를 거부한다.
+반면 초기 telemetry에서 `lastNodeId`가 아직 없거나 safe stop 확인이 덜 된
+경우에는 `safe_stop.unconfirmed` 상태로 기다리며, 정상 telemetry가 들어오면
+자동으로 ready가 될 수 있다. strict mode에서는
+`/traffic/reset?force=true` 자체를 403으로 차단한다. 실제
+`recovery.required`가 발생하면 로봇의 물리 위치를 확인하고 safe stop으로
+복구한 뒤 TaskGate를 재기동한다.
 
 ## 실제 로봇 적용 전 주의
 
