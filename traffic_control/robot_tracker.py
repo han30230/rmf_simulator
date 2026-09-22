@@ -138,17 +138,22 @@ class RobotTracker:
                 if release_matches:
                     observed_block = None
                     hb_id = None
+                elif old_block in matching_edge_blocks:
+                    observed_block = old_block
+                elif old_block in matching_blocks:
+                    # Position still lies inside the managed block. A stale or
+                    # early lastNodeId at the destination must never clear
+                    # physical occupancy.
+                    observed_block = old_block
                 elif hb_id is not None and (
                     not granted_blocks
                     or hb_id == destination_hb
                     or hb_id == source_hb
                 ):
                     # A grant can precede departure from its source bay.
-                    # Existing occupancy is still retained below unless this
-                    # is the destination; returning to source is not an exit.
+                    # Only accept the safe-stop evidence after geometry/edge
+                    # evidence confirms the robot is no longer inside the block.
                     observed_block = None
-                elif old_block in matching_edge_blocks:
-                    observed_block = old_block
                 elif edge_granted_block is not None:
                     observed_block = edge_granted_block
                 elif len(matching_edge_blocks) == 1:
@@ -162,8 +167,6 @@ class RobotTracker:
                     # For a known topological side branch, retain any existing
                     # managed occupancy fail-closed but do not enter a broad
                     # corridor solely because its geometry overlaps.
-                    observed_block = old_block
-                elif old_block in matching_blocks:
                     observed_block = old_block
                 elif geometry_granted_block is not None:
                     observed_block = geometry_granted_block
