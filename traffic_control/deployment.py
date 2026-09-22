@@ -207,7 +207,7 @@ class DeploymentPaths:
 
 @dataclass(frozen=True)
 class DeploymentProfile:
-    mode: Literal["simulation", "production"] | str
+    mode: Literal["simulation", "lab", "production"] | str
     mqtt: MqttDeploymentConfig
     robots: Mapping[str, RobotDeploymentConfig]
     calibration: CalibrationConfig
@@ -314,7 +314,7 @@ class DeploymentProfile:
 
     def validate(self) -> tuple[str, ...]:
         errors: set[str] = set()
-        if self.mode not in {"simulation", "production"}:
+        if self.mode not in {"simulation", "lab", "production"}:
             errors.add("deployment.mode.invalid")
             return tuple(sorted(errors))
         if self.mode == "simulation":
@@ -332,20 +332,32 @@ class DeploymentProfile:
         for name in ("port", "keepalive_sec", "reconnect_max_delay_sec"):
             if getattr(self.mqtt, name) <= 0:
                 errors.add(f"mqtt.{name}.nonpositive")
-        if not self.mqtt.tls_required:
+        if self.mode == "production" and not self.mqtt.tls_required:
             errors.add("mqtt.tls.required")
-        if self.mqtt.ca_file is None or not self.mqtt.ca_file.is_file():
-            errors.add("mqtt.tls.ca_file.unreadable")
-        if (self.mqtt.cert_file is None) != (self.mqtt.key_file is None):
-            errors.add("mqtt.tls.client_pair")
-        elif self.mqtt.cert_file is not None:
-            if not self.mqtt.cert_file.is_file():
-                errors.add("mqtt.tls.client_cert_file.unreadable")
-            if self.mqtt.key_file is None or not self.mqtt.key_file.is_file():
-                errors.add("mqtt.tls.client_key_file.unreadable")
-        self._validate_secret(errors, "mqtt.username", self.mqtt.username)
-        self._validate_secret(errors, "mqtt.password", self.mqtt.password)
-        self._validate_secret(errors, "rmf_api.bearer_token", self.rmf_api.bearer_token)
+        if self.mqtt.tls_required:
+            if self.mqtt.ca_file is None or not self.mqtt.ca_file.is_file():
+                errors.add("mqtt.tls.ca_file.unreadable")
+            if (self.mqtt.cert_file is None) != (self.mqtt.key_file is None):
+                errors.add("mqtt.tls.client_pair")
+            elif self.mqtt.cert_file is not None:
+                if not self.mqtt.cert_file.is_file():
+                    errors.add("mqtt.tls.client_cert_file.unreadable")
+                if self.mqtt.key_file is None or not self.mqtt.key_file.is_file():
+                    errors.add("mqtt.tls.client_key_file.unreadable")
+        if self.mode == "production":
+            self._validate_secret(errors, "mqtt.username", self.mqtt.username)
+            self._validate_secret(errors, "mqtt.password", self.mqtt.password)
+            self._validate_secret(
+                errors, "rmf_api.bearer_token", self.rmf_api.bearer_token
+            )
+        else:
+            for name, secret in (
+                ("mqtt.username", self.mqtt.username),
+                ("mqtt.password", self.mqtt.password),
+                ("rmf_api.bearer_token", self.rmf_api.bearer_token),
+            ):
+                if secret is not None:
+                    self._validate_secret(errors, name, secret)
 
         if not self.robots:
             errors.add("robots.empty")
@@ -443,17 +455,18 @@ class DeploymentProfile:
                 errors.add("rmf_api.url.local_required")
 
         required_paths = {
-            "fleet_config": self.paths.fleet_config,
             "nav_graph": self.paths.nav_graph,
             "corridor_config": self.paths.corridor_config,
         }
+        if self.mode == "production":
+            required_paths["fleet_config"] = self.paths.fleet_config
         for name, path in required_paths.items():
             if path is None or not path.is_file():
                 errors.add(f"paths.{name}.unreadable")
         for index, path in enumerate(self.paths.compose_files):
             if not path.is_file():
                 errors.add(f"paths.compose_files.{index}.unreadable")
-        if not self.paths.compose_files:
+        if self.mode == "production" and not self.paths.compose_files:
             errors.add("paths.compose_files.empty")
         if self.paths.nav_graph is not None and self.paths.nav_graph.is_file():
             try:
