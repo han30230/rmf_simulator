@@ -24,11 +24,15 @@ class RobotEligibilityPolicy:
         robots: Mapping[str, RobotDeploymentConfig],
         state_timeout: float,
         connection_timeout: float,
+        require_edge_state_when_driving: bool = True,
         blocking_error_levels: tuple[str, ...] = ("FATAL",),
     ) -> None:
         self.robots = dict(robots)
         self.state_timeout = float(state_timeout)
         self.connection_timeout = float(connection_timeout)
+        self.require_edge_state_when_driving = bool(
+            require_edge_state_when_driving
+        )
         self.blocking_error_levels = frozenset(
             item.upper() for item in blocking_error_levels
         )
@@ -64,6 +68,12 @@ class RobotEligibilityPolicy:
             reasons.add("safety.field_violation")
         if telemetry.paused:
             reasons.add("state.paused")
+        if (
+            self.require_edge_state_when_driving
+            and telemetry.driving
+            and not telemetry.edge_states
+        ):
+            reasons.add("state.edge_missing")
         if self.blocking_error_levels.intersection(telemetry.error_levels):
             reasons.add("errors.blocking")
         if telemetry.current_hb is None and telemetry.current_block is None:
