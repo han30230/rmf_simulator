@@ -1207,6 +1207,9 @@ def main(argv: list[str] | None = None) -> int:
             robots=profile.robots,
             state_timeout=profile.telemetry.state_timeout,
             connection_timeout=profile.telemetry.connection_timeout,
+            require_edge_state_when_driving=(
+                profile.telemetry.require_edge_state_when_driving
+            ),
         )
     tracker = RobotTracker(
         registry,
