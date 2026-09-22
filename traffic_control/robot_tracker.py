@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 import json
 import logging
 import os
@@ -543,6 +544,7 @@ class MqttStateMonitor:
         client_id: str | None = None,
         mqtt_config: MqttDeploymentConfig | None = None,
         environ: Mapping[str, str] | None = None,
+        state_max_age_seconds: float | None = None,
     ) -> None:
         import paho.mqtt.client as mqtt
 
@@ -554,6 +556,11 @@ class MqttStateMonitor:
             mqtt_config.keepalive_sec if mqtt_config is not None else 60
         )
         self.topic = topic
+        self.state_max_age_seconds = (
+            None
+            if state_max_age_seconds is None
+            else float(state_max_age_seconds)
+        )
         self.connection_topic = (
             f"{topic[:-len('state')]}connection"
             if topic.endswith("state")
@@ -646,6 +653,25 @@ class MqttStateMonitor:
         if code:
             logger.warning("[TRAFFIC] MQTT disconnected rc=%s", code)
 
+    def _state_timestamp_is_fresh(self, payload: dict[str, Any]) -> bool:
+        if self.state_max_age_seconds is None:
+            return True
+        raw = str(payload.get("timestamp") or "").strip()
+        if not raw:
+            return False
+        try:
+            normalized = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+            parsed = datetime.fromisoformat(normalized)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            age = (
+                datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)
+            ).total_seconds()
+        except (TypeError, ValueError):
+            return False
+        # A small future tolerance avoids false rejection from minor clock skew.
+        return -30.0 <= age <= self.state_max_age_seconds
+
     def _on_message(self, client, userdata, message) -> None:
         try:
             payload = json.loads(message.payload.decode("utf-8"))
@@ -657,6 +683,15 @@ class MqttStateMonitor:
                         "[TRAFFIC] ignored retained state robot=%s topic=%s",
                         robot_id,
                         message.topic,
+                    )
+                    return
+                if not self._state_timestamp_is_fresh(payload):
+                    logger.warning(
+                        "[TRAFFIC] ignored stale/invalid state timestamp "
+                        "robot=%s topic=%s timestamp=%s",
+                        robot_id,
+                        message.topic,
+                        payload.get("timestamp"),
                     )
                     return
                 self.tracker.ingest_state(robot_id, payload)
