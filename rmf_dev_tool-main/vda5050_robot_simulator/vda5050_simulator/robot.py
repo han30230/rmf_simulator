@@ -144,6 +144,10 @@ class Robot:
     def set_loop(self, loop: asyncio.AbstractEventLoop):
         self._loop = loop
 
+    @property
+    def serial_number(self) -> str:
+        return self._serial_number
+
     def set_action_handler(self, handler):
         self._action_handler = handler
 

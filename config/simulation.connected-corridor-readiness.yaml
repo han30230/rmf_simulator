@@ -1,0 +1,40 @@
+deployment:
+  mode: simulation
+mqtt:
+  host: 127.0.0.1
+  port: 1883
+  state_topic: uagv/v2.0.0/inatech/+/state
+  keepalive_sec: 60
+  reconnect_max_delay_sec: 60
+  tls: {required: false}
+robots:
+  AGV_A1: &robot
+    manufacturer: inatech
+    serial_number: AGV_A1
+    allowed_map_ids: [L1]
+    required: true
+  AGV_A2:
+    <<: *robot
+    serial_number: AGV_A2
+  AGV_B1:
+    <<: *robot
+    serial_number: AGV_B1
+  AGV_B2:
+    <<: *robot
+    serial_number: AGV_B2
+calibration: {}
+physical: {}
+telemetry:
+  state_timeout: 5.0
+  connection_timeout: 10.0
+  operational_checks_required: true
+rmf_api:
+  url: http://127.0.0.1:8100/tasks/robot_task
+  bearer_token: {env: RMF_API_BEARER_TOKEN}
+paths:
+  fleet_config: ../rmf_platform-main/src/rmf_vda5050_fleet_adapter/config/connected_corridor_chain.yaml
+  nav_graph: ../rmf_platform-main/src/rmf_vda5050_fleet_adapter/map/connected_corridor_chain.yaml
+  corridor_config: corridor_blocks_connected_chain.yaml
+  compose_files:
+    - ../rmf_platform-main/docker-compose.yml
+    - ../rmf_platform-main/docker-compose.connected-corridor-chain.yml

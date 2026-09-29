@@ -1,4 +1,4 @@
-# Minimal three-robot Fleet Adapter configuration for the home P4 simulation.
+# Minimal four-robot Fleet Adapter configuration for the home P4 simulation.
 rmf_fleet:
   name: TOOL
   limits:
@@ -33,6 +33,9 @@ rmf_fleet:
   robot_state_update_frequency: 10.0
   robots:
     AGV_A1:
+      charger: '2101'
+      responsive_wait: false
+    AGV_A2:
       charger: '2101'
       responsive_wait: false
     AGV_B1:

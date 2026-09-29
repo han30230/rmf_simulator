@@ -31,6 +31,18 @@ class MqttClient:
             min_delay=1,
             max_delay=config.reconnect_max_delay_sec,
         )
+        if bool(config.cert_file) != bool(config.key_file):
+            raise ValueError('MQTT client certificate and key must be configured together')
+        if config.username:
+            self._client.username_pw_set(config.username, config.password)
+        if config.tls_required:
+            if not config.ca_file:
+                raise ValueError('MQTT TLS requires a CA file')
+            self._client.tls_set(
+                ca_certs=config.ca_file,
+                certfile=config.cert_file or None,
+                keyfile=config.key_file or None,
+            )
         self._subscriptions: dict[
             str, tuple[Callable[[str, bytes], None], int]
         ] = {}

@@ -1,0 +1,55 @@
+# DSR lab profile for the currently observed WAVE simulator stack.
+# Verify physical/calibration values and robot roster before real-robot use.
+deployment:
+  mode: lab
+
+mqtt:
+  host: "12.81.224.41"
+  port: 1883
+  state_topic: "uagv/v2/YujinRobot/+/state"
+  keepalive_sec: 30
+  reconnect_max_delay_sec: 30
+  tls:
+    required: false
+
+robots:
+  yujin_robot_1:
+    manufacturer: "YujinRobot"
+    serial_number: "yujin_robot_1"
+    allowed_map_ids: ["L1"]
+    required: true
+  yujin_robot_2:
+    manufacturer: "YujinRobot"
+    serial_number: "yujin_robot_2"
+    allowed_map_ids: ["L1"]
+    required: false
+
+# Identity transform matches the current simulator/RMF coordinates observed in DSR.
+# Replace with measured reference points before physical field use.
+calibration:
+  rmf: [[0.0, 0.0], [20.0, 0.0], [0.0, 16.0]]
+  robot: [[0.0, 0.0], [20.0, 0.0], [0.0, 16.0]]
+  max_residual: 0.05
+  min_scale: 0.95
+  max_scale: 1.05
+
+# Current simulator-oriented limits. Verify against the real WAVE specification.
+physical:
+  footprint_radius: 0.5
+  vicinity_radius: 0.7
+  max_linear_speed: 0.5
+  max_acceleration: 0.25
+  max_deceleration: 0.25
+
+telemetry:
+  state_timeout: 5.0
+  connection_timeout: 10.0
+  operational_checks_required: true
+  require_edge_state_when_driving: true
+
+rmf_api:
+  url: "http://127.0.0.1:8100/tasks/robot_task"
+
+paths:
+  nav_graph: WAVE_nav_graph_rev228.yaml
+  corridor_config: corridor_blocks_dsr_rev228.yaml

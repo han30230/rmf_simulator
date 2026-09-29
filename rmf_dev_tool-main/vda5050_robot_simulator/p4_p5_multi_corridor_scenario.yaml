@@ -1,0 +1,63 @@
+mqtt:
+  broker_host: localhost
+  broker_port: 1883
+robot_defaults:
+  manufacturer: inatech
+  interface_name: uagv
+  protocol_version: v2.0.0
+  max_speed: 1.0
+  rotation_speed: 0.6
+  stitching_tolerance_multiplier: 5
+  last_node_update_distance: 0.1
+  obstacle_detection:
+    enabled: false
+  battery:
+    initial_charge: 80.0
+    discharge_rate: 0.01
+    idle_discharge_rate: 0.001
+    charge_rate: 5.0
+robots:
+- serial_number: AGV_P4_A
+  initial_position:
+    x: 6.833
+    y: 92.871
+    theta: 0.0
+    map_id: L1
+- serial_number: AGV_P4_B
+  initial_position:
+    x: 73.7274
+    y: 92.8248
+    theta: 3.14159
+    map_id: L1
+- serial_number: AGV_P5_A
+  initial_position:
+    x: 6.833
+    y: 72.871
+    theta: 0.0
+    map_id: L1
+- serial_number: AGV_P5_B
+  initial_position:
+    x: 73.7274
+    y: 72.8248
+    theta: 3.14159
+    map_id: L1
+download_map:
+  map_id: L1
+  map_download_url: http://example.com/map.tar.gz
+  map_version: 2.4.1
+action_results:
+  pick: FINISHED
+  drop: FINISHED
+  startCharging: FINISHED
+  stopCharging: FINISHED
+  initPosition: FINISHED
+  finePositioning: FINISHED
+  startPause: FINISHED
+  stopPause: FINISHED
+  cancelOrder: FINISHED
+  factsheetRequest: FINISHED
+  downloadMap: FINISHED
+publishing:
+  state_interval: 0.5
+  visualization_interval: 0.5
+  simulation_tick: 0.05

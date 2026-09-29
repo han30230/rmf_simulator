@@ -233,6 +233,10 @@ def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config.yaml", help="config yaml file")
+    parser.add_argument(
+        "--fault-scenarios",
+        help="optional YAML file containing fault_injection.enabled/rules",
+    )
     args, _ = parser.parse_known_args()
 
     config_path = Path(__file__).parent / args.config
@@ -244,6 +248,21 @@ def main():
 
     with open(config_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
+
+    fault_rules = []
+    if args.fault_scenarios:
+        fault_path = Path(args.fault_scenarios)
+        if not fault_path.is_absolute():
+            fault_path = Path(__file__).parent / fault_path
+        with open(fault_path, "r", encoding="utf-8") as f:
+            fault_config = yaml.safe_load(f) or {}
+        injection = fault_config.get("fault_injection", {})
+        if injection.get("enabled", False):
+            fault_rules = injection.get("rules", [])
+    else:
+        injection = config.get("fault_injection", {})
+        if injection.get("enabled", False):
+            fault_rules = injection.get("rules", [])
 
     mqtt_cfg = config["mqtt"]
     pub_cfg = config.get("publishing", {
@@ -268,6 +287,7 @@ def main():
             robot_config["download_map"] = download_map_cfg
         if action_results_cfg:
             robot_config["action_results"] = action_results_cfg
+        robot_config["fault_injection"] = fault_rules
         serial = robot_entry.get("serial_number", "UNKNOWN")
         _setup_robot_file_handler(serial)
         simulators.append(Simulator(robot_config))

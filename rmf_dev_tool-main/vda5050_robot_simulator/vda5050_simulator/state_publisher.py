@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import asdict
 from typing import TYPE_CHECKING
 
 from .models import _to_dict, _timestamp
+from .fault_injection import FaultInjectionController, apply_overrides
 
 if TYPE_CHECKING:
     from .robot import Robot
@@ -36,6 +38,10 @@ class StatePublisher:
         self._vis_interval = pub_cfg["visualization_interval"]
         self._manufacturer = robot_cfg["manufacturer"]
         self._serial_number = robot_cfg["serial_number"]
+        self._faults = FaultInjectionController.from_config(
+            config.get("fault_injection", [])
+        )
+        self._started_at = time.monotonic()
 
         self._state_changed = asyncio.Event()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -105,7 +111,25 @@ class StatePublisher:
 
     def publish_state_now(self):
         """즉시 State 발행."""
+        effects = self._faults.apply(
+            self._robot, elapsed=time.monotonic() - self._started_at
+        )
+        for connection_state in effects.connection_states:
+            self._mqtt.publish_connection(connection_state)
+            logger.warning(
+                "[%s] fault injection connection=%s",
+                self._serial_number,
+                connection_state,
+            )
+        if effects.suppress_state:
+            if effects.triggered:
+                logger.warning(
+                    "[%s] fault injection suppressing state",
+                    self._serial_number,
+                )
+            return
         state_dict = self._build_state_dict()
+        apply_overrides(state_dict, effects.state_overrides)
         self._mqtt.publish_state(state_dict)
 
     async def state_publish_loop(self):

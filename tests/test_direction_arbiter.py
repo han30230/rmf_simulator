@@ -47,7 +47,54 @@ def make_registry(*, block_capacity: int = 1) -> CorridorRegistry:
     )
 
 
+def release_route_config(release_node: str) -> dict:
+    return {
+        "holding_bays": {
+            "HB0": {"node_id": "N0"},
+            "HB2": {"node_id": "N2"},
+        },
+        "blocks": [
+            {
+                "id": "TOP",
+                "entry_a": "HB0",
+                "entry_b": "HB2",
+                "edges_a_to_b": ["N0>N1", "N1>N2"],
+                "edges_b_to_a": ["N2>N1", "N1>N0"],
+            }
+        ],
+        "routes": [
+            {
+                "start_nodes": ["N0"],
+                "goal_nodes": ["N2"],
+                "steps": [
+                    {
+                        "block_id": "TOP",
+                        "direction": "A_TO_B",
+                        "source_hb": "HB0",
+                        "destination_hb": "HB2",
+                        "goal_node": "N2",
+                        "release_node": release_node,
+                    }
+                ],
+            }
+        ],
+    }
+
+
 class DirectionArbiterTests(unittest.TestCase):
+    def test_release_node_is_parsed(self) -> None:
+        registry = CorridorRegistry.from_dict(release_route_config("N1"))
+
+        self.assertEqual(registry.routes[0].steps[0].release_node, "N1")
+
+    def test_release_node_must_belong_to_direction_edges(self) -> None:
+        with self.assertRaisesRegex(ValueError, "release node"):
+            CorridorRegistry.from_dict(release_route_config("OTHER"))
+
+    def test_release_node_must_precede_goal(self) -> None:
+        with self.assertRaisesRegex(ValueError, "release node"):
+            CorridorRegistry.from_dict(release_route_config("N2"))
+
     def test_route_direction_must_match_block_endpoints(self) -> None:
         with self.assertRaisesRegex(ValueError, "does not match"):
             CorridorRegistry.from_dict(
@@ -172,6 +219,39 @@ class DirectionArbiterTests(unittest.TestCase):
         status = arbiter.snapshot()
         self.assertEqual(status["domains"]["TOP"]["active_direction"], "B_TO_A")
         self.assertEqual(status["blocks"]["TOP_1"]["reservations"], ["B1"])
+
+    def test_early_clear_releases_domain_but_retains_destination_bay(self) -> None:
+        arbiter = DirectionArbiter(make_registry())
+        self.assertIs(
+            arbiter.request(
+                "A1",
+                "TOP_1",
+                Direction.A_TO_B,
+                "HB1",
+                source_hb="HB0",
+                release_node="N_CLEAR",
+            ),
+            Decision.ADMIT,
+        )
+        self.assertIs(
+            arbiter.request("B1", "TOP_2", Direction.B_TO_A, "HB1"),
+            Decision.WAIT,
+        )
+        arbiter.mark_entered("A1", "TOP_1")
+
+        self.assertTrue(arbiter.mark_cleared("A1", "TOP_1"))
+
+        status = arbiter.snapshot()
+        self.assertEqual(status["blocks"]["TOP_1"]["occupants"], [])
+        self.assertEqual(status["holding_bays"]["HB1"]["reservations"], ["A1", "B1"])
+        self.assertIsNone(arbiter.active_block_for_robot("A1"))
+        self.assertIs(arbiter.decision_for("B1", "TOP_2"), Decision.ADMIT)
+
+        self.assertTrue(arbiter.mark_arrived("A1", "TOP_1"))
+        self.assertFalse(arbiter.mark_arrived("A1", "TOP_1"))
+        status = arbiter.snapshot()
+        self.assertEqual(status["holding_bays"]["HB1"]["reservations"], ["B1"])
+        self.assertIn("A1", status["holding_bays"]["HB1"]["occupants"])
 
 
     def test_independent_direction_domains_can_run_opposite_directions(self) -> None:

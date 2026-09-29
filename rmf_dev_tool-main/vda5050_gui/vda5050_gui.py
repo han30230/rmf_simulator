@@ -29,6 +29,28 @@ from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 _SETTINGS_PATH = Path(__file__).parent / "gui_settings.json"
 
 
+def _common_node_label_prefix(node_ids) -> str:
+    """Return a shared delimited prefix that can be hidden in map labels."""
+    values = [str(node_id) for node_id in node_ids if node_id]
+    if len(values) < 2:
+        return ""
+    common = values[0]
+    for value in values[1:]:
+        while common and not value.startswith(common):
+            common = common[:-1]
+    boundary = max((common.rfind(mark) for mark in ("_", "/", ":", ".", "-")), default=-1)
+    prefix = common[: boundary + 1]
+    if len(prefix) < 3 or any(len(value) <= len(prefix) for value in values):
+        return ""
+    return prefix
+
+
+def _display_node_label(node_id: str, common_prefix: str) -> str:
+    if common_prefix and node_id.startswith(common_prefix):
+        return node_id[len(common_prefix):]
+    return node_id
+
+
 def _load_settings() -> dict:
     try:
         return json.loads(_SETTINGS_PATH.read_text(encoding="utf-8"))
@@ -180,6 +202,7 @@ class MapData:
         self.vertices: List[MapVertex] = []
         self.edges: List[MapEdge] = []
         self.edge_mutex_by_nodes: Dict[Tuple[str, str], str] = {}
+        self.label_prefix = ""
         self.loaded = False
         self.file_path = ""
 
@@ -234,6 +257,9 @@ class MapData:
             self.vertices.append(
                 MapVertex(x=x, y=y, name=name, vtype=vtype, mutex=mutex)
             )
+        self.label_prefix = _common_node_label_prefix(
+            vertex.name for vertex in self.vertices
+        )
 
         # Parse lanes (edges)
         for lane in level_data.get("lanes", []):
@@ -1020,7 +1046,8 @@ class MapCanvas(QWidget):
                 painter.setFont(active_font)
                 metrics = QFontMetrics(active_font)
                 label_width = 110 if is_order_node else 90
-                label = metrics.elidedText(v.name, Qt.ElideRight, label_width)
+                display_name = _display_node_label(v.name, md.label_prefix)
+                label = metrics.elidedText(display_name, Qt.ElideRight, label_width)
                 rect_w = metrics.horizontalAdvance(label) + 8
                 rect_h = metrics.height() + 3
                 rect = QRectF(sx - rect_w / 2, sy - r - rect_h - 3, rect_w, rect_h)
@@ -1315,7 +1342,13 @@ class MapCanvas(QWidget):
                 painter.drawEllipse(QPointF(sx, sy), r, r)
 
             painter.setPen(QPen(COL_NODE_TEXT))
-            painter.drawText(QRectF(sx - 40, sy - r - 16, 80, 14), Qt.AlignCenter, nid)
+            prefix = (
+                self._map_data.label_prefix
+                if self._map_data and self._map_data.loaded
+                else ""
+            )
+            label = _display_node_label(nid, prefix)
+            painter.drawText(QRectF(sx - 40, sy - r - 16, 80, 14), Qt.AlignCenter, label)
 
     def _draw_robot(self, painter: QPainter, snap: Snapshot, agv_id: str, agv_color: QColor, selected: bool):
         if snap.agv_x is None or snap.agv_y is None:
@@ -2502,284 +2535,284 @@ class SimulationTab(QWidget):
             self._load_robot_to_form(0)
         self._append_log(f"Loaded config: {path}")
 
-        def _save_config(self):
-            if self._controller.has_running_robots():
-                QMessageBox.warning(self, "Simulator Config", "Stop running robots before saving config changes.")
-                return
-            self._apply_selected_robot(silent=True)
-            path = self._config_path_edit.text().strip()
+    def _save_config(self):
+        if self._controller.has_running_robots():
+            QMessageBox.warning(self, "Simulator Config", "Stop running robots before saving config changes.")
+            return
+        self._apply_selected_robot(silent=True)
+        path = self._config_path_edit.text().strip()
+        if not path:
+            path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Save Simulator Config",
+                str(DEFAULT_SIM_CONFIG_PATH),
+                "YAML files (*.yaml *.yml);;All files (*)",
+            )
             if not path:
-                path, _ = QFileDialog.getSaveFileName(
-                    self,
-                    "Save Simulator Config",
-                    str(DEFAULT_SIM_CONFIG_PATH),
-                    "YAML files (*.yaml *.yml);;All files (*)",
-                )
-                if not path:
-                    return
-                self._config_path_edit.setText(path)
-            try:
-                with open(path, "w", encoding="utf-8") as f:
-                    yaml.safe_dump(self._config, f, sort_keys=False, allow_unicode=True)
-                self._dirty = False
-                self._controller.configure(self._config)
-                self._append_log(f"Saved config: {path}")
-            except Exception as exc:
-                QMessageBox.critical(self, "Simulator Config", f"Failed to save config:\n{exc}")
-
-        def _selected_row(self) -> int:
-            row = self._robot_table.currentRow()
-            robots = self._config.get("robots", [])
-            if row < 0 or row >= len(robots):
-                return -1
-            return row
-
-        def _selected_serial(self) -> str:
-            row = self._selected_row()
-            if row < 0:
-                return ""
-            return str(self._config.get("robots", [])[row].get("serial_number", ""))
-
-        def _on_table_selection_changed(self, current_row, current_col, previous_row, previous_col):
-            if current_row >= 0:
-                self._load_robot_to_form(current_row)
-
-        def _load_robot_to_form(self, row: int):
-            robots = self._config.get("robots", [])
-            if row < 0 or row >= len(robots):
                 return
-            robot = robots[row]
-            defaults = self._config.get("robot_defaults", {})
-            pos = robot.get("initial_position", {})
-            battery = robot.get("battery", defaults.get("battery", {}))
-            obstacle = robot.get("obstacle_detection", defaults.get("obstacle_detection", {}))
-
-            self._loading_form = True
-            self._serial_edit.setText(str(robot.get("serial_number", "")))
-            self._map_id_edit.setText(str(pos.get("map_id", "L1")))
-            self._x_spin.setValue(float(pos.get("x", 0.0)))
-            self._y_spin.setValue(float(pos.get("y", 0.0)))
-            self._theta_spin.setValue(float(pos.get("theta", 0.0)))
-            self._battery_spin.setValue(float(battery.get("initial_charge", 90.0)))
-            self._max_speed_spin.setValue(float(robot.get("max_speed", defaults.get("max_speed", 1.5))))
-            self._obstacle_enabled_check.setChecked(bool(obstacle.get("enabled", False)))
-            self._obstacle_front_spin.setValue(float(obstacle.get("front_distance", 0.0)))
-            self._obstacle_rear_spin.setValue(float(obstacle.get("rear_distance", 0.0)))
-            self._obstacle_left_spin.setValue(float(obstacle.get("left_distance", 0.0)))
-            self._obstacle_right_spin.setValue(float(obstacle.get("right_distance", 0.0)))
-            self._loading_form = False
-
-        def _mark_dirty(self, *args):
-            if self._loading_form:
-                return
-            self._dirty = True
-
-        def _apply_selected_robot(self, silent: bool = False):
-            row = self._selected_row()
-            if row < 0:
-                return False
-            if self._controller.has_running_robots():
-                if not silent:
-                    QMessageBox.warning(self, "Simulation", "Stop running robots before applying config changes.")
-                return False
-
-            robots = self._config.setdefault("robots", [])
-            robot = copy.deepcopy(robots[row])
-            robot["serial_number"] = self._serial_edit.text().strip()
-            robot["initial_position"] = {
-                "x": self._x_spin.value(),
-                "y": self._y_spin.value(),
-                "theta": self._theta_spin.value(),
-                "map_id": self._map_id_edit.text().strip() or "L1",
-            }
-            robot["battery"] = dict(robot.get("battery", {}))
-            robot["battery"]["initial_charge"] = self._battery_spin.value()
-            robot["max_speed"] = self._max_speed_spin.value()
-            robot["obstacle_detection"] = {
-                "enabled": self._obstacle_enabled_check.isChecked(),
-                "front_distance": self._obstacle_front_spin.value(),
-                "rear_distance": self._obstacle_rear_spin.value(),
-                "left_distance": self._obstacle_left_spin.value(),
-                "right_distance": self._obstacle_right_spin.value(),
-            }
-            robots[row] = robot
-
-            try:
-                self._controller.configure(self._config)
-            except Exception as exc:
-                QMessageBox.critical(self, "Simulation", f"Failed to apply config:\n{exc}")
-                return False
-
+            self._config_path_edit.setText(path)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                yaml.safe_dump(self._config, f, sort_keys=False, allow_unicode=True)
             self._dirty = False
-            self._render_robot_table()
-            self._robot_table.selectRow(row)
-            if not silent:
-                self._append_log(f"Applied robot config: {robot['serial_number']}")
-            return True
+            self._controller.configure(self._config)
+            self._append_log(f"Saved config: {path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Simulator Config", f"Failed to save config:\n{exc}")
 
-        def _add_robot(self):
-            if self._controller.has_running_robots():
-                QMessageBox.warning(self, "Simulation", "Stop running robots before adding a robot.")
-                return
-            robots = self._config.setdefault("robots", [])
-            existing = {str(r.get("serial_number", "")) for r in robots}
-            idx = len(robots) + 1
+    def _selected_row(self) -> int:
+        row = self._robot_table.currentRow()
+        robots = self._config.get("robots", [])
+        if row < 0 or row >= len(robots):
+            return -1
+        return row
+
+    def _selected_serial(self) -> str:
+        row = self._selected_row()
+        if row < 0:
+            return ""
+        return str(self._config.get("robots", [])[row].get("serial_number", ""))
+
+    def _on_table_selection_changed(self, current_row, current_col, previous_row, previous_col):
+        if current_row >= 0:
+            self._load_robot_to_form(current_row)
+
+    def _load_robot_to_form(self, row: int):
+        robots = self._config.get("robots", [])
+        if row < 0 or row >= len(robots):
+            return
+        robot = robots[row]
+        defaults = self._config.get("robot_defaults", {})
+        pos = robot.get("initial_position", {})
+        battery = robot.get("battery", defaults.get("battery", {}))
+        obstacle = robot.get("obstacle_detection", defaults.get("obstacle_detection", {}))
+
+        self._loading_form = True
+        self._serial_edit.setText(str(robot.get("serial_number", "")))
+        self._map_id_edit.setText(str(pos.get("map_id", "L1")))
+        self._x_spin.setValue(float(pos.get("x", 0.0)))
+        self._y_spin.setValue(float(pos.get("y", 0.0)))
+        self._theta_spin.setValue(float(pos.get("theta", 0.0)))
+        self._battery_spin.setValue(float(battery.get("initial_charge", 90.0)))
+        self._max_speed_spin.setValue(float(robot.get("max_speed", defaults.get("max_speed", 1.5))))
+        self._obstacle_enabled_check.setChecked(bool(obstacle.get("enabled", False)))
+        self._obstacle_front_spin.setValue(float(obstacle.get("front_distance", 0.0)))
+        self._obstacle_rear_spin.setValue(float(obstacle.get("rear_distance", 0.0)))
+        self._obstacle_left_spin.setValue(float(obstacle.get("left_distance", 0.0)))
+        self._obstacle_right_spin.setValue(float(obstacle.get("right_distance", 0.0)))
+        self._loading_form = False
+
+    def _mark_dirty(self, *args):
+        if self._loading_form:
+            return
+        self._dirty = True
+
+    def _apply_selected_robot(self, silent: bool = False):
+        row = self._selected_row()
+        if row < 0:
+            return False
+        if self._controller.has_running_robots():
+            if not silent:
+                QMessageBox.warning(self, "Simulation", "Stop running robots before applying config changes.")
+            return False
+
+        robots = self._config.setdefault("robots", [])
+        robot = copy.deepcopy(robots[row])
+        robot["serial_number"] = self._serial_edit.text().strip()
+        robot["initial_position"] = {
+            "x": self._x_spin.value(),
+            "y": self._y_spin.value(),
+            "theta": self._theta_spin.value(),
+            "map_id": self._map_id_edit.text().strip() or "L1",
+        }
+        robot["battery"] = dict(robot.get("battery", {}))
+        robot["battery"]["initial_charge"] = self._battery_spin.value()
+        robot["max_speed"] = self._max_speed_spin.value()
+        robot["obstacle_detection"] = {
+            "enabled": self._obstacle_enabled_check.isChecked(),
+            "front_distance": self._obstacle_front_spin.value(),
+            "rear_distance": self._obstacle_rear_spin.value(),
+            "left_distance": self._obstacle_left_spin.value(),
+            "right_distance": self._obstacle_right_spin.value(),
+        }
+        robots[row] = robot
+
+        try:
+            self._controller.configure(self._config)
+        except Exception as exc:
+            QMessageBox.critical(self, "Simulation", f"Failed to apply config:\n{exc}")
+            return False
+
+        self._dirty = False
+        self._render_robot_table()
+        self._robot_table.selectRow(row)
+        if not silent:
+            self._append_log(f"Applied robot config: {robot['serial_number']}")
+        return True
+
+    def _add_robot(self):
+        if self._controller.has_running_robots():
+            QMessageBox.warning(self, "Simulation", "Stop running robots before adding a robot.")
+            return
+        robots = self._config.setdefault("robots", [])
+        existing = {str(r.get("serial_number", "")) for r in robots}
+        idx = len(robots) + 1
+        serial = f"AGV_{idx:03d}"
+        while serial in existing:
+            idx += 1
             serial = f"AGV_{idx:03d}"
-            while serial in existing:
-                idx += 1
-                serial = f"AGV_{idx:03d}"
-            robots.append({
-                "serial_number": serial,
-                "initial_position": {"x": 0.0, "y": 0.0, "theta": 0.0, "map_id": "L1"},
-            })
-            self._dirty = True
+        robots.append({
+            "serial_number": serial,
+            "initial_position": {"x": 0.0, "y": 0.0, "theta": 0.0, "map_id": "L1"},
+        })
+        self._dirty = True
+        self._render_robot_table()
+        new_row = len(robots) - 1
+        self._robot_table.selectRow(new_row)
+        self._load_robot_to_form(new_row)
+
+    def _remove_robot(self):
+        row = self._selected_row()
+        if row < 0:
+            return
+        if self._controller.has_running_robots():
+            QMessageBox.warning(self, "Simulation", "Stop running robots before removing a robot.")
+            return
+        robots = self._config.get("robots", [])
+        serial = robots[row].get("serial_number", "")
+        del robots[row]
+        self._dirty = True
+        if robots:
+            new_row = min(row, len(robots) - 1)
             self._render_robot_table()
-            new_row = len(robots) - 1
             self._robot_table.selectRow(new_row)
             self._load_robot_to_form(new_row)
-
-        def _remove_robot(self):
-            row = self._selected_row()
-            if row < 0:
-                return
-            if self._controller.has_running_robots():
-                QMessageBox.warning(self, "Simulation", "Stop running robots before removing a robot.")
-                return
-            robots = self._config.get("robots", [])
-            serial = robots[row].get("serial_number", "")
-            del robots[row]
-            self._dirty = True
-            if robots:
-                new_row = min(row, len(robots) - 1)
-                self._render_robot_table()
-                self._robot_table.selectRow(new_row)
-                self._load_robot_to_form(new_row)
-            else:
-                self._render_robot_table()
-            try:
-                self._controller.configure(self._config)
-            except Exception:
-                pass
-            self._append_log(f"Removed robot: {serial}")
-
-        def _prepare_for_start(self) -> bool:
-            if self._controller.has_running_robots():
-                return True
-            if self._selected_row() >= 0:
-                return self._apply_selected_robot(silent=True)
-            try:
-                self._controller.configure(self._config)
-                return True
-            except Exception as exc:
-                QMessageBox.critical(self, "Simulation", f"Failed to configure simulator:\n{exc}")
-                return False
-
-        def _start_all(self):
-            if self._prepare_for_start():
-                self._controller.start_all()
-
-        def _start_selected_robot(self):
-            serial = self._selected_serial()
-            if not serial:
-                return
-            if self._prepare_for_start():
-                self._controller.start_robot(serial)
-
-        def _stop_selected_robot(self):
-            serial = self._selected_serial()
-            if serial:
-                self._controller.stop_robot(serial)
-
-        def _execute_command(self):
-            serial = self._selected_serial()
-            if not serial:
-                return
-            if self._dirty and not self._controller.has_running_robots():
-                self._apply_selected_robot(silent=True)
-
-            command = self._command_combo.currentText()
-            if command == "Obstacle Stop":
-                self._controller.set_obstacle_stop(serial, True)
-            elif command == "Release Obstacle":
-                self._controller.set_obstacle_stop(serial, False)
-            elif command == "Set Battery":
-                self._controller.set_battery_charge(serial, self._command_battery_spin.value())
-            elif command == "Raise Error":
-                self._controller.raise_error(
-                    serial,
-                    self._error_type_edit.text().strip() or "simulatedError",
-                    self._error_level_combo.currentText(),
-                    self._error_desc_edit.text().strip(),
-                )
-            elif command == "Clear Errors":
-                self._controller.clear_errors(serial)
-
-        def _render_robot_table(self):
-            selected = self._selected_serial()
-            statuses = {s["serial"]: s for s in self._controller.get_statuses()}
-            robots = self._config.get("robots", [])
-
-            self._robot_table.blockSignals(True)
-            self._robot_table.setRowCount(len(robots))
-            selected_row = 0
-            for row, robot in enumerate(robots):
-                serial = str(robot.get("serial_number", ""))
-                status = statuses.get(serial, {})
-                if serial == selected:
-                    selected_row = row
-                pos_text = "-"
-                if status:
-                    pos_text = (
-                        f"{status.get('x', 0.0):.2f}, "
-                        f"{status.get('y', 0.0):.2f}"
-                    )
-                values = [
-                    serial,
-                    "RUNNING" if status.get("running") else "STOPPED",
-                    f"{status.get('battery', self._robot_initial_battery(robot)):.1f}%",
-                    "yes" if status.get("driving") else "no",
-                    pos_text,
-                    str(status.get("errors", 0)),
-                    "on" if status.get("manual_obstacle") else "off",
-                ]
-                for col, value in enumerate(values):
-                    item = QTableWidgetItem(value)
-                    if col == 1 and value == "RUNNING":
-                        item.setForeground(QBrush(COL_CONN_ONLINE))
-                    elif col == 1:
-                        item.setForeground(QBrush(COL_CONN_OFFLINE))
-                    self._robot_table.setItem(row, col, item)
-            if robots:
-                self._robot_table.selectRow(min(selected_row, len(robots) - 1))
-            self._robot_table.blockSignals(False)
-            self._update_status_label(statuses)
-
-        def _refresh_status(self):
+        else:
             self._render_robot_table()
+        try:
+            self._controller.configure(self._config)
+        except Exception:
+            pass
+        self._append_log(f"Removed robot: {serial}")
 
-        def _update_status_label(self, statuses: Dict[str, Dict[str, Any]]):
-            total = len(self._config.get("robots", []))
-            running = sum(1 for status in statuses.values() if status.get("running"))
-            dirty = " *" if self._dirty else ""
-            self._status_label.setText(f"{running}/{total} running{dirty}")
+    def _prepare_for_start(self) -> bool:
+        if self._controller.has_running_robots():
+            return True
+        if self._selected_row() >= 0:
+            return self._apply_selected_robot(silent=True)
+        try:
+            self._controller.configure(self._config)
+            return True
+        except Exception as exc:
+            QMessageBox.critical(self, "Simulation", f"Failed to configure simulator:\n{exc}")
+            return False
 
-        def _robot_initial_battery(self, robot: Dict[str, Any]) -> float:
-            defaults = self._config.get("robot_defaults", {})
-            battery = robot.get("battery", defaults.get("battery", {}))
-            return float(battery.get("initial_charge", 0.0))
+    def _start_all(self):
+        if self._prepare_for_start():
+            self._controller.start_all()
 
-        def _append_log(self, text: str):
-            ts = datetime.now().strftime("%H:%M:%S")
-            self._sim_log.append(f"[{ts}] {text}")
+    def _start_selected_robot(self):
+        serial = self._selected_serial()
+        if not serial:
+            return
+        if self._prepare_for_start():
+            self._controller.start_robot(serial)
 
-        def _on_controller_error(self, text: str):
-            self._append_log(f"ERROR: {text}")
-            QMessageBox.warning(self, "Simulation", text)
+    def _stop_selected_robot(self):
+        serial = self._selected_serial()
+        if serial:
+            self._controller.stop_robot(serial)
 
-        def shutdown(self):
-            self._controller.shutdown()
+    def _execute_command(self):
+        serial = self._selected_serial()
+        if not serial:
+            return
+        if self._dirty and not self._controller.has_running_robots():
+            self._apply_selected_robot(silent=True)
 
-    # ---------------------------------------------------------------------------
+        command = self._command_combo.currentText()
+        if command == "Obstacle Stop":
+            self._controller.set_obstacle_stop(serial, True)
+        elif command == "Release Obstacle":
+            self._controller.set_obstacle_stop(serial, False)
+        elif command == "Set Battery":
+            self._controller.set_battery_charge(serial, self._command_battery_spin.value())
+        elif command == "Raise Error":
+            self._controller.raise_error(
+                serial,
+                self._error_type_edit.text().strip() or "simulatedError",
+                self._error_level_combo.currentText(),
+                self._error_desc_edit.text().strip(),
+            )
+        elif command == "Clear Errors":
+            self._controller.clear_errors(serial)
+
+    def _render_robot_table(self):
+        selected = self._selected_serial()
+        statuses = {s["serial"]: s for s in self._controller.get_statuses()}
+        robots = self._config.get("robots", [])
+
+        self._robot_table.blockSignals(True)
+        self._robot_table.setRowCount(len(robots))
+        selected_row = 0
+        for row, robot in enumerate(robots):
+            serial = str(robot.get("serial_number", ""))
+            status = statuses.get(serial, {})
+            if serial == selected:
+                selected_row = row
+            pos_text = "-"
+            if status:
+                pos_text = (
+                    f"{status.get('x', 0.0):.2f}, "
+                    f"{status.get('y', 0.0):.2f}"
+                )
+            values = [
+                serial,
+                "RUNNING" if status.get("running") else "STOPPED",
+                f"{status.get('battery', self._robot_initial_battery(robot)):.1f}%",
+                "yes" if status.get("driving") else "no",
+                pos_text,
+                str(status.get("errors", 0)),
+                "on" if status.get("manual_obstacle") else "off",
+            ]
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if col == 1 and value == "RUNNING":
+                    item.setForeground(QBrush(COL_CONN_ONLINE))
+                elif col == 1:
+                    item.setForeground(QBrush(COL_CONN_OFFLINE))
+                self._robot_table.setItem(row, col, item)
+        if robots:
+            self._robot_table.selectRow(min(selected_row, len(robots) - 1))
+        self._robot_table.blockSignals(False)
+        self._update_status_label(statuses)
+
+    def _refresh_status(self):
+        self._render_robot_table()
+
+    def _update_status_label(self, statuses: Dict[str, Dict[str, Any]]):
+        total = len(self._config.get("robots", []))
+        running = sum(1 for status in statuses.values() if status.get("running"))
+        dirty = " *" if self._dirty else ""
+        self._status_label.setText(f"{running}/{total} running{dirty}")
+
+    def _robot_initial_battery(self, robot: Dict[str, Any]) -> float:
+        defaults = self._config.get("robot_defaults", {})
+        battery = robot.get("battery", defaults.get("battery", {}))
+        return float(battery.get("initial_charge", 0.0))
+
+    def _append_log(self, text: str):
+        ts = datetime.now().strftime("%H:%M:%S")
+        self._sim_log.append(f"[{ts}] {text}")
+
+    def _on_controller_error(self, text: str):
+        self._append_log(f"ERROR: {text}")
+        QMessageBox.warning(self, "Simulation", text)
+
+    def shutdown(self):
+        self._controller.shutdown()
+
+# ---------------------------------------------------------------------------
 # MainWindow – top-level layout + mode switching + signal wiring
 # ---------------------------------------------------------------------------
 class MainWindow(QMainWindow):
@@ -2997,417 +3030,417 @@ class MainWindow(QMainWindow):
         self._agv_filter_menu.addSeparator()
 
 
-    # Per-AGV checkable actions
-    for aid in agv_ids:
-        act = QAction(aid, self)
-        act.setCheckable(True)
-        act.setChecked(aid in self._visible_agvs)
-        act.toggled.connect(lambda checked, a=aid: self._on_agv_filter_toggled(a, checked))
-        self._agv_filter_menu.addAction(act)
+        # Per-AGV checkable actions
+        for aid in agv_ids:
+            act = QAction(aid, self)
+            act.setCheckable(True)
+            act.setChecked(aid in self._visible_agvs)
+            act.toggled.connect(lambda checked, a=aid: self._on_agv_filter_toggled(a, checked))
+            self._agv_filter_menu.addAction(act)
 
-    # Auto-add new AGVs to visible set
-    for aid in agv_ids:
-        if aid not in self._visible_agvs:
-            self._visible_agvs.add(aid)
+        # Auto-add new AGVs to visible set
+        for aid in agv_ids:
+            if aid not in self._visible_agvs:
+                self._visible_agvs.add(aid)
 
-    # If selected AGV not in list anymore, pick first
-    if self._selected_agv not in agv_ids and agv_ids:
-        self._selected_agv = agv_ids[0]
+        # If selected AGV not in list anymore, pick first
+        if self._selected_agv not in agv_ids and agv_ids:
+            self._selected_agv = agv_ids[0]
 
-    self._update_filter_button_text()
+        self._update_filter_button_text()
 
-def _on_agv_filter_toggled(self, agv_id: str, checked: bool):
-    if checked:
-        self._visible_agvs.add(agv_id)
-    else:
-        self._visible_agvs.discard(agv_id)
-        if self._selected_agv == agv_id:
-            remaining = sorted(self._visible_agvs)
-            self._selected_agv = remaining[0] if remaining else ""
+    def _on_agv_filter_toggled(self, agv_id: str, checked: bool):
+        if checked:
+            self._visible_agvs.add(agv_id)
+        else:
+            self._visible_agvs.discard(agv_id)
+            if self._selected_agv == agv_id:
+                remaining = sorted(self._visible_agvs)
+                self._selected_agv = remaining[0] if remaining else ""
 
-    self._update_filter_button_text()
-    self._on_index_changed(self._timeline.current_index)
+        self._update_filter_button_text()
+        self._on_index_changed(self._timeline.current_index)
 
-def _filter_select_all(self):
-    self._visible_agvs = set(self._known_agvs)
-    for act in self._agv_filter_menu.actions():
-        if act.isCheckable():
-            act.setChecked(True)
-    self._update_filter_button_text()
-    self._on_index_changed(self._timeline.current_index)
+    def _filter_select_all(self):
+        self._visible_agvs = set(self._known_agvs)
+        for act in self._agv_filter_menu.actions():
+            if act.isCheckable():
+                act.setChecked(True)
+        self._update_filter_button_text()
+        self._on_index_changed(self._timeline.current_index)
 
-def _filter_deselect_all(self):
-    self._visible_agvs.clear()
-    for act in self._agv_filter_menu.actions():
-        if act.isCheckable():
-            act.setChecked(False)
-    self._update_filter_button_text()
-    self._on_index_changed(self._timeline.current_index)
+    def _filter_deselect_all(self):
+        self._visible_agvs.clear()
+        for act in self._agv_filter_menu.actions():
+            if act.isCheckable():
+                act.setChecked(False)
+        self._update_filter_button_text()
+        self._on_index_changed(self._timeline.current_index)
 
-def _update_filter_button_text(self):
-    n_visible = len(self._visible_agvs)
-    n_total = len(self._known_agvs)
-    if n_visible == n_total:
-        self._agv_filter_btn.setText(f"AGV Filter: All ({n_total})")
-    elif n_visible == 0:
-        self._agv_filter_btn.setText("AGV Filter: None")
-    else:
-        self._agv_filter_btn.setText(f"AGV Filter: {n_visible}/{n_total}")
+    def _update_filter_button_text(self):
+        n_visible = len(self._visible_agvs)
+        n_total = len(self._known_agvs)
+        if n_visible == n_total:
+            self._agv_filter_btn.setText(f"AGV Filter: All ({n_total})")
+        elif n_visible == 0:
+            self._agv_filter_btn.setText("AGV Filter: None")
+        else:
+            self._agv_filter_btn.setText(f"AGV Filter: {n_visible}/{n_total}")
 
-# -- File operations --
+    # -- File operations --
 
-def _open_file(self):
-    path, _ = QFileDialog.getOpenFileName(
-        self, "Open JSONL Log", "", "JSONL files (*.jsonl);;All files (*)"
-    )
-    if not path:
-        return
-
-    try:
-        count = self._store.load_file(path)
-    except Exception as exc:
-        QMessageBox.critical(self, "Error", f"Failed to load file:\n{exc}")
-        return
-
-    if count == 0:
-        QMessageBox.warning(self, "Warning", "No valid log entries found in file.")
-        return
-
-    self._set_mode("offline")
-    agv_ids = self._store.get_agv_ids()
-    self._visible_agvs = set(agv_ids)
-    self._selected_agv = agv_ids[0] if agv_ids else ""
-    self._refresh_agv_filter(agv_ids)
-
-    self._timeline.set_range(count - 1)
-    self._timeline.set_order_markers(self._store.order_change_indices)
-    self._timeline.set_index(0)
-    self._auto_fit_done = False
-    self._on_index_changed(0)
-    self.statusBar().showMessage(f"Loaded {count} entries from {path} ({len(agv_ids)} AGV(s))")
-
-def _open_map(self):
-    path, _ = QFileDialog.getOpenFileName(
-        self, "Open Map YAML", "", "YAML files (*.yaml *.yml);;All files (*)"
-    )
-    if not path:
-        return
-
-    try:
-        md = MapData()
-        count = md.load(path)
-    except Exception as exc:
-        QMessageBox.critical(self, "Error", f"Failed to load map:\n{exc}")
-        return
-
-    if count == 0:
-        QMessageBox.warning(self, "Warning", "No vertices found in map file.")
-        return
-
-    self._canvas.set_map_data(md)
-    self._canvas.fit_to_content()
-    n_special = sum(1 for v in md.vertices if v.vtype in MAP_LABEL_TYPES)
-    self.statusBar().showMessage(
-        f"Map loaded: {count} nodes, {len(md.edges)} edges, "
-        f"{md.mutex_edge_count} mutex edges, "
-        f"{n_special} special nodes (CHGE/PARK/PICKDROP) – {path}"
-    )
-    # 마지막 열린 맵 경로 저장
-    settings = _load_settings()
-    settings["last_map"] = path
-    _save_settings(settings)
-
-def _save_recording(self):
-    if not self._store.entries:
-        QMessageBox.information(self, "Info", "No data to save.")
-        return
-
-    path, _ = QFileDialog.getSaveFileName(
-        self, "Save Recording", "recording.jsonl", "JSONL files (*.jsonl)"
-    )
-    if not path:
-        return
-
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            for e in self._store.entries:
-                line = json.dumps(
-                    {"timestamp": e.timestamp, "topic": e.topic, "data": e.data},
-                    ensure_ascii=False,
-                )
-                f.write(line + "\n")
-        self.statusBar().showMessage(f"Saved {len(self._store.entries)} entries to {path}")
-    except Exception as exc:
-        QMessageBox.critical(self, "Error", f"Failed to save:\n{exc}")
-
-# -- Recording --
-
-def _toggle_recording(self):
-    if self._recording:
-        self._stop_recording()
-    else:
-        self._start_recording()
-
-def _start_recording(self):
-    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    default_name = f"vda5050_log_{ts}.jsonl"
-    path, _ = QFileDialog.getSaveFileName(
-        self, "Save Recording As", default_name, "JSONL files (*.jsonl)"
-    )
-    if not path:
-        self._btn_record.setChecked(False)
-        return
-
-    try:
-        self._record_file = open(path, "w", encoding="utf-8")
-    except Exception as exc:
-        QMessageBox.critical(self, "Error", f"Cannot open file:\n{exc}")
-        self._btn_record.setChecked(False)
-        return
-
-    self._recording = True
-    self._record_path = path
-    self._record_count = 0
-    self._btn_record.setText("⏹ Stop")
-    self._record_label.setText(f"Recording → {path}")
-    self.statusBar().showMessage(f"Recording to {path}")
-
-def _stop_recording(self):
-    if self._record_file:
-        self._record_file.close()
-        self._record_file = None
-    self._recording = False
-    self._btn_record.setChecked(False)
-    self._btn_record.setText("⏺ Record")
-    msg = f"Saved {self._record_count} entries → {self._record_path}"
-    self._record_label.setText(msg)
-    self.statusBar().showMessage(msg)
-
-def _record_entry(self, entry: LogEntry):
-    if not self._recording or not self._record_file:
-        return
-    try:
-        line = json.dumps(
-            {"timestamp": entry.timestamp, "topic": entry.topic, "data": entry.data},
-            ensure_ascii=False,
+    def _open_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open JSONL Log", "", "JSONL files (*.jsonl);;All files (*)"
         )
-        self._record_file.write(line + "\n")
-        self._record_file.flush()
-        self._record_count += 1
-        self._record_label.setText(f"⏺ {self._record_count} entries → {self._record_path}")
-    except Exception as exc:
-        self.statusBar().showMessage(f"Recording write error: {exc}")
-        self._stop_recording()
+        if not path:
+            return
 
-# -- Mode switching --
+        try:
+            count = self._store.load_file(path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", f"Failed to load file:\n{exc}")
+            return
 
-def _set_mode(self, mode: str):
-    self._mode = mode
-    self._offline_act.setChecked(mode == "offline")
-    self._live_act.setChecked(mode == "live")
-    if mode == "offline":
-        self._timeline.stop_play()
-        self.statusBar().showMessage("Offline mode – use timeline to navigate")
-    else:
-        self.statusBar().showMessage("Live mode – waiting for MQTT data")
+        if count == 0:
+            QMessageBox.warning(self, "Warning", "No valid log entries found in file.")
+            return
 
-# -- Clear live data --
+        self._set_mode("offline")
+        agv_ids = self._store.get_agv_ids()
+        self._visible_agvs = set(agv_ids)
+        self._selected_agv = agv_ids[0] if agv_ids else ""
+        self._refresh_agv_filter(agv_ids)
 
-def _toggle_collecting(self):
-    """Toggle message collection on/off."""
-    paused = self._btn_collect.isChecked()
-    self._store.collecting = not paused
-    if paused:
-        self._btn_collect.setText("▶ Collect")
-        self.statusBar().showMessage("Message collection paused – data frozen")
-    else:
-        self._btn_collect.setText("⏸ Pause")
-        self.statusBar().showMessage("Message collection resumed")
+        self._timeline.set_range(count - 1)
+        self._timeline.set_order_markers(self._store.order_change_indices)
+        self._timeline.set_index(0)
+        self._auto_fit_done = False
+        self._on_index_changed(0)
+        self.statusBar().showMessage(f"Loaded {count} entries from {path} ({len(agv_ids)} AGV(s))")
 
-def _clear_live_data(self):
-    """Clear accumulated log data while keeping MQTT connection and robot info."""
-    if self._mode != "live":
-        self.statusBar().showMessage("Clear is only available in live mode")
-        return
+    def _open_map(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open Map YAML", "", "YAML files (*.yaml *.yml);;All files (*)"
+        )
+        if not path:
+            return
 
-    self._store.clear()
-    self._timeline.set_range(0)
-    self._timeline.set_order_markers([])
-    self._timeline.set_timestamp("")
-    self._auto_fit_done = False
-    self._canvas.set_data({}, {}, set())
-    self._info_panel._text.clear()
-    self._info_panel._order_raw_text.clear()
-    self._info_panel._instant_raw_text.clear()
-    self.statusBar().showMessage("Live data cleared – waiting for new messages")
+        try:
+            md = MapData()
+            count = md.load(path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", f"Failed to load map:\n{exc}")
+            return
 
-# -- MQTT operations --
+        if count == 0:
+            QMessageBox.warning(self, "Warning", "No vertices found in map file.")
+            return
 
-def _connect_mqtt(self):
-    dlg = MqttConnectionDialog(self)
-    if dlg.exec_() != QDialog.Accepted:
-        return
+        self._canvas.set_map_data(md)
+        self._canvas.fit_to_content()
+        n_special = sum(1 for v in md.vertices if v.vtype in MAP_LABEL_TYPES)
+        self.statusBar().showMessage(
+            f"Map loaded: {count} nodes, {len(md.edges)} edges, "
+            f"{md.mutex_edge_count} mutex edges, "
+            f"{n_special} special nodes (CHGE/PARK/PICKDROP) – {path}"
+        )
+        # 마지막 열린 맵 경로 저장
+        settings = _load_settings()
+        settings["last_map"] = path
+        _save_settings(settings)
 
-    params = dlg.get_params()
-    self._store.clear()
-    self._visible_agvs.clear()
-    self._selected_agv = ""
-    self._known_agvs.clear()
-    self._live_discovered_agvs.clear()
-    self._agv_filter_menu.clear()
-    self._timeline.set_range(0)
-    self._auto_fit_done = False
-    self._mqtt_client.connect_to_broker(**params)
-    self._set_mode("live")
-    mfr = params["manufacturer"]
-    self.statusBar().showMessage(
-        f"Connecting to {params['host']}:{params['port']} – subscribing to all {mfr} AGVs..."
-    )
-    # 설정 저장
-    settings = _load_settings()
-    settings["mqtt"] = params
-    _save_settings(settings)
+    def _save_recording(self):
+        if not self._store.entries:
+            QMessageBox.information(self, "Info", "No data to save.")
+            return
 
-def _disconnect_mqtt(self):
-    self._mqtt_client.stop()
-    self._mqtt_disconnect_act.setEnabled(False)
-    self._mqtt_connect_act.setEnabled(True)
-    self.statusBar().showMessage("MQTT disconnected")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Recording", "recording.jsonl", "JSONL files (*.jsonl)"
+        )
+        if not path:
+            return
 
-def _toggle_go_live(self):
-    self._live_follow = self._go_live_act.isChecked()
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                for e in self._store.entries:
+                    line = json.dumps(
+                        {"timestamp": e.timestamp, "topic": e.topic, "data": e.data},
+                        ensure_ascii=False,
+                    )
+                    f.write(line + "\n")
+            self.statusBar().showMessage(f"Saved {len(self._store.entries)} entries to {path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", f"Failed to save:\n{exc}")
 
-@pyqtSlot(object)
-def _on_mqtt_log(self, entry: LogEntry):
-    self._store.append_entry(entry)
-    self._record_entry(entry)
+    # -- Recording --
 
-    # Discover new AGVs from connection messages
-    if entry.topic == "connection" and entry.agv_id:
-        if entry.agv_id not in self._live_discovered_agvs:
-            self._live_discovered_agvs.add(entry.agv_id)
-            agv_ids = sorted(self._live_discovered_agvs)
-            self._refresh_agv_filter(agv_ids)
-            conn_state = entry.data.get("connectionState", "?")
-            self.statusBar().showMessage(
-                f"Discovered AGV: {entry.agv_id} ({conn_state}) – {len(agv_ids)} robot(s) total"
+    def _toggle_recording(self):
+        if self._recording:
+            self._stop_recording()
+        else:
+            self._start_recording()
+
+    def _start_recording(self):
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        default_name = f"vda5050_log_{ts}.jsonl"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Recording As", default_name, "JSONL files (*.jsonl)"
+        )
+        if not path:
+            self._btn_record.setChecked(False)
+            return
+
+        try:
+            self._record_file = open(path, "w", encoding="utf-8")
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", f"Cannot open file:\n{exc}")
+            self._btn_record.setChecked(False)
+            return
+
+        self._recording = True
+        self._record_path = path
+        self._record_count = 0
+        self._btn_record.setText("⏹ Stop")
+        self._record_label.setText(f"Recording → {path}")
+        self.statusBar().showMessage(f"Recording to {path}")
+
+    def _stop_recording(self):
+        if self._record_file:
+            self._record_file.close()
+            self._record_file = None
+        self._recording = False
+        self._btn_record.setChecked(False)
+        self._btn_record.setText("⏺ Record")
+        msg = f"Saved {self._record_count} entries → {self._record_path}"
+        self._record_label.setText(msg)
+        self.statusBar().showMessage(msg)
+
+    def _record_entry(self, entry: LogEntry):
+        if not self._recording or not self._record_file:
+            return
+        try:
+            line = json.dumps(
+                {"timestamp": entry.timestamp, "topic": entry.topic, "data": entry.data},
+                ensure_ascii=False,
             )
+            self._record_file.write(line + "\n")
+            self._record_file.flush()
+            self._record_count += 1
+            self._record_label.setText(f"⏺ {self._record_count} entries → {self._record_path}")
+        except Exception as exc:
+            self.statusBar().showMessage(f"Recording write error: {exc}")
+            self._stop_recording()
 
-    # Throttled UI update: schedule instead of immediate
-    self._live_update_pending = True
-    if not self._live_throttle_timer.isActive():
-        self._live_throttle_timer.start()
+    # -- Mode switching --
 
-def _flush_live_update(self):
-    """Batch-apply pending live updates to UI."""
-    if not self._live_update_pending:
-        return
-    self._live_update_pending = False
+    def _set_mode(self, mode: str):
+        self._mode = mode
+        self._offline_act.setChecked(mode == "offline")
+        self._live_act.setChecked(mode == "live")
+        if mode == "offline":
+            self._timeline.stop_play()
+            self.statusBar().showMessage("Offline mode – use timeline to navigate")
+        else:
+            self.statusBar().showMessage("Live mode – waiting for MQTT data")
 
-    count = len(self._store.entries)
-    self._timeline.set_range(count - 1)
-    self._timeline.set_order_markers(self._store.order_change_indices)
+    # -- Clear live data --
 
-    if self._live_follow and not self._timeline.is_user_scrubbing:
-        self._timeline.set_index(count - 1)
+    def _toggle_collecting(self):
+        """Toggle message collection on/off."""
+        paused = self._btn_collect.isChecked()
+        self._store.collecting = not paused
+        if paused:
+            self._btn_collect.setText("▶ Collect")
+            self.statusBar().showMessage("Message collection paused – data frozen")
+        else:
+            self._btn_collect.setText("⏸ Pause")
+            self.statusBar().showMessage("Message collection resumed")
 
-@pyqtSlot()
-def _on_timeline_slider_released(self):
-    if self._mode != "live" or not self._live_follow or not self._store.entries:
-        return
-    self._timeline.set_index(len(self._store.entries) - 1)
+    def _clear_live_data(self):
+        """Clear accumulated log data while keeping MQTT connection and robot info."""
+        if self._mode != "live":
+            self.statusBar().showMessage("Clear is only available in live mode")
+            return
 
-@pyqtSlot()
-def _on_mqtt_connected(self):
-    self._mqtt_disconnect_act.setEnabled(True)
-    self._mqtt_connect_act.setEnabled(False)
-    self.statusBar().showMessage("MQTT connected – receiving data")
+        self._store.clear()
+        self._timeline.set_range(0)
+        self._timeline.set_order_markers([])
+        self._timeline.set_timestamp("")
+        self._auto_fit_done = False
+        self._canvas.set_data({}, {}, set())
+        self._info_panel._text.clear()
+        self._info_panel._order_raw_text.clear()
+        self._info_panel._instant_raw_text.clear()
+        self.statusBar().showMessage("Live data cleared – waiting for new messages")
 
-@pyqtSlot()
-def _on_mqtt_disconnected(self):
-    self._mqtt_disconnect_act.setEnabled(False)
-    self._mqtt_connect_act.setEnabled(True)
-    self.statusBar().showMessage("MQTT disconnected")
+    # -- MQTT operations --
 
-@pyqtSlot(str)
-def _on_mqtt_error(self, msg: str):
-    self.statusBar().showMessage(f"MQTT Error: {msg}")
-    QMessageBox.warning(self, "MQTT Error", msg)
+    def _connect_mqtt(self):
+        dlg = MqttConnectionDialog(self)
+        if dlg.exec_() != QDialog.Accepted:
+            return
 
-# -- Display update --
+        params = dlg.get_params()
+        self._store.clear()
+        self._visible_agvs.clear()
+        self._selected_agv = ""
+        self._known_agvs.clear()
+        self._live_discovered_agvs.clear()
+        self._agv_filter_menu.clear()
+        self._timeline.set_range(0)
+        self._auto_fit_done = False
+        self._mqtt_client.connect_to_broker(**params)
+        self._set_mode("live")
+        mfr = params["manufacturer"]
+        self.statusBar().showMessage(
+            f"Connecting to {params['host']}:{params['port']} – subscribing to all {mfr} AGVs..."
+        )
+        # 설정 저장
+        settings = _load_settings()
+        settings["mqtt"] = params
+        _save_settings(settings)
 
-@pyqtSlot(int)
-def _on_index_changed(self, index: int):
-    if not self._store.entries:
-        return
+    def _disconnect_mqtt(self):
+        self._mqtt_client.stop()
+        self._mqtt_disconnect_act.setEnabled(False)
+        self._mqtt_connect_act.setEnabled(True)
+        self.statusBar().showMessage("MQTT disconnected")
 
-    snapshots = self._store.get_snapshots(index)
-    trails: Dict[str, List[Tuple[float, float]]] = {}
-    for aid in self._visible_agvs:
-        trails[aid] = self._store.get_trail(index, aid)
+    def _toggle_go_live(self):
+        self._live_follow = self._go_live_act.isChecked()
 
-    timestamp = self._store.entries[index].timestamp if index < len(self._store.entries) else ""
+    @pyqtSlot(object)
+    def _on_mqtt_log(self, entry: LogEntry):
+        self._store.append_entry(entry)
+        self._record_entry(entry)
 
-    self._canvas.set_data(snapshots, trails, self._visible_agvs, self._selected_agv)
-    self._timeline.set_timestamp(timestamp)
+        # Discover new AGVs from connection messages
+        if entry.topic == "connection" and entry.agv_id:
+            if entry.agv_id not in self._live_discovered_agvs:
+                self._live_discovered_agvs.add(entry.agv_id)
+                agv_ids = sorted(self._live_discovered_agvs)
+                self._refresh_agv_filter(agv_ids)
+                conn_state = entry.data.get("connectionState", "?")
+                self.statusBar().showMessage(
+                    f"Discovered AGV: {entry.agv_id} ({conn_state}) – {len(agv_ids)} robot(s) total"
+                )
 
-    # Update InfoPanel
-    agv_ids = sorted(self._visible_agvs & set(snapshots.keys()))
-    self._info_panel.update_agv_list(agv_ids, self._selected_agv)
-    if self._selected_agv in snapshots:
-        agv_color = self._canvas.get_agv_color(self._selected_agv)
-        self._info_panel.set_snapshot(snapshots[self._selected_agv], self._selected_agv, timestamp, agv_color)
-    elif agv_ids:
-        self._selected_agv = agv_ids[0]
-        agv_color = self._canvas.get_agv_color(self._selected_agv)
-        self._info_panel.set_snapshot(snapshots[self._selected_agv], self._selected_agv, timestamp, agv_color)
+        # Throttled UI update: schedule instead of immediate
+        self._live_update_pending = True
+        if not self._live_throttle_timer.isActive():
+            self._live_throttle_timer.start()
 
-    # Auto-fit on first data display
-    if not self._auto_fit_done and snapshots:
-        has_nodes = any(s.nodes for s in snapshots.values())
-        if has_nodes:
-            self._canvas.fit_to_content()
-            self._auto_fit_done = True
+    def _flush_live_update(self):
+        """Batch-apply pending live updates to UI."""
+        if not self._live_update_pending:
+            return
+        self._live_update_pending = False
 
-# -- Robot / Node click --
+        count = len(self._store.entries)
+        self._timeline.set_range(count - 1)
+        self._timeline.set_order_markers(self._store.order_change_indices)
 
-@pyqtSlot(str)
-def _on_robot_clicked(self, agv_id: str):
-    self._selected_agv = agv_id
-    self._on_index_changed(self._timeline.current_index)
+        if self._live_follow and not self._timeline.is_user_scrubbing:
+            self._timeline.set_index(count - 1)
 
-@pyqtSlot(str)
-def _on_agv_selected_from_panel(self, agv_id: str):
-    self._selected_agv = agv_id
-    self._on_index_changed(self._timeline.current_index)
+    @pyqtSlot()
+    def _on_timeline_slider_released(self):
+        if self._mode != "live" or not self._live_follow or not self._store.entries:
+            return
+        self._timeline.set_index(len(self._store.entries) - 1)
 
-@pyqtSlot(str, dict)
-def _on_node_clicked(self, node_id: str, node_data: dict):
-    pos = node_data.get("nodePosition", {})
-    released = node_data.get("released", False)
-    actions = node_data.get("actions", [])
-    seq = node_data.get("sequenceId", "?")
+    @pyqtSlot()
+    def _on_mqtt_connected(self):
+        self._mqtt_disconnect_act.setEnabled(True)
+        self._mqtt_connect_act.setEnabled(False)
+        self.statusBar().showMessage("MQTT connected – receiving data")
 
-    info = (
-        f"Node: {node_id}\n"
-        f"Sequence ID: {seq}\n"
-        f"Released: {released} ({'base' if released else 'horizon'})\n"
-        f"Position: ({pos.get('x', '?')}, {pos.get('y', '?')})\n"
-        f"Map: {pos.get('mapId', '?')}\n"
-    )
-    if actions:
-        info += f"\nActions ({len(actions)}):\n"
-        for a in actions:
-            info += f"  - {a.get('actionType', '?')} [{a.get('actionId', '')}] ({a.get('blockingType', '?')})\n"
+    @pyqtSlot()
+    def _on_mqtt_disconnected(self):
+        self._mqtt_disconnect_act.setEnabled(False)
+        self._mqtt_connect_act.setEnabled(True)
+        self.statusBar().showMessage("MQTT disconnected")
 
-    QMessageBox.information(self, f"Node: {node_id}", info)
+    @pyqtSlot(str)
+    def _on_mqtt_error(self, msg: str):
+        self.statusBar().showMessage(f"MQTT Error: {msg}")
+        QMessageBox.warning(self, "MQTT Error", msg)
 
-def closeEvent(self, event):
-    if self._recording:
-        self._stop_recording()
-    self._simulation_tab.shutdown()
-    self._mqtt_client.stop()
-    event.accept()
+    # -- Display update --
+
+    @pyqtSlot(int)
+    def _on_index_changed(self, index: int):
+        if not self._store.entries:
+            return
+
+        snapshots = self._store.get_snapshots(index)
+        trails: Dict[str, List[Tuple[float, float]]] = {}
+        for aid in self._visible_agvs:
+            trails[aid] = self._store.get_trail(index, aid)
+
+        timestamp = self._store.entries[index].timestamp if index < len(self._store.entries) else ""
+
+        self._canvas.set_data(snapshots, trails, self._visible_agvs, self._selected_agv)
+        self._timeline.set_timestamp(timestamp)
+
+        # Update InfoPanel
+        agv_ids = sorted(self._visible_agvs & set(snapshots.keys()))
+        self._info_panel.update_agv_list(agv_ids, self._selected_agv)
+        if self._selected_agv in snapshots:
+            agv_color = self._canvas.get_agv_color(self._selected_agv)
+            self._info_panel.set_snapshot(snapshots[self._selected_agv], self._selected_agv, timestamp, agv_color)
+        elif agv_ids:
+            self._selected_agv = agv_ids[0]
+            agv_color = self._canvas.get_agv_color(self._selected_agv)
+            self._info_panel.set_snapshot(snapshots[self._selected_agv], self._selected_agv, timestamp, agv_color)
+
+        # Auto-fit on first data display
+        if not self._auto_fit_done and snapshots:
+            has_nodes = any(s.nodes for s in snapshots.values())
+            if has_nodes:
+                self._canvas.fit_to_content()
+                self._auto_fit_done = True
+
+    # -- Robot / Node click --
+
+    @pyqtSlot(str)
+    def _on_robot_clicked(self, agv_id: str):
+        self._selected_agv = agv_id
+        self._on_index_changed(self._timeline.current_index)
+
+    @pyqtSlot(str)
+    def _on_agv_selected_from_panel(self, agv_id: str):
+        self._selected_agv = agv_id
+        self._on_index_changed(self._timeline.current_index)
+
+    @pyqtSlot(str, dict)
+    def _on_node_clicked(self, node_id: str, node_data: dict):
+        pos = node_data.get("nodePosition", {})
+        released = node_data.get("released", False)
+        actions = node_data.get("actions", [])
+        seq = node_data.get("sequenceId", "?")
+
+        info = (
+            f"Node: {node_id}\n"
+            f"Sequence ID: {seq}\n"
+            f"Released: {released} ({'base' if released else 'horizon'})\n"
+            f"Position: ({pos.get('x', '?')}, {pos.get('y', '?')})\n"
+            f"Map: {pos.get('mapId', '?')}\n"
+        )
+        if actions:
+            info += f"\nActions ({len(actions)}):\n"
+            for a in actions:
+                info += f"  - {a.get('actionType', '?')} [{a.get('actionId', '')}] ({a.get('blockingType', '?')})\n"
+
+        QMessageBox.information(self, f"Node: {node_id}", info)
+
+    def closeEvent(self, event):
+        if self._recording:
+            self._stop_recording()
+        self._simulation_tab.shutdown()
+        self._mqtt_client.stop()
+        event.accept()
 
 
 # ---------------------------------------------------------------------------
@@ -3512,4 +3545,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

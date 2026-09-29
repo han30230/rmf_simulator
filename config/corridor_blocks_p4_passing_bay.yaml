@@ -1,0 +1,192 @@
+# P4 single side-bay simulation PoC.
+# A1: 2101 -> 2104 -> 2108
+# B1: 2108 -> 6137 -> 2101
+traffic_control:
+  enabled: true
+  telemetry_timeout: 5.0
+  tick_interval: 0.25
+  unmatched_route_policy: BLOCKED
+
+  holding_bays:
+    HB_LEFT:
+      node_id: "2101"
+      capacity: 4
+      geometry:
+        circle: {x: 6.833, y: 92.871, radius: 0.6}
+    HB_WEST_GATE:
+      node_id: "2104"
+      capacity: 1
+      geometry:
+        circle: {x: 30.424, y: 92.871, radius: 0.6}
+    HB_MIDDLE_SIDE:
+      node_id: "6137"
+      capacity: 1
+      geometry:
+        circle: {x: 42.508, y: 91.100, radius: 0.55}
+    HB_RIGHT:
+      node_id: "2108"
+      capacity: 4
+      geometry:
+        circle: {x: 73.7274, y: 92.8248, radius: 0.6}
+
+  groups:
+    P4_WEST_APPROACH:
+      blocks:
+        - id: P4_WEST_ADVANCE
+          direction_domain: P4_WEST_ADVANCE
+          entry_a: HB_LEFT
+          entry_b: HB_WEST_GATE
+          capacity: 1
+          edges_a_to_b:
+            - "2101>2102"
+            - "2102>2103"
+            - "2103>2104"
+          edges_b_to_a:
+            - "2104>2103"
+            - "2103>2102"
+            - "2102>2101"
+          geometry:
+            # Overlap the 2104 holding-bay circle (starts at x=29.824) so
+            # telemetry cannot fall through into a broad passing-block geometry
+            # immediately before reaching the gate.
+            bounds: {min_x: 7.6, max_x: 29.9, min_y: 91.8, max_y: 93.9}
+
+    P4_PASSING:
+      blocks:
+        # These three logical movements overlap on the main lane. RobotTracker
+        # resolves overlap using each robot's active grant.
+        - id: P4_EAST_TO_SIDE
+          direction_domain: P4_PASSING_EVENT
+          entry_a: HB_MIDDLE_SIDE
+          entry_b: HB_RIGHT
+          capacity: 1
+          # Do not launch another robot from the east endpoint while a robot
+          # that already cleared the central conflict is still arriving there.
+          require_source_hb_unreserved: true
+          edges_a_to_b:
+            - "6137>2105"
+            - "2105>2106"
+            - "2106>2107"
+            - "2107>2108"
+          edges_b_to_a:
+            - "2108>2107"
+            - "2107>2106"
+            - "2106>2105"
+            - "2105>6137"
+          geometry:
+            # Start inside the 2104 holding-bay circle (east edge x=31.024)
+            # so telemetry cannot fall into P4_SIDE_TO_LEFT during handoff.
+            bounds: &passing_main_bounds {min_x: 30.9, max_x: 54.818, min_y: 91.75, max_y: 93.9}
+
+        - id: P4_GATE_TO_RIGHT
+          direction_domain: P4_PASSING_EVENT
+          entry_a: HB_WEST_GATE
+          entry_b: HB_RIGHT
+          capacity: 1
+          edges_a_to_b:
+            - "2104>2105"
+            - "2105>2106"
+            - "2106>2107"
+            - "2107>2108"
+          edges_b_to_a:
+            - "2108>2107"
+            - "2107>2106"
+            - "2106>2105"
+            - "2105>2104"
+          geometry:
+            bounds: *passing_main_bounds
+
+        - id: P4_SIDE_TO_LEFT
+          direction_domain: P4_PASSING_EVENT
+          entry_a: HB_LEFT
+          entry_b: HB_MIDDLE_SIDE
+          capacity: 1
+          edges_a_to_b:
+            - "2101>2102"
+            - "2102>2103"
+            - "2103>2104"
+            - "2104>2105"
+            - "2105>6137"
+          edges_b_to_a:
+            - "6137>2105"
+            - "2105>2104"
+            - "2104>2103"
+            - "2103>2102"
+            - "2102>2101"
+          geometry:
+            # This movement continues through the west approach to HB_LEFT.
+            # Keep its granted geometry across that route so it wins over the
+            # overlapping P4_WEST_ADVANCE geometry after passing 2104.
+            bounds: {min_x: 7.6, max_x: 54.818, min_y: 91.75, max_y: 93.9}
+
+        - id: P4_RIGHT_TO_LEFT_DIRECT
+          direction_domain: P4_PASSING_EVENT
+          entry_a: HB_LEFT
+          entry_b: HB_RIGHT
+          capacity: 1
+          require_source_hb_unreserved: true
+          edges_a_to_b:
+            - "2101>2102"
+            - "2102>2103"
+            - "2103>2104"
+            - "2104>2105"
+            - "2105>2106"
+            - "2106>2107"
+            - "2107>2108"
+          edges_b_to_a:
+            - "2108>2107"
+            - "2107>2106"
+            - "2106>2105"
+            - "2105>2104"
+            - "2104>2103"
+            - "2103>2102"
+            - "2102>2101"
+          geometry:
+            # The managed conflict ends at 2106. The retained grant protects
+            # the approach from HB_RIGHT; geometry tracks occupancy only once
+            # the robot enters the shared conflict section.
+            bounds: {min_x: 7.6, max_x: 54.818, min_y: 91.75, max_y: 93.9}
+
+  routes:
+    - id: P4_LEFT_TO_RIGHT_VIA_GATE
+      start_nodes: ["2101"]
+      goal_nodes: ["2108"]
+      steps:
+        - block_id: P4_WEST_ADVANCE
+          direction: A_TO_B
+          source_hb: HB_LEFT
+          destination_hb: HB_WEST_GATE
+          goal_node: "2104"
+        - block_id: P4_GATE_TO_RIGHT
+          direction: A_TO_B
+          source_hb: HB_WEST_GATE
+          destination_hb: HB_RIGHT
+          goal_node: "2108"
+          release_node: "2106"
+
+    - id: P4_RIGHT_TO_LEFT_VIA_SIDE
+      start_nodes: ["2108"]
+      goal_nodes: ["2101"]
+      steps:
+        - block_id: P4_EAST_TO_SIDE
+          direction: B_TO_A
+          source_hb: HB_RIGHT
+          destination_hb: HB_MIDDLE_SIDE
+          goal_node: "6137"
+        - block_id: P4_SIDE_TO_LEFT
+          direction: B_TO_A
+          source_hb: HB_MIDDLE_SIDE
+          destination_hb: HB_LEFT
+          goal_node: "2101"
+          requires_opposite_routes_cleared: true
+
+    - id: P4_RIGHT_TO_LEFT_DIRECT_WHEN_CLEAR
+      start_nodes: ["2108"]
+      goal_nodes: ["2101"]
+      requires_no_opposite_jobs: true
+      steps:
+        - block_id: P4_RIGHT_TO_LEFT_DIRECT
+          direction: B_TO_A
+          source_hb: HB_RIGHT
+          destination_hb: HB_LEFT
+          goal_node: "2101"

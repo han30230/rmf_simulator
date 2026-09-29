@@ -1,0 +1,565 @@
+from __future__ import annotations
+
+from pathlib import Path
+import unittest
+
+from traffic_control.corridor_registry import CorridorRegistry
+from traffic_control.direction_arbiter import DirectionArbiter
+from traffic_control.models import Direction
+from traffic_control.robot_tracker import RobotTracker
+from traffic_control.task_gate import TaskGate
+
+
+ROOT = Path(__file__).resolve().parents[1]
+CONFIG = ROOT / "config/corridor_blocks_p4_passing_bay.yaml"
+
+
+POSITIONS = {
+    "2101": (6.833, 92.871),
+    "2104": (30.424, 92.871),
+    "2105": (42.508, 92.871),
+    "2106": (54.818, 92.871),
+    "2107": (66.612, 92.871),
+    "6137": (42.508, 91.100),
+    "2108": (73.7274, 92.8248),
+}
+
+
+def payload(robot_id: str, goal_node: str) -> dict:
+    return {
+        "type": "robot_task_request",
+        "robot": robot_id,
+        "fleet": "TOOL",
+        "request": {
+            "unix_millis_earliest_start_time": 0,
+            "category": "patrol",
+            "priority": {"type": "default", "value": 0},
+            "description": {"places": [goal_node], "rounds": 1},
+        },
+    }
+
+
+def state(
+    x: float,
+    y: float,
+    *,
+    node: str = "",
+    driving: bool = True,
+) -> dict:
+    return {
+        "lastNodeId": node,
+        "driving": driving,
+        "agvPosition": {"x": x, "y": y, "theta": 0.0, "mapId": "L1"},
+        "nodeStates": [],
+        "edgeStates": [],
+    }
+
+
+class RecordingForwarder:
+    def __init__(self) -> None:
+        self.goals: list[tuple[str, str]] = []
+
+    def __call__(self, submitted: dict) -> dict:
+        robot_id = str(submitted["robot"])
+        goal = str(submitted["request"]["description"]["places"][0])
+        self.goals.append((robot_id, goal))
+        return {"success": True, "task_id": f"upstream-{len(self.goals)}"}
+
+
+class PassingBayFlowTests(unittest.TestCase):
+    def test_two_against_two_alternates_safely_and_last_robot_goes_direct(self) -> None:
+        registry = CorridorRegistry.from_yaml(CONFIG)
+        arbiter = DirectionArbiter(registry)
+        tracker = RobotTracker(registry, arbiter, telemetry_timeout=5.0)
+        forwarder = RecordingForwarder()
+        gate = TaskGate(registry, arbiter, tracker, forwarder)
+
+        for robot in ("AGV_A1", "AGV_A2"):
+            tracker.ingest_state(
+                robot,
+                state(*POSITIONS["2101"], node="2101", driving=False),
+                received_at=1.0,
+            )
+        for robot in ("AGV_B1", "AGV_B2"):
+            tracker.ingest_state(
+                robot,
+                state(*POSITIONS["2108"], node="2108", driving=False),
+                received_at=1.0,
+            )
+
+        jobs = {
+            robot: gate.submit(payload(robot, goal))
+            for robot, goal in (
+                ("AGV_A1", "2108"),
+                ("AGV_A2", "2108"),
+                ("AGV_B1", "2101"),
+                ("AGV_B2", "2101"),
+            )
+        }
+        self.assertEqual(
+            forwarder.goals,
+            [("AGV_A1", "2104"), ("AGV_B1", "6137")],
+        )
+
+        tracker.ingest_state(
+            "AGV_A1", state(*POSITIONS["2104"], node="2104", driving=False),
+            received_at=2.0,
+        )
+        gate.tick(now=2.0)
+        tracker.ingest_state(
+            "AGV_B1", state(*POSITIONS["6137"], node="6137", driving=False),
+            received_at=3.0,
+        )
+        gate.tick(now=3.0)
+        gate.tick(now=3.1)
+        self.assertEqual(forwarder.goals[-1], ("AGV_A1", "2108"))
+
+        tracker.ingest_state(
+            "AGV_A1", state(*POSITIONS["2105"], node="2105", driving=True),
+            received_at=3.5,
+        )
+        tracker.ingest_state(
+            "AGV_A1", state(*POSITIONS["2106"], node="2106", driving=True),
+            received_at=4.0,
+        )
+        gate.tick(now=4.0)
+        self.assertIn(("AGV_A2", "2104"), forwarder.goals)
+        self.assertNotIn(("AGV_B1", "2101"), forwarder.goals)
+        self.assertEqual(
+            gate.status()["jobs"][jobs["AGV_B1"]["job_id"]]["status"],
+            "WAITING",
+        )
+
+        tracker.ingest_state(
+            "AGV_A1", state(*POSITIONS["2108"], node="2108", driving=False),
+            received_at=5.0,
+        )
+        gate.tick(now=5.0)
+        self.assertEqual(
+            gate.status()["jobs"][jobs["AGV_B2"]["job_id"]]["status"],
+            "WAITING",
+        )
+
+        tracker.ingest_state(
+            "AGV_A2", state(*POSITIONS["2104"], node="2104", driving=False),
+            received_at=5.5,
+        )
+        gate.tick(now=5.5)
+        self.assertEqual(
+            gate.status()["jobs"][jobs["AGV_B1"]["job_id"]]["status"],
+            "WAITING",
+        )
+        self.assertEqual(forwarder.goals[-1], ("AGV_A2", "2108"))
+
+        tracker.ingest_state(
+            "AGV_A2", state(*POSITIONS["2106"], node="2106", driving=True),
+            received_at=7.0,
+        )
+        gate.tick(now=7.0)
+        self.assertEqual(forwarder.goals[-1], ("AGV_B1", "2101"))
+        self.assertEqual(
+            gate.status()["jobs"][jobs["AGV_B2"]["job_id"]]["status"],
+            "WAITING",
+        )
+        tracker.ingest_state(
+            "AGV_A2", state(*POSITIONS["2108"], node="2108", driving=False),
+            received_at=8.0,
+        )
+        gate.tick(now=8.0)
+        self.assertEqual(forwarder.goals[-1], ("AGV_B2", "2101"))
+        self.assertEqual(
+            gate.status()["jobs"][jobs["AGV_B2"]["job_id"]]["route_id"],
+            "P4_RIGHT_TO_LEFT_DIRECT_WHEN_CLEAR",
+        )
+
+        tracker.ingest_state(
+            "AGV_B1", state(*POSITIONS["2101"], node="2101", driving=False),
+            received_at=8.2,
+        )
+        gate.tick(now=8.2)
+        tracker.ingest_state(
+            "AGV_B2", state(*POSITIONS["2106"], node="2106", driving=True),
+            received_at=8.5,
+        )
+        tracker.ingest_state(
+            "AGV_B2", state(*POSITIONS["2101"], node="2101", driving=False),
+            received_at=9.0,
+        )
+        gate.tick(now=9.0)
+
+        final = gate.status()
+        self.assertEqual(
+            {job["robot_id"]: job["status"] for job in final["jobs"].values()},
+            {robot: "COMPLETE" for robot in jobs},
+        )
+        for block in final["arbiter"]["blocks"].values():
+            self.assertEqual(block["state"], "FREE")
+            self.assertEqual(block["occupants"], [])
+            self.assertEqual(block["reservations"], [])
+            self.assertTrue(all(not queue for queue in block["waiting"].values()))
+            self.assertIsNone(block["fault_reason"])
+
+    def test_two_leftbound_robots_pipeline_without_reentering_cleared_a1_path(self) -> None:
+        registry = CorridorRegistry.from_yaml(CONFIG)
+        arbiter = DirectionArbiter(registry)
+        tracker = RobotTracker(registry, arbiter, telemetry_timeout=5.0)
+        forwarder = RecordingForwarder()
+        gate = TaskGate(registry, arbiter, tracker, forwarder)
+
+        tracker.ingest_state(
+            "AGV_A1", state(*POSITIONS["2101"], node="2101", driving=False), received_at=1.0
+        )
+        for robot in ("AGV_B1", "AGV_B2"):
+            tracker.ingest_state(
+                robot, state(*POSITIONS["2108"], node="2108", driving=False), received_at=1.0
+            )
+
+        a1 = gate.submit(payload("AGV_A1", "2108"))
+        b1 = gate.submit(payload("AGV_B1", "2101"))
+        b2 = gate.submit(payload("AGV_B2", "2101"))
+
+        self.assertEqual(a1["decision"], "ADMIT")
+        self.assertEqual(b1["decision"], "ADMIT")
+        self.assertEqual(b2["decision"], "WAIT")
+        self.assertEqual(
+            forwarder.goals,
+            [("AGV_A1", "2104"), ("AGV_B1", "6137")],
+        )
+        self.assertEqual(
+            gate.status()["arbiter"]["blocks"]["P4_EAST_TO_SIDE"]["waiting"]["B_TO_A"],
+            ["AGV_B2"],
+        )
+
+        tracker.ingest_state(
+            "AGV_A1", state(*POSITIONS["2104"], node="2104", driving=False), received_at=2.0
+        )
+        gate.tick(now=2.0)
+        tracker.ingest_state(
+            "AGV_B1", state(*POSITIONS["2106"], node="2106", driving=True), received_at=2.1
+        )
+        tracker.ingest_state(
+            "AGV_B1", state(*POSITIONS["6137"], node="6137", driving=False), received_at=3.0
+        )
+        gate.tick(now=3.0)
+        self.assertEqual(forwarder.goals[-1], ("AGV_A1", "2108"))
+
+        tracker.ingest_state(
+            "AGV_A1", state(*POSITIONS["2105"], node="2105", driving=True), received_at=3.5
+        )
+        tracker.ingest_state(
+            "AGV_A1", state(*POSITIONS["2106"], node="2106", driving=True), received_at=4.0
+        )
+        gate.tick(now=4.0)
+        self.assertEqual(forwarder.goals[-1], ("AGV_B1", "2101"))
+
+        tracker.ingest_state(
+            "AGV_B1", state(*POSITIONS["2105"], node="2105", driving=True), received_at=4.2
+        )
+        gate.tick(now=4.2)
+        self.assertEqual(forwarder.goals[-1], ("AGV_B1", "2101"))
+        self.assertEqual(gate.status()["jobs"][b2["job_id"]]["status"], "WAITING")
+        self.assertEqual(
+            forwarder.goals,
+            [
+                ("AGV_A1", "2104"),
+                ("AGV_B1", "6137"),
+                ("AGV_A1", "2108"),
+                ("AGV_B1", "2101"),
+            ],
+        )
+
+        tracker.ingest_state(
+            "AGV_A1", state(*POSITIONS["2108"], node="2108", driving=False), received_at=5.0
+        )
+        gate.tick(now=5.0)
+        self.assertEqual(forwarder.goals[-1], ("AGV_B2", "2101"))
+        self.assertEqual(
+            gate.status()["jobs"][b2["job_id"]]["route_id"],
+            "P4_RIGHT_TO_LEFT_DIRECT_WHEN_CLEAR",
+        )
+        tracker.ingest_state(
+            "AGV_B2", state(*POSITIONS["2106"], node="2106", driving=True), received_at=5.2
+        )
+        tracker.ingest_state(
+            "AGV_B1", state(*POSITIONS["2101"], node="2101", driving=False), received_at=6.0
+        )
+        gate.tick(now=6.0)
+
+        tracker.ingest_state(
+            "AGV_B2", state(*POSITIONS["2105"], node="2105", driving=True), received_at=6.5
+        )
+        tracker.ingest_state(
+            "AGV_B2", state(*POSITIONS["2101"], node="2101", driving=False), received_at=7.0
+        )
+        gate.tick(now=7.0)
+
+        final = gate.status()
+        self.assertEqual(
+            {job["robot_id"]: job["status"] for job in final["jobs"].values()},
+            {"AGV_A1": "COMPLETE", "AGV_B1": "COMPLETE", "AGV_B2": "COMPLETE"},
+        )
+        self.assertEqual(final["robots"]["AGV_A1"]["current_hb"], "HB_RIGHT")
+        for robot in ("AGV_B1", "AGV_B2"):
+            self.assertEqual(final["robots"][robot]["current_hb"], "HB_LEFT")
+        for block in final["arbiter"]["blocks"].values():
+            self.assertEqual(block["state"], "FREE")
+            self.assertEqual(block["occupants"], [])
+            self.assertEqual(block["reservations"], [])
+            self.assertEqual(block["waiting"]["A_TO_B"], [])
+            self.assertEqual(block["waiting"]["B_TO_A"], [])
+            self.assertIsNone(block["fault_reason"])
+
+    def test_granted_robot_still_at_source_bay_does_not_fault_overlapping_block(self) -> None:
+        registry = CorridorRegistry.from_yaml(CONFIG)
+        arbiter = DirectionArbiter(registry)
+        tracker = RobotTracker(registry, arbiter)
+        robot = "AGV_A1"
+        tracker.ingest_state(
+            robot, state(*POSITIONS["2104"], node="2104", driving=False),
+            received_at=1.0,
+        )
+        arbiter.request(
+            robot, "P4_GATE_TO_RIGHT", Direction.A_TO_B, "HB_RIGHT",
+            source_hb="HB_WEST_GATE", release_node="2106",
+        )
+        # A grant can arrive before the next order or before motion begins.
+        tracker.ingest_state(
+            robot, state(*POSITIONS["2104"], node="2104", driving=False),
+            received_at=2.0,
+        )
+        status = arbiter.snapshot()
+        self.assertIsNone(status["blocks"]["P4_SIDE_TO_LEFT"]["fault_reason"])
+        self.assertEqual(status["blocks"]["P4_GATE_TO_RIGHT"]["reservations"], [robot])
+        self.assertEqual(status["holding_bays"]["HB_WEST_GATE"]["occupants"], [robot])
+        self.assertIsNone(tracker.snapshot()[robot]["current_block"])
+        self.assertEqual(tracker.snapshot()[robot]["current_hb"], "HB_WEST_GATE")
+        for block in status["blocks"].values():
+            self.assertIsNone(block["fault_reason"])
+
+        tracker.ingest_state(robot, state(31.05, 92.871), received_at=3.0)
+        self.assertEqual(tracker.snapshot()[robot]["current_block"], "P4_GATE_TO_RIGHT")
+        self.assertEqual(arbiter.snapshot()["holding_bays"]["HB_WEST_GATE"]["occupants"], [])
+        self.assertIsNone(arbiter.snapshot()["blocks"]["P4_SIDE_TO_LEFT"]["fault_reason"])
+
+        # Returning to the source is not proof of a safe destination exit.
+        tracker.ingest_state(
+            robot, state(*POSITIONS["2104"], node="2104", driving=False),
+            received_at=4.0,
+        )
+        self.assertEqual(tracker.snapshot()[robot]["current_block"], "P4_GATE_TO_RIGHT")
+        self.assertEqual(tracker.expire_stale(now=10.0), [robot])
+        self.assertEqual(arbiter.snapshot()["blocks"]["P4_GATE_TO_RIGHT"]["state"], "BLOCKED")
+
+    def test_west_approach_remains_in_its_granted_block_until_gate_bay(self) -> None:
+        registry = CorridorRegistry.from_yaml(CONFIG)
+        arbiter = DirectionArbiter(registry)
+        tracker = RobotTracker(registry, arbiter, telemetry_timeout=5.0)
+        gate = TaskGate(registry, arbiter, tracker, RecordingForwarder())
+
+        tracker.ingest_state(
+            "AGV_A1",
+            state(*POSITIONS["2101"], node="2101", driving=False),
+            received_at=1.0,
+        )
+        result = gate.submit(payload("AGV_A1", "2108"))
+        self.assertEqual(result["decision"], "ADMIT")
+
+        tracker.ingest_state("AGV_A1", state(18.46, 92.871), received_at=2.0)
+        # This point is immediately before the 2104 holding-bay circle. It must
+        # remain part of the west approach instead of matching an overlapping
+        # passing-event block and triggering fail-closed.
+        tracker.ingest_state("AGV_A1", state(29.75, 92.871), received_at=3.0)
+
+        status = gate.status()
+        self.assertEqual(
+            status["robots"]["AGV_A1"]["current_block"],
+            "P4_WEST_ADVANCE",
+        )
+        self.assertIsNone(
+            status["arbiter"]["blocks"]["P4_EAST_TO_SIDE"]["fault_reason"]
+        )
+
+    def test_gate_departure_gap_prefers_the_active_gate_to_right_grant(self) -> None:
+        registry = CorridorRegistry.from_yaml(CONFIG)
+        arbiter = DirectionArbiter(registry)
+        tracker = RobotTracker(registry, arbiter, telemetry_timeout=5.0)
+
+        tracker.ingest_state(
+            "AGV_A1",
+            state(*POSITIONS["2104"], node="2104", driving=False),
+            received_at=1.0,
+        )
+        decision = arbiter.request(
+            "AGV_A1",
+            "P4_GATE_TO_RIGHT",
+            Direction.A_TO_B,
+            "HB_RIGHT",
+            source_hb="HB_WEST_GATE",
+            release_node="2106",
+        )
+        self.assertEqual(decision.value, "ADMIT")
+
+        # HB_WEST_GATE ends at x=31.024. This point is just beyond that bay,
+        # where the active P4_GATE_TO_RIGHT grant must win instead of the
+        # broader, opposing P4_SIDE_TO_LEFT geometry.
+        tracker.ingest_state(
+            "AGV_A1",
+            state(31.05, 92.871, node="2104", driving=True),
+            received_at=2.0,
+        )
+
+        status = arbiter.snapshot()
+        self.assertEqual(
+            tracker.snapshot()["AGV_A1"]["current_block"],
+            "P4_GATE_TO_RIGHT",
+        )
+        self.assertEqual(
+            status["blocks"]["P4_GATE_TO_RIGHT"]["occupants"],
+            ["AGV_A1"],
+        )
+        self.assertIsNone(
+            status["blocks"]["P4_SIDE_TO_LEFT"]["fault_reason"]
+        )
+
+    def test_b1_yields_in_side_bay_then_rejoins_after_a1_crosses(self) -> None:
+        registry = CorridorRegistry.from_yaml(CONFIG)
+        arbiter = DirectionArbiter(registry)
+        tracker = RobotTracker(registry, arbiter, telemetry_timeout=5.0)
+        forwarder = RecordingForwarder()
+        gate = TaskGate(registry, arbiter, tracker, forwarder)
+
+        tracker.ingest_state(
+            "AGV_A1", state(*POSITIONS["2101"], node="2101", driving=False), received_at=1.0
+        )
+        tracker.ingest_state(
+            "AGV_B1", state(*POSITIONS["2108"], node="2108", driving=False), received_at=1.0
+        )
+
+        a1 = gate.submit(payload("AGV_A1", "2108"))
+        b1 = gate.submit(payload("AGV_B1", "2101"))
+        self.assertEqual(a1["decision"], "ADMIT")
+        self.assertEqual(b1["decision"], "ADMIT")
+        self.assertEqual(
+            forwarder.goals,
+            [("AGV_A1", "2104"), ("AGV_B1", "6137")],
+        )
+
+        tracker.ingest_state("AGV_A1", state(18.46, 92.871), received_at=2.0)
+        tracker.ingest_state(
+            "AGV_A1", state(*POSITIONS["2104"], node="2104", driving=False), received_at=3.0
+        )
+        gate.tick(now=3.0)
+        self.assertEqual(gate.status()["jobs"][a1["job_id"]]["status"], "WAITING")
+        self.assertEqual(len(forwarder.goals), 2)
+
+        tracker.ingest_state(
+            "AGV_B1",
+            state(*POSITIONS["2106"], node="2106", driving=True),
+            received_at=3.1,
+        )
+        tracker.ingest_state(
+            "AGV_B1", state(*POSITIONS["6137"], node="6137", driving=False), received_at=4.0
+        )
+        gate.tick(now=4.0)
+
+        status = gate.status()
+        self.assertEqual(status["robots"]["AGV_B1"]["current_hb"], "HB_MIDDLE_SIDE")
+        self.assertEqual(status["jobs"][b1["job_id"]]["status"], "WAITING")
+        self.assertEqual(
+            forwarder.goals,
+            [
+                ("AGV_A1", "2104"),
+                ("AGV_B1", "6137"),
+                ("AGV_A1", "2108"),
+            ],
+        )
+
+        tracker.ingest_state(
+            "AGV_A1",
+            state(*POSITIONS["2105"], node="2105", driving=True),
+            received_at=5.0,
+        )
+        gate.tick(now=5.0)
+        self.assertEqual(forwarder.goals[-1], ("AGV_A1", "2108"))
+        self.assertEqual(gate.status()["jobs"][b1["job_id"]]["status"], "WAITING")
+
+        tracker.ingest_state(
+            "AGV_A1",
+            state(*POSITIONS["2106"], node="2106", driving=True),
+            received_at=5.5,
+        )
+        gate.tick(now=5.5)
+        self.assertEqual(
+            forwarder.goals,
+            [
+                ("AGV_A1", "2104"),
+                ("AGV_B1", "6137"),
+                ("AGV_A1", "2108"),
+                ("AGV_B1", "2101"),
+            ],
+        )
+
+        handoff = gate.status()
+        self.assertEqual(handoff["jobs"][a1["job_id"]]["status"], "ACTIVE")
+        self.assertEqual(handoff["jobs"][b1["job_id"]]["status"], "ACTIVE")
+        self.assertTrue(handoff["robots"]["AGV_A1"]["driving"])
+        self.assertIsNone(handoff["robots"]["AGV_A1"]["current_block"])
+        self.assertIn(
+            "AGV_A1",
+            handoff["arbiter"]["holding_bays"]["HB_RIGHT"]["reservations"],
+        )
+
+        tracker.ingest_state(
+            "AGV_A1",
+            state(*POSITIONS["2107"], node="2107", driving=True),
+            received_at=6.0,
+        )
+        tracker.ingest_state(
+            "AGV_B1",
+            state(*POSITIONS["2105"], node="2105", driving=True),
+            received_at=6.1,
+        )
+        self.assertEqual(
+            tracker.snapshot()["AGV_B1"]["current_block"],
+            "P4_SIDE_TO_LEFT",
+        )
+
+        tracker.ingest_state(
+            "AGV_A1",
+            state(*POSITIONS["2108"], node="2108", driving=False),
+            received_at=7.0,
+        )
+        gate.tick(now=7.0)
+        self.assertEqual(gate.status()["jobs"][a1["job_id"]]["status"], "COMPLETE")
+
+        tracker.ingest_state(
+            "AGV_B1",
+            state(*POSITIONS["2104"], node="2104", driving=True),
+            received_at=7.5,
+        )
+        self.assertEqual(
+            tracker.snapshot()["AGV_B1"]["current_block"],
+            "P4_SIDE_TO_LEFT",
+        )
+        tracker.ingest_state("AGV_B1", state(25.0, 92.871), received_at=8.0)
+        tracker.ingest_state(
+            "AGV_B1",
+            state(*POSITIONS["2101"], node="2101", driving=False),
+            received_at=8.5,
+        )
+        gate.tick(now=8.5)
+
+        final = gate.status()
+        self.assertEqual(final["jobs"][a1["job_id"]]["status"], "COMPLETE")
+        self.assertEqual(final["jobs"][b1["job_id"]]["status"], "COMPLETE")
+        for block in final["arbiter"]["blocks"].values():
+            self.assertEqual(block["state"], "FREE")
+            self.assertEqual(block["occupants"], [])
+            self.assertEqual(block["reservations"], [])
+            self.assertEqual(block["waiting"]["A_TO_B"], [])
+            self.assertEqual(block["waiting"]["B_TO_A"], [])
+            self.assertIsNone(block["fault_reason"])
+
+
+if __name__ == "__main__":
+    unittest.main()

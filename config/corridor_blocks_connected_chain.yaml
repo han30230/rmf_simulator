@@ -1,0 +1,65 @@
+# Connected three-segment corridor. Robot identities belong only to launch data.
+traffic_control:
+  enabled: true
+  telemetry_timeout: 5.0
+  tick_interval: 0.25
+  unmatched_route_policy: BLOCKED
+
+  holding_bays:
+    CHAIN_LEFT_SLOT_1: {node_id: CHAIN_L1, capacity: 1, geometry: {circle: {x: -9.0, y: 42.0, radius: 0.7}}}
+    CHAIN_LEFT_SLOT_2: {node_id: CHAIN_L2, capacity: 1, geometry: {circle: {x: -17.0, y: 40.8, radius: 0.7}}}
+    CHAIN_LEFT_SLOT_3: {node_id: CHAIN_L3, capacity: 1, geometry: {circle: {x: -25.5, y: 42.5, radius: 0.7}}}
+    CHAIN_LEFT_SLOT_4: {node_id: CHAIN_L4, capacity: 1, geometry: {circle: {x: -34.5, y: 41.2, radius: 0.7}}}
+    CHAIN_SIDE_SLOT_1: {node_id: CHAIN_SIDE_1, capacity: 1, geometry: {circle: {x: 31.8, y: 41.5, radius: 0.7}}}
+    CHAIN_SIDE_SLOT_2: {node_id: CHAIN_SIDE_2, capacity: 1, geometry: {circle: {x: 65.0, y: 42.5, radius: 0.7}}}
+    CHAIN_RIGHT_SLOT_1: {node_id: CHAIN_R1, capacity: 1, geometry: {circle: {x: 107.0, y: 41.5, radius: 0.7}}}
+    CHAIN_RIGHT_SLOT_2: {node_id: CHAIN_R2, capacity: 1, geometry: {circle: {x: 115.0, y: 42.8, radius: 0.7}}}
+    CHAIN_RIGHT_SLOT_3: {node_id: CHAIN_R3, capacity: 1, geometry: {circle: {x: 124.0, y: 40.8, radius: 0.7}}}
+    CHAIN_RIGHT_SLOT_4: {node_id: CHAIN_R4, capacity: 1, geometry: {circle: {x: 132.5, y: 42.0, radius: 0.7}}}
+
+  safe_stop_groups:
+    CHAIN_LEFT_END: {members: [CHAIN_LEFT_SLOT_1, CHAIN_LEFT_SLOT_2, CHAIN_LEFT_SLOT_3, CHAIN_LEFT_SLOT_4]}
+    CHAIN_SIDE_STOP_1: {members: [CHAIN_SIDE_SLOT_1]}
+    CHAIN_SIDE_STOP_2: {members: [CHAIN_SIDE_SLOT_2]}
+    CHAIN_RIGHT_END: {members: [CHAIN_RIGHT_SLOT_1, CHAIN_RIGHT_SLOT_2, CHAIN_RIGHT_SLOT_3, CHAIN_RIGHT_SLOT_4]}
+
+  blocks:
+    - id: CHAIN_C1
+      group_id: FAB_MAIN_LINE
+      direction_domain: CHAIN_C1_DIRECTION
+      entry_a: CHAIN_LEFT_END
+      entry_b: CHAIN_SIDE_STOP_1
+      capacity: 4
+      release_node_a_to_b: CHAIN_J1
+      release_node_b_to_a: CHAIN_N1
+      edges_a_to_b: [CHAIN_L1>CHAIN_LJ1, CHAIN_L2>CHAIN_LJ2, CHAIN_L3>CHAIN_LJ3, CHAIN_L4>CHAIN_LJ4, CHAIN_LJ4>CHAIN_LJ3, CHAIN_LJ3>CHAIN_LJ2, CHAIN_LJ2>CHAIN_LJ1, CHAIN_LJ1>CHAIN_M0, CHAIN_M0>CHAIN_C1_A, CHAIN_C1_A>CHAIN_N1, CHAIN_N1>CHAIN_C1_B, CHAIN_C1_B>CHAIN_J1, CHAIN_J1>CHAIN_SIDE_1]
+      edges_b_to_a: [CHAIN_SIDE_1>CHAIN_J1, CHAIN_J1>CHAIN_C1_B, CHAIN_C1_B>CHAIN_N1, CHAIN_N1>CHAIN_C1_A, CHAIN_C1_A>CHAIN_M0, CHAIN_M0>CHAIN_LJ1, CHAIN_LJ1>CHAIN_LJ2, CHAIN_LJ2>CHAIN_LJ3, CHAIN_LJ3>CHAIN_LJ4, CHAIN_LJ1>CHAIN_L1, CHAIN_LJ2>CHAIN_L2, CHAIN_LJ3>CHAIN_L3, CHAIN_LJ4>CHAIN_L4]
+      geometry: {bounds: {min_x: -35.3, max_x: 32.5, min_y: 40.0, max_y: 50.8}}
+    - id: CHAIN_C2
+      group_id: FAB_MAIN_LINE
+      direction_domain: CHAIN_C2_DIRECTION
+      entry_a: CHAIN_SIDE_STOP_1
+      entry_b: CHAIN_SIDE_STOP_2
+      capacity: 4
+      release_node_a_to_b: CHAIN_J2
+      release_node_b_to_a: CHAIN_J1
+      edges_a_to_b: [CHAIN_SIDE_1>CHAIN_J1, CHAIN_J1>CHAIN_C2_A, CHAIN_C2_A>CHAIN_N2, CHAIN_N2>CHAIN_C2_B, CHAIN_C2_B>CHAIN_J2, CHAIN_J2>CHAIN_SIDE_2]
+      edges_b_to_a: [CHAIN_SIDE_2>CHAIN_J2, CHAIN_J2>CHAIN_C2_B, CHAIN_C2_B>CHAIN_N2, CHAIN_N2>CHAIN_C2_A, CHAIN_C2_A>CHAIN_J1, CHAIN_J1>CHAIN_SIDE_1]
+      geometry: {bounds: {min_x: 31.1, max_x: 65.7, min_y: 40.7, max_y: 50.8}}
+    - id: CHAIN_C3
+      group_id: FAB_MAIN_LINE
+      direction_domain: CHAIN_C3_DIRECTION
+      entry_a: CHAIN_SIDE_STOP_2
+      entry_b: CHAIN_RIGHT_END
+      capacity: 4
+      release_node_a_to_b: CHAIN_N3
+      release_node_b_to_a: CHAIN_J2
+      edges_a_to_b: [CHAIN_SIDE_2>CHAIN_J2, CHAIN_J2>CHAIN_C3_A, CHAIN_C3_A>CHAIN_N3, CHAIN_N3>CHAIN_C3_B, CHAIN_C3_B>CHAIN_M3, CHAIN_M3>CHAIN_RJ1, CHAIN_RJ1>CHAIN_RJ2, CHAIN_RJ2>CHAIN_RJ3, CHAIN_RJ3>CHAIN_RJ4, CHAIN_RJ1>CHAIN_R1, CHAIN_RJ2>CHAIN_R2, CHAIN_RJ3>CHAIN_R3, CHAIN_RJ4>CHAIN_R4]
+      edges_b_to_a: [CHAIN_R1>CHAIN_RJ1, CHAIN_R2>CHAIN_RJ2, CHAIN_R3>CHAIN_RJ3, CHAIN_R4>CHAIN_RJ4, CHAIN_RJ4>CHAIN_RJ3, CHAIN_RJ3>CHAIN_RJ2, CHAIN_RJ2>CHAIN_RJ1, CHAIN_RJ1>CHAIN_M3, CHAIN_M3>CHAIN_C3_B, CHAIN_C3_B>CHAIN_N3, CHAIN_N3>CHAIN_C3_A, CHAIN_C3_A>CHAIN_J2, CHAIN_J2>CHAIN_SIDE_2]
+      geometry: {bounds: {min_x: 64.3, max_x: 133.3, min_y: 40.0, max_y: 50.8}}
+
+  corridor_chains:
+    - id: FAB_MAIN_LINE
+      blocks: [CHAIN_C1, CHAIN_C2, CHAIN_C3]
+      safe_stops: [CHAIN_LEFT_END, CHAIN_SIDE_STOP_1, CHAIN_SIDE_STOP_2, CHAIN_RIGHT_END]
+      max_active_robots: 4

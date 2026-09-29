@@ -1,0 +1,33 @@
+# Disabled by default. Copy this file or enable only one intended scenario.
+fault_injection:
+  enabled: false
+  rules:
+    # State loss while moving in the middle corridor.
+    - robot: AGV_A1
+      when: {at_node: CHAIN_C2_A, driving: true}
+      action: {type: suppress_state, value: true}
+
+    # Emergency stop reported at a configured route node.
+    - robot: AGV_A1
+      when: {at_node: CHAIN_C2_B}
+      action: {type: set_estop, value: AUTOACK}
+
+    # Manual mode at a physical side stop.
+    - robot: AGV_B1
+      when: {at_node: CHAIN_SIDE_2, driving: false}
+      action: {type: set_operating_mode, value: MANUAL}
+
+    # Localization reports a different map.
+    - robot: AGV_B1
+      when: {elapsed_at_least: 10.0}
+      action: {type: set_map_id, value: WRONG_MAP}
+
+    # Localization becomes uninitialized.
+    - robot: AGV_A2
+      when: {elapsed_at_least: 10.0}
+      action: {type: set_position_initialized, value: false}
+
+    # Connection state remains independent from state publication.
+    - robot: AGV_A1
+      when: {elapsed_at_least: 10.0}
+      action: {type: publish_connection, value: OFFLINE}

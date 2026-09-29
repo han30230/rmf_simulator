@@ -79,7 +79,9 @@ class RobotAPI(ABC):
         """VDA5050 Order를 전송하여 내비게이션을 시작한다."""
 
     @abstractmethod
-    def stop(self, robot_name: str, cmd_id: int) -> RobotAPIResult:
+    def stop(
+        self, robot_name: str, cmd_id: int, *, action_id: str = ''
+    ) -> RobotAPIResult:
         """Cancel order instant action을 전송한다."""
 
     @abstractmethod

@@ -1,0 +1,399 @@
+# Independent P4 and P5 passing-bay domains.
+traffic_control:
+  enabled: true
+  telemetry_timeout: 5.0
+  tick_interval: 0.25
+  unmatched_route_policy: BLOCKED
+  holding_bays:
+    P4_HB_LEFT:
+      node_id: '2101'
+      capacity: 4
+      geometry:
+        circle:
+          x: 6.833
+          y: 92.871
+          radius: 0.6
+    P4_HB_WEST_GATE:
+      node_id: '2104'
+      capacity: 1
+      geometry:
+        circle:
+          x: 30.424
+          y: 92.871
+          radius: 0.6
+    P4_HB_MIDDLE_SIDE:
+      node_id: '6137'
+      capacity: 1
+      geometry:
+        circle:
+          x: 42.508
+          y: 91.1
+          radius: 0.55
+    P4_HB_RIGHT:
+      node_id: '2108'
+      capacity: 4
+      geometry:
+        circle:
+          x: 73.7274
+          y: 92.8248
+          radius: 0.6
+    P5_HB_LEFT:
+      node_id: '3101'
+      capacity: 4
+      geometry:
+        circle:
+          x: 6.833
+          y: 72.871
+          radius: 0.6
+    P5_HB_WEST_GATE:
+      node_id: '3104'
+      capacity: 1
+      geometry:
+        circle:
+          x: 30.424
+          y: 72.871
+          radius: 0.6
+    P5_HB_MIDDLE_SIDE:
+      node_id: '7137'
+      capacity: 1
+      geometry:
+        circle:
+          x: 42.508
+          y: 71.1
+          radius: 0.55
+    P5_HB_RIGHT:
+      node_id: '3108'
+      capacity: 4
+      geometry:
+        circle:
+          x: 73.7274
+          y: 72.8248
+          radius: 0.6
+  groups:
+    P4_WEST_APPROACH:
+      blocks:
+      - id: P4_WEST_ADVANCE
+        direction_domain: P4_WEST_ADVANCE
+        entry_a: P4_HB_LEFT
+        entry_b: P4_HB_WEST_GATE
+        capacity: 1
+        edges_a_to_b:
+        - 2101>2102
+        - 2102>2103
+        - 2103>2104
+        edges_b_to_a:
+        - 2104>2103
+        - 2103>2102
+        - 2102>2101
+        geometry:
+          bounds:
+            min_x: 7.6
+            max_x: 29.9
+            min_y: 91.8
+            max_y: 93.9
+    P4_PASSING:
+      blocks:
+      - id: P4_EAST_TO_SIDE
+        direction_domain: P4_PASSING_EVENT
+        entry_a: P4_HB_MIDDLE_SIDE
+        entry_b: P4_HB_RIGHT
+        capacity: 1
+        require_source_hb_unreserved: true
+        edges_a_to_b:
+        - 6137>2105
+        - 2105>2106
+        - 2106>2107
+        - 2107>2108
+        edges_b_to_a:
+        - 2108>2107
+        - 2107>2106
+        - 2106>2105
+        - 2105>6137
+        geometry:
+          bounds:
+            min_x: 30.9
+            max_x: 54.818
+            min_y: 91.75
+            max_y: 93.9
+      - id: P4_GATE_TO_RIGHT
+        direction_domain: P4_PASSING_EVENT
+        entry_a: P4_HB_WEST_GATE
+        entry_b: P4_HB_RIGHT
+        capacity: 1
+        edges_a_to_b:
+        - 2104>2105
+        - 2105>2106
+        - 2106>2107
+        - 2107>2108
+        edges_b_to_a:
+        - 2108>2107
+        - 2107>2106
+        - 2106>2105
+        - 2105>2104
+        geometry:
+          bounds:
+            min_x: 30.9
+            max_x: 54.818
+            min_y: 91.75
+            max_y: 93.9
+      - id: P4_SIDE_TO_LEFT
+        direction_domain: P4_PASSING_EVENT
+        entry_a: P4_HB_LEFT
+        entry_b: P4_HB_MIDDLE_SIDE
+        capacity: 1
+        edges_a_to_b:
+        - 2101>2102
+        - 2102>2103
+        - 2103>2104
+        - 2104>2105
+        - 2105>6137
+        edges_b_to_a:
+        - 6137>2105
+        - 2105>2104
+        - 2104>2103
+        - 2103>2102
+        - 2102>2101
+        geometry:
+          bounds:
+            min_x: 7.6
+            max_x: 54.818
+            min_y: 91.75
+            max_y: 93.9
+      - id: P4_RIGHT_TO_LEFT_DIRECT
+        direction_domain: P4_PASSING_EVENT
+        entry_a: P4_HB_LEFT
+        entry_b: P4_HB_RIGHT
+        capacity: 1
+        require_source_hb_unreserved: true
+        edges_a_to_b:
+        - 2101>2102
+        - 2102>2103
+        - 2103>2104
+        - 2104>2105
+        - 2105>2106
+        - 2106>2107
+        - 2107>2108
+        edges_b_to_a:
+        - 2108>2107
+        - 2107>2106
+        - 2106>2105
+        - 2105>2104
+        - 2104>2103
+        - 2103>2102
+        - 2102>2101
+        geometry:
+          bounds:
+            min_x: 7.6
+            max_x: 54.818
+            min_y: 91.75
+            max_y: 93.9
+    P5_WEST_APPROACH:
+      blocks:
+      - id: P5_WEST_ADVANCE
+        direction_domain: P5_WEST_ADVANCE
+        entry_a: P5_HB_LEFT
+        entry_b: P5_HB_WEST_GATE
+        capacity: 1
+        edges_a_to_b:
+        - 3101>3102
+        - 3102>3103
+        - 3103>3104
+        edges_b_to_a:
+        - 3104>3103
+        - 3103>3102
+        - 3102>3101
+        geometry:
+          bounds:
+            min_x: 7.6
+            max_x: 29.9
+            min_y: 71.8
+            max_y: 73.9
+    P5_PASSING:
+      blocks:
+      - id: P5_EAST_TO_SIDE
+        direction_domain: P5_PASSING_EVENT
+        entry_a: P5_HB_MIDDLE_SIDE
+        entry_b: P5_HB_RIGHT
+        capacity: 1
+        require_source_hb_unreserved: true
+        edges_a_to_b:
+        - 7137>3105
+        - 3105>3106
+        - 3106>3107
+        - 3107>3108
+        edges_b_to_a:
+        - 3108>3107
+        - 3107>3106
+        - 3106>3105
+        - 3105>7137
+        geometry:
+          bounds:
+            min_x: 30.9
+            max_x: 54.818
+            min_y: 71.75
+            max_y: 73.9
+      - id: P5_GATE_TO_RIGHT
+        direction_domain: P5_PASSING_EVENT
+        entry_a: P5_HB_WEST_GATE
+        entry_b: P5_HB_RIGHT
+        capacity: 1
+        edges_a_to_b:
+        - 3104>3105
+        - 3105>3106
+        - 3106>3107
+        - 3107>3108
+        edges_b_to_a:
+        - 3108>3107
+        - 3107>3106
+        - 3106>3105
+        - 3105>3104
+        geometry:
+          bounds:
+            min_x: 30.9
+            max_x: 54.818
+            min_y: 71.75
+            max_y: 73.9
+      - id: P5_SIDE_TO_LEFT
+        direction_domain: P5_PASSING_EVENT
+        entry_a: P5_HB_LEFT
+        entry_b: P5_HB_MIDDLE_SIDE
+        capacity: 1
+        edges_a_to_b:
+        - 3101>3102
+        - 3102>3103
+        - 3103>3104
+        - 3104>3105
+        - 3105>7137
+        edges_b_to_a:
+        - 7137>3105
+        - 3105>3104
+        - 3104>3103
+        - 3103>3102
+        - 3102>3101
+        geometry:
+          bounds:
+            min_x: 7.6
+            max_x: 54.818
+            min_y: 71.75
+            max_y: 73.9
+      - id: P5_RIGHT_TO_LEFT_DIRECT
+        direction_domain: P5_PASSING_EVENT
+        entry_a: P5_HB_LEFT
+        entry_b: P5_HB_RIGHT
+        capacity: 1
+        require_source_hb_unreserved: true
+        edges_a_to_b:
+        - 3101>3102
+        - 3102>3103
+        - 3103>3104
+        - 3104>3105
+        - 3105>3106
+        - 3106>3107
+        - 3107>3108
+        edges_b_to_a:
+        - 3108>3107
+        - 3107>3106
+        - 3106>3105
+        - 3105>3104
+        - 3104>3103
+        - 3103>3102
+        - 3102>3101
+        geometry:
+          bounds:
+            min_x: 7.6
+            max_x: 54.818
+            min_y: 71.75
+            max_y: 73.9
+  routes:
+  - id: P4_LEFT_TO_RIGHT_VIA_GATE
+    start_nodes:
+    - '2101'
+    goal_nodes:
+    - '2108'
+    steps:
+    - block_id: P4_WEST_ADVANCE
+      direction: A_TO_B
+      source_hb: P4_HB_LEFT
+      destination_hb: P4_HB_WEST_GATE
+      goal_node: '2104'
+    - block_id: P4_GATE_TO_RIGHT
+      direction: A_TO_B
+      source_hb: P4_HB_WEST_GATE
+      destination_hb: P4_HB_RIGHT
+      goal_node: '2108'
+      release_node: '2106'
+  - id: P4_RIGHT_TO_LEFT_VIA_SIDE
+    start_nodes:
+    - '2108'
+    goal_nodes:
+    - '2101'
+    steps:
+    - block_id: P4_EAST_TO_SIDE
+      direction: B_TO_A
+      source_hb: P4_HB_RIGHT
+      destination_hb: P4_HB_MIDDLE_SIDE
+      goal_node: '6137'
+    - block_id: P4_SIDE_TO_LEFT
+      direction: B_TO_A
+      source_hb: P4_HB_MIDDLE_SIDE
+      destination_hb: P4_HB_LEFT
+      goal_node: '2101'
+      requires_opposite_routes_cleared: true
+  - id: P4_RIGHT_TO_LEFT_DIRECT_WHEN_CLEAR
+    start_nodes:
+    - '2108'
+    goal_nodes:
+    - '2101'
+    requires_no_opposite_jobs: true
+    steps:
+    - block_id: P4_RIGHT_TO_LEFT_DIRECT
+      direction: B_TO_A
+      source_hb: P4_HB_RIGHT
+      destination_hb: P4_HB_LEFT
+      goal_node: '2101'
+  - id: P5_LEFT_TO_RIGHT_VIA_GATE
+    start_nodes:
+    - '3101'
+    goal_nodes:
+    - '3108'
+    steps:
+    - block_id: P5_WEST_ADVANCE
+      direction: A_TO_B
+      source_hb: P5_HB_LEFT
+      destination_hb: P5_HB_WEST_GATE
+      goal_node: '3104'
+    - block_id: P5_GATE_TO_RIGHT
+      direction: A_TO_B
+      source_hb: P5_HB_WEST_GATE
+      destination_hb: P5_HB_RIGHT
+      goal_node: '3108'
+      release_node: '3106'
+  - id: P5_RIGHT_TO_LEFT_VIA_SIDE
+    start_nodes:
+    - '3108'
+    goal_nodes:
+    - '3101'
+    steps:
+    - block_id: P5_EAST_TO_SIDE
+      direction: B_TO_A
+      source_hb: P5_HB_RIGHT
+      destination_hb: P5_HB_MIDDLE_SIDE
+      goal_node: '7137'
+    - block_id: P5_SIDE_TO_LEFT
+      direction: B_TO_A
+      source_hb: P5_HB_MIDDLE_SIDE
+      destination_hb: P5_HB_LEFT
+      goal_node: '3101'
+      requires_opposite_routes_cleared: true
+  - id: P5_RIGHT_TO_LEFT_DIRECT_WHEN_CLEAR
+    start_nodes:
+    - '3108'
+    goal_nodes:
+    - '3101'
+    requires_no_opposite_jobs: true
+    steps:
+    - block_id: P5_RIGHT_TO_LEFT_DIRECT
+      direction: B_TO_A
+      source_hb: P5_HB_RIGHT
+      destination_hb: P5_HB_LEFT
+      goal_node: '3101'

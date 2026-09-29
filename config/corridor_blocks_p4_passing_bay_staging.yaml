@@ -1,0 +1,481 @@
+# P4 passing-bay simulation with physical, capacity-one staging slots.
+# Robot identities and scenario size intentionally do not appear in this file.
+traffic_control:
+  enabled: true
+  telemetry_timeout: 5.0
+  tick_interval: 0.25
+  unmatched_route_policy: BLOCKED
+
+  holding_bays:
+    HB_LEFT_SLOT_1:
+      node_id: P4_LS1
+      capacity: 1
+      geometry: {circle: {x: 6.833, y: 96.0, radius: 0.65}}
+    HB_LEFT_SLOT_2:
+      node_id: P4_LS2
+      capacity: 1
+      geometry: {circle: {x: 3.2, y: 95.0, radius: 0.65}}
+    HB_LEFT_SLOT_3:
+      node_id: P4_LS3
+      capacity: 1
+      geometry: {circle: {x: 3.2, y: 90.7, radius: 0.65}}
+    HB_WEST_GATE:
+      node_id: "2104"
+      capacity: 1
+      geometry: {circle: {x: 30.424, y: 92.871, radius: 0.6}}
+    HB_MIDDLE_SIDE:
+      node_id: "6137"
+      capacity: 1
+      geometry: {circle: {x: 42.508, y: 91.100, radius: 0.55}}
+    HB_RIGHT_SLOT_1:
+      node_id: P4_RS1
+      capacity: 1
+      geometry: {circle: {x: 73.7274, y: 96.0, radius: 0.65}}
+    HB_RIGHT_SLOT_2:
+      node_id: P4_RS2
+      capacity: 1
+      geometry: {circle: {x: 77.3, y: 95.0, radius: 0.65}}
+    HB_RIGHT_SLOT_3:
+      node_id: P4_RS3
+      capacity: 1
+      geometry: {circle: {x: 77.3, y: 90.7, radius: 0.65}}
+
+  groups:
+    P4_WEST_APPROACH:
+      blocks:
+        - id: P4_LS1_TO_GATE
+          direction_domain: P4_WEST_ADVANCE
+          entry_a: HB_LEFT_SLOT_1
+          entry_b: HB_WEST_GATE
+          capacity: 1
+          edges_a_to_b:
+            - P4_LS1>2101
+            - "2101>2102"
+            - "2102>2103"
+            - "2103>2104"
+          edges_b_to_a:
+            - "2104>2103"
+            - "2103>2102"
+            - "2102>2101"
+            - 2101>P4_LS1
+          geometry:
+            bounds: {min_x: 6.18, max_x: 29.9, min_y: 92.2, max_y: 95.35}
+
+        - id: P4_LS2_TO_GATE
+          direction_domain: P4_WEST_ADVANCE
+          entry_a: HB_LEFT_SLOT_2
+          entry_b: HB_WEST_GATE
+          capacity: 1
+          edges_a_to_b:
+            - P4_LS2>2101
+            - "2101>2102"
+            - "2102>2103"
+            - "2103>2104"
+          edges_b_to_a:
+            - "2104>2103"
+            - "2103>2102"
+            - "2102>2101"
+            - 2101>P4_LS2
+          geometry:
+            bounds: {min_x: 3.85, max_x: 29.9, min_y: 92.2, max_y: 94.35}
+
+        - id: P4_LS3_TO_GATE
+          direction_domain: P4_WEST_ADVANCE
+          entry_a: HB_LEFT_SLOT_3
+          entry_b: HB_WEST_GATE
+          capacity: 1
+          edges_a_to_b:
+            - P4_LS3>2101
+            - "2101>2102"
+            - "2102>2103"
+            - "2103>2104"
+          edges_b_to_a:
+            - "2104>2103"
+            - "2103>2102"
+            - "2102>2101"
+            - 2101>P4_LS3
+          geometry:
+            bounds: {min_x: 3.85, max_x: 29.9, min_y: 91.35, max_y: 93.5}
+
+    P4_PASSING:
+      blocks:
+        - id: P4_GATE_TO_RS1
+          direction_domain: P4_PASSING_EVENT
+          entry_a: HB_WEST_GATE
+          entry_b: HB_RIGHT_SLOT_1
+          capacity: 1
+          edges_a_to_b:
+            - "2104>2105"
+            - "2105>2106"
+            - "2106>2107"
+            - "2107>2108"
+            - 2108>P4_RS1
+          edges_b_to_a:
+            - P4_RS1>2108
+            - "2108>2107"
+            - "2107>2106"
+            - "2106>2105"
+            - "2105>2104"
+          geometry:
+            bounds: {min_x: 30.9, max_x: 54.818, min_y: 91.75, max_y: 95.35}
+
+        - id: P4_GATE_TO_RS2
+          direction_domain: P4_PASSING_EVENT
+          entry_a: HB_WEST_GATE
+          entry_b: HB_RIGHT_SLOT_2
+          capacity: 1
+          edges_a_to_b:
+            - "2104>2105"
+            - "2105>2106"
+            - "2106>2107"
+            - "2107>2108"
+            - 2108>P4_RS2
+          edges_b_to_a:
+            - P4_RS2>2108
+            - "2108>2107"
+            - "2107>2106"
+            - "2106>2105"
+            - "2105>2104"
+          geometry:
+            bounds: {min_x: 30.9, max_x: 54.818, min_y: 91.75, max_y: 94.35}
+
+        - id: P4_GATE_TO_RS3
+          direction_domain: P4_PASSING_EVENT
+          entry_a: HB_WEST_GATE
+          entry_b: HB_RIGHT_SLOT_3
+          capacity: 1
+          edges_a_to_b:
+            - "2104>2105"
+            - "2105>2106"
+            - "2106>2107"
+            - "2107>2108"
+            - 2108>P4_RS3
+          edges_b_to_a:
+            - P4_RS3>2108
+            - "2108>2107"
+            - "2107>2106"
+            - "2106>2105"
+            - "2105>2104"
+          geometry:
+            bounds: {min_x: 30.9, max_x: 54.818, min_y: 91.35, max_y: 93.5}
+
+        - id: P4_RS1_TO_SIDE
+          direction_domain: P4_PASSING_EVENT
+          entry_a: HB_MIDDLE_SIDE
+          entry_b: HB_RIGHT_SLOT_1
+          capacity: 1
+          require_source_hb_unreserved: true
+          edges_a_to_b:
+            - "6137>2105"
+            - "2105>2106"
+            - "2106>2107"
+            - "2107>2108"
+            - 2108>P4_RS1
+          edges_b_to_a:
+            - P4_RS1>2108
+            - "2108>2107"
+            - "2107>2106"
+            - "2106>2105"
+            - "2105>6137"
+          geometry:
+            # Include the 2105 -> 6137 vertical branch at x=42.508 while
+            # stopping north of the side-bay holding circle.
+            bounds: {min_x: 41.9, max_x: 54.818, min_y: 91.65, max_y: 95.35}
+
+        - id: P4_RS2_TO_SIDE
+          direction_domain: P4_PASSING_EVENT
+          entry_a: HB_MIDDLE_SIDE
+          entry_b: HB_RIGHT_SLOT_2
+          capacity: 1
+          require_source_hb_unreserved: true
+          edges_a_to_b:
+            - "6137>2105"
+            - "2105>2106"
+            - "2106>2107"
+            - "2107>2108"
+            - 2108>P4_RS2
+          edges_b_to_a:
+            - P4_RS2>2108
+            - "2108>2107"
+            - "2107>2106"
+            - "2106>2105"
+            - "2105>6137"
+          geometry:
+            bounds: {min_x: 41.9, max_x: 54.818, min_y: 91.65, max_y: 94.35}
+
+        - id: P4_RS3_TO_SIDE
+          direction_domain: P4_PASSING_EVENT
+          entry_a: HB_MIDDLE_SIDE
+          entry_b: HB_RIGHT_SLOT_3
+          capacity: 1
+          require_source_hb_unreserved: true
+          edges_a_to_b:
+            - "6137>2105"
+            - "2105>2106"
+            - "2106>2107"
+            - "2107>2108"
+            - 2108>P4_RS3
+          edges_b_to_a:
+            - P4_RS3>2108
+            - "2108>2107"
+            - "2107>2106"
+            - "2106>2105"
+            - "2105>6137"
+          geometry:
+            bounds: {min_x: 41.9, max_x: 54.818, min_y: 91.35, max_y: 93.5}
+
+        - id: P4_SIDE_TO_LS1
+          direction_domain: P4_PASSING_EVENT
+          entry_a: HB_LEFT_SLOT_1
+          entry_b: HB_MIDDLE_SIDE
+          capacity: 1
+          edges_a_to_b:
+            - P4_LS1>2101
+            - "2101>2102"
+            - "2102>2103"
+            - "2103>2104"
+            - "2104>2105"
+            - "2105>6137"
+          edges_b_to_a:
+            - "6137>2105"
+            - "2105>2104"
+            - "2104>2103"
+            - "2103>2102"
+            - "2102>2101"
+            - 2101>P4_LS1
+          geometry:
+            bounds: {min_x: 6.18, max_x: 54.818, min_y: 91.65, max_y: 95.35}
+
+        - id: P4_SIDE_TO_LS2
+          direction_domain: P4_PASSING_EVENT
+          entry_a: HB_LEFT_SLOT_2
+          entry_b: HB_MIDDLE_SIDE
+          capacity: 1
+          edges_a_to_b:
+            - P4_LS2>2101
+            - "2101>2102"
+            - "2102>2103"
+            - "2103>2104"
+            - "2104>2105"
+            - "2105>6137"
+          edges_b_to_a:
+            - "6137>2105"
+            - "2105>2104"
+            - "2104>2103"
+            - "2103>2102"
+            - "2102>2101"
+            - 2101>P4_LS2
+          geometry:
+            bounds: {min_x: 3.85, max_x: 54.818, min_y: 91.65, max_y: 94.35}
+
+        - id: P4_SIDE_TO_LS3
+          direction_domain: P4_PASSING_EVENT
+          entry_a: HB_LEFT_SLOT_3
+          entry_b: HB_MIDDLE_SIDE
+          capacity: 1
+          edges_a_to_b:
+            - P4_LS3>2101
+            - "2101>2102"
+            - "2102>2103"
+            - "2103>2104"
+            - "2104>2105"
+            - "2105>6137"
+          edges_b_to_a:
+            - "6137>2105"
+            - "2105>2104"
+            - "2104>2103"
+            - "2103>2102"
+            - "2102>2101"
+            - 2101>P4_LS3
+          geometry:
+            bounds: {min_x: 3.85, max_x: 54.818, min_y: 91.35, max_y: 93.5}
+
+        - id: P4_RS1_TO_LS1_DIRECT
+          direction_domain: P4_PASSING_EVENT
+          entry_a: HB_LEFT_SLOT_1
+          entry_b: HB_RIGHT_SLOT_1
+          capacity: 1
+          require_source_hb_unreserved: true
+          edges_a_to_b:
+            - P4_LS1>2101
+            - "2101>2102"
+            - "2102>2103"
+            - "2103>2104"
+            - "2104>2105"
+            - "2105>2106"
+            - "2106>2107"
+            - "2107>2108"
+            - 2108>P4_RS1
+          edges_b_to_a:
+            - P4_RS1>2108
+            - "2108>2107"
+            - "2107>2106"
+            - "2106>2105"
+            - "2105>2104"
+            - "2104>2103"
+            - "2103>2102"
+            - "2102>2101"
+            - 2101>P4_LS1
+          geometry:
+            bounds: {min_x: 6.18, max_x: 54.818, min_y: 91.75, max_y: 95.35}
+
+        - id: P4_RS2_TO_LS2_DIRECT
+          direction_domain: P4_PASSING_EVENT
+          entry_a: HB_LEFT_SLOT_2
+          entry_b: HB_RIGHT_SLOT_2
+          capacity: 1
+          require_source_hb_unreserved: true
+          edges_a_to_b:
+            - P4_LS2>2101
+            - "2101>2102"
+            - "2102>2103"
+            - "2103>2104"
+            - "2104>2105"
+            - "2105>2106"
+            - "2106>2107"
+            - "2107>2108"
+            - 2108>P4_RS2
+          edges_b_to_a:
+            - P4_RS2>2108
+            - "2108>2107"
+            - "2107>2106"
+            - "2106>2105"
+            - "2105>2104"
+            - "2104>2103"
+            - "2103>2102"
+            - "2102>2101"
+            - 2101>P4_LS2
+          geometry:
+            bounds: {min_x: 3.85, max_x: 54.818, min_y: 91.75, max_y: 94.35}
+
+        - id: P4_RS3_TO_LS3_DIRECT
+          direction_domain: P4_PASSING_EVENT
+          entry_a: HB_LEFT_SLOT_3
+          entry_b: HB_RIGHT_SLOT_3
+          capacity: 1
+          require_source_hb_unreserved: true
+          edges_a_to_b:
+            - P4_LS3>2101
+            - "2101>2102"
+            - "2102>2103"
+            - "2103>2104"
+            - "2104>2105"
+            - "2105>2106"
+            - "2106>2107"
+            - "2107>2108"
+            - 2108>P4_RS3
+          edges_b_to_a:
+            - P4_RS3>2108
+            - "2108>2107"
+            - "2107>2106"
+            - "2106>2105"
+            - "2105>2104"
+            - "2104>2103"
+            - "2103>2102"
+            - "2102>2101"
+            - 2101>P4_LS3
+          geometry:
+            bounds: {min_x: 3.85, max_x: 54.818, min_y: 91.35, max_y: 93.5}
+
+  routes:
+    - id: P4_LS1_TO_RS1_VIA_GATE
+      start_nodes: [P4_LS1]
+      goal_nodes: [P4_RS1]
+      steps:
+        - block_id: P4_LS1_TO_GATE
+          direction: A_TO_B
+          source_hb: HB_LEFT_SLOT_1
+          destination_hb: HB_WEST_GATE
+          goal_node: "2104"
+        - block_id: P4_GATE_TO_RS1
+          direction: A_TO_B
+          source_hb: HB_WEST_GATE
+          destination_hb: HB_RIGHT_SLOT_1
+          goal_node: P4_RS1
+          release_node: "2106"
+
+    - id: P4_LS2_TO_RS3_VIA_GATE
+      start_nodes: [P4_LS2]
+      goal_nodes: [P4_RS3]
+      steps:
+        - block_id: P4_LS2_TO_GATE
+          direction: A_TO_B
+          source_hb: HB_LEFT_SLOT_2
+          destination_hb: HB_WEST_GATE
+          goal_node: "2104"
+        - block_id: P4_GATE_TO_RS3
+          direction: A_TO_B
+          source_hb: HB_WEST_GATE
+          destination_hb: HB_RIGHT_SLOT_3
+          goal_node: P4_RS3
+          release_node: "2106"
+
+    - id: P4_RS1_TO_LS1_VIA_SIDE
+      start_nodes: [P4_RS1]
+      goal_nodes: [P4_LS1]
+      steps:
+        - block_id: P4_RS1_TO_SIDE
+          direction: B_TO_A
+          source_hb: HB_RIGHT_SLOT_1
+          destination_hb: HB_MIDDLE_SIDE
+          goal_node: "6137"
+        - block_id: P4_SIDE_TO_LS1
+          direction: B_TO_A
+          source_hb: HB_MIDDLE_SIDE
+          destination_hb: HB_LEFT_SLOT_1
+          goal_node: P4_LS1
+          requires_opposite_routes_cleared: true
+
+    - id: P4_RS2_TO_LS2_VIA_SIDE
+      start_nodes: [P4_RS2]
+      goal_nodes: [P4_LS2]
+      steps:
+        - block_id: P4_RS2_TO_SIDE
+          direction: B_TO_A
+          source_hb: HB_RIGHT_SLOT_2
+          destination_hb: HB_MIDDLE_SIDE
+          goal_node: "6137"
+        - block_id: P4_SIDE_TO_LS2
+          direction: B_TO_A
+          source_hb: HB_MIDDLE_SIDE
+          destination_hb: HB_LEFT_SLOT_2
+          goal_node: P4_LS2
+          requires_opposite_routes_cleared: true
+
+    - id: P4_RS2_TO_LS2_DIRECT_WHEN_CLEAR
+      start_nodes: [P4_RS2]
+      goal_nodes: [P4_LS2]
+      requires_no_opposite_jobs: true
+      steps:
+        - block_id: P4_RS2_TO_LS2_DIRECT
+          direction: B_TO_A
+          source_hb: HB_RIGHT_SLOT_2
+          destination_hb: HB_LEFT_SLOT_2
+          goal_node: P4_LS2
+
+    - id: P4_RS3_TO_LS3_VIA_SIDE
+      start_nodes: [P4_RS3]
+      goal_nodes: [P4_LS3]
+      steps:
+        - block_id: P4_RS3_TO_SIDE
+          direction: B_TO_A
+          source_hb: HB_RIGHT_SLOT_3
+          destination_hb: HB_MIDDLE_SIDE
+          goal_node: "6137"
+        - block_id: P4_SIDE_TO_LS3
+          direction: B_TO_A
+          source_hb: HB_MIDDLE_SIDE
+          destination_hb: HB_LEFT_SLOT_3
+          goal_node: P4_LS3
+          requires_opposite_routes_cleared: true
+
+    - id: P4_RS3_TO_LS3_DIRECT_WHEN_CLEAR
+      start_nodes: [P4_RS3]
+      goal_nodes: [P4_LS3]
+      requires_no_opposite_jobs: true
+      steps:
+        - block_id: P4_RS3_TO_LS3_DIRECT
+          direction: B_TO_A
+          source_hb: HB_RIGHT_SLOT_3
+          destination_hb: HB_LEFT_SLOT_3
+          goal_node: P4_LS3

@@ -1,0 +1,46 @@
+name: Python tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  unittest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      QT_QPA_PLATFORM: offscreen
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Syntax checks
+        run: |
+          python -m py_compile \
+            traffic_control/robot_tracker.py \
+            traffic_control/corridor_registry.py \
+            traffic_control/deployment.py \
+            traffic_control/eligibility.py \
+            traffic_control/readiness.py \
+            traffic_control/task_gate.py \
+            scripts/check_wave_runtime_graph.py \
+            scripts/capture_wave_runtime_graph.py
+
+          bash -n \
+            scripts/start_dsr_lab_arbiter.sh \
+            scripts/dispatch_dsr_task.sh \
+            scripts/check_dsr_gate.sh
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v

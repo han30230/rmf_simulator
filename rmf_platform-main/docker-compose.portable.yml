@@ -1,0 +1,8 @@
+services:
+  mqtt_broker:
+    image: eclipse-mosquitto:2
+    container_name: rmf_mqtt_broker
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro

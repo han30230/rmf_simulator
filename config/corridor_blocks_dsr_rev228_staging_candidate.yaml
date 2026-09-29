@@ -1,0 +1,74 @@
+# Candidate DSR lab PoC using off-mainline staging nodes from WAVE nav rev.228.
+# Verify that 1057 and 1052 are physically safe waiting/parking locations before use.
+#
+# Route:
+#   1057 -> 1019 -> 1020 -> 1021 -> 1022 -> 1023 -> 1024 -> 1052
+traffic_control:
+  enabled: true
+  telemetry_timeout: 5.0
+  tick_interval: 0.25
+  unmatched_route_policy: BLOCKED
+
+  holding_bays:
+    HB_1057_LEFT_STAGE:
+      node_id: "1057"
+      capacity: 1
+      geometry:
+        circle: {x: -2.0, y: 12.0, radius: 0.6}
+
+    HB_1052_RIGHT_STAGE:
+      node_id: "1052"
+      capacity: 1
+      geometry:
+        circle: {x: 22.0, y: 12.0, radius: 0.6}
+
+  groups:
+    DSR_TEST_CORRIDOR:
+      blocks:
+        - id: DSR_1057_1052
+          direction_domain: DSR_1057_1052
+          entry_a: HB_1057_LEFT_STAGE
+          entry_b: HB_1052_RIGHT_STAGE
+          capacity: 1
+
+          edges_a_to_b:
+            - "1057>1019"
+            - "1019>1020"
+            - "1020>1021"
+            - "1021>1022"
+            - "1022>1023"
+            - "1023>1024"
+            - "1024>1052"
+
+          edges_b_to_a:
+            - "1052>1024"
+            - "1024>1023"
+            - "1023>1022"
+            - "1022>1021"
+            - "1021>1020"
+            - "1020>1019"
+            - "1019>1057"
+
+          geometry:
+            bounds: {min_x: -1.4, max_x: 21.4, min_y: 11.0, max_y: 13.0}
+
+  routes:
+    - id: DSR_LEFT_STAGE_TO_RIGHT_STAGE
+      start_nodes: ["1057"]
+      goal_nodes: ["1052"]
+      steps:
+        - block_id: DSR_1057_1052
+          direction: A_TO_B
+          source_hb: HB_1057_LEFT_STAGE
+          destination_hb: HB_1052_RIGHT_STAGE
+          goal_node: "1052"
+
+    - id: DSR_RIGHT_STAGE_TO_LEFT_STAGE
+      start_nodes: ["1052"]
+      goal_nodes: ["1057"]
+      steps:
+        - block_id: DSR_1057_1052
+          direction: B_TO_A
+          source_hb: HB_1052_RIGHT_STAGE
+          destination_hb: HB_1057_LEFT_STAGE
+          goal_node: "1057"

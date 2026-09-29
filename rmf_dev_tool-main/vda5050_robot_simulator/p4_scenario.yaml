@@ -19,9 +19,16 @@ robot_defaults:
     charge_rate: 5.0
 
 # Minimal home P4 corridor simulation.
-# AGV_A1 starts at 2101 and AGV_B1/B2 start at 2108.
+# AGV_A1/A2 start at 2101 and AGV_B1/B2 start at 2108.
 robots:
   - serial_number: AGV_A1
+    initial_position:
+      x: 6.833
+      y: 92.871
+      theta: 0.0
+      map_id: L1
+
+  - serial_number: AGV_A2
     initial_position:
       x: 6.833
       y: 92.871
