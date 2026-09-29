@@ -127,6 +127,7 @@ def run_adapter(args: argparse.Namespace) -> None:
     from vda5050_fleet_adapter.usecase.actions.tool_pick_drop_handler import (
         ToolPickDropHandler,
     )
+    from vda5050_fleet_adapter.usecase.dsr_admission import DsrAdmissionClient
     from vda5050_fleet_adapter.usecase.graph_utils import load_nav_graph
     raw = load_and_validate_config(args.config_file)
     nodes, edges, graph, _map_name = load_nav_graph(args.nav_graph)
@@ -188,6 +189,27 @@ def run_adapter(args: argparse.Namespace) -> None:
         api.subscribe_robot(robot_name)
     api.connect()
 
+    dsr_url = str(
+        os.environ.get("DSR_ADMISSION_URL")
+        or adapter_config.get("dsr_admission_url")
+        or ""
+    ).strip()
+    dsr_admission = None
+    if dsr_url:
+        dsr_timeout = float(
+            os.environ.get("DSR_ADMISSION_TIMEOUT")
+            or adapter_config.get("dsr_admission_timeout", 0.25)
+        )
+        dsr_admission = DsrAdmissionClient(
+            dsr_url,
+            timeout=dsr_timeout,
+        )
+        logger.info(
+            "Adapter DSR admission enabled: url=%s timeout=%.3fs",
+            dsr_url,
+            dsr_timeout,
+        )
+
     robots = {
         robot_name: RobotAdapter(
             name=robot_name,
@@ -207,6 +229,7 @@ def run_adapter(args: argparse.Namespace) -> None:
             coordinate_transform=coordinate_transform,
             robot_map_id=str(robot_map_ids.get(robot_name) or ''),
             rmf_map_name=rmf_map_name,
+            dsr_admission=dsr_admission,
         )
         for robot_name in fleet_config.known_robots
     }

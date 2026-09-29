@@ -19,6 +19,7 @@ from vda5050_fleet_adapter.usecase.command_ack_hsm import (
     CommandAckHsm, CommandKind, QueuedCommand, TaskContext,
     action_ack_guard, cancel_order_ack_guard, order_ack_guard,
 )
+from vda5050_fleet_adapter.usecase.dsr_admission import DsrAdmissionClient
 from vda5050_fleet_adapter.usecase.graph_utils import (
     DirectedGraph, build_vda5050_nodes_edges, compute_path, find_nearest_node,
 )
@@ -57,6 +58,7 @@ class RobotAdapter:
         coordinate_transform: Any = None,
         robot_map_id: str = '',
         rmf_map_name: str = '',
+        dsr_admission: DsrAdmissionClient | None = None,
     ) -> None:
         if api is None:
             raise ValueError('RobotAdapter requires a RobotAPI')
@@ -73,6 +75,7 @@ class RobotAdapter:
         self.coordinate_transform = coordinate_transform
         self.robot_map_id = str(robot_map_id)
         self.rmf_map_name = str(rmf_map_name)
+        self._dsr_admission = dsr_admission
         self._execution_lock = threading.RLock()
         self.execution: Any | None = None
         self.update_handle: Any | None = None
@@ -194,14 +197,39 @@ class RobotAdapter:
             cmd_id=cmd_id,
             order_id=order_id,
         )
+        path_snapshot = tuple(path)
+
+        def send_navigate():
+            if self._dsr_admission is not None:
+                admission = self._dsr_admission.admit(
+                    robot_id=self.name,
+                    movement_key=order_id,
+                    path=path_snapshot,
+                )
+                if not admission.send_allowed:
+                    logger.warning(
+                        'DSR navigate deferred [%s]: decision=%s reason=%s '
+                        'order_id=%s path=%s',
+                        self.name,
+                        admission.decision,
+                        admission.reason,
+                        order_id,
+                        list(path_snapshot),
+                    )
+                    # WAIT and BLOCKED are both fail-closed at the Adapter
+                    # boundary. RETRY keeps the command queued without latching
+                    # the Command HSM into its own BLOCKED top state.
+                    return RobotAPIResult.RETRY
+            return self.api.navigate(
+                self.name, cmd_id, vda_nodes, vda_edges, map_name,
+                order_id=order_id, order_update_id=0,
+            )
+
         command = QueuedCommand(
             event_id=self._command_hsm.next_event_id(),
             kind=CommandKind.ORDER,
             cmd_id=cmd_id,
-            send=lambda: self.api.navigate(
-                self.name, cmd_id, vda_nodes, vda_edges, map_name,
-                order_id=order_id, order_update_id=0,
-            ),
+            send=send_navigate,
             description='navigate order',
             order_id=order_id,
             order_update_id=0,
@@ -227,14 +255,21 @@ class RobotAdapter:
         return transformed
 
     def stop(self, activity: Any) -> None:
+        movement_key: str | None = None
         with self._execution_lock:
             if self.execution is None:
                 return
             if not self.execution.identifier.is_same(activity):
                 return
+            movement_key = self._nav.order_id
             self.execution = None
             self._nav = NavigationState()
         self._command_hsm.cancel_pending()
+        if self._dsr_admission is not None and movement_key:
+            self._dsr_admission.cancel(
+                robot_id=self.name,
+                movement_key=movement_key,
+            )
         self.cmd_id += 1
         cmd_id = self.cmd_id
         action_id = f'cancel_{cmd_id}_{uuid.uuid4().hex[:8]}'

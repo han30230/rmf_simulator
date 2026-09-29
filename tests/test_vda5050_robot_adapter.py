@@ -54,6 +54,29 @@ class FakeApi:
         return RobotAPIResult.SUCCESS
 
 
+class FakeDsrAdmission:
+    def __init__(self, decisions):
+        self.decisions = list(decisions)
+        self.admit_calls = []
+        self.cancel_calls = []
+
+    def admit(self, *, robot_id, movement_key, path):
+        from vda5050_fleet_adapter.usecase.dsr_admission import (
+            DsrAdmissionResult,
+        )
+
+        self.admit_calls.append((robot_id, movement_key, tuple(path)))
+        decision = self.decisions.pop(0) if self.decisions else "ADMIT"
+        return DsrAdmissionResult(
+            decision=decision,
+            managed=decision != "BYPASS",
+        )
+
+    def cancel(self, *, robot_id, movement_key):
+        self.cancel_calls.append((robot_id, movement_key))
+        return True
+
+
 class OffsetTransform:
     def apply(self, position):
         return [position[0] + 100.0, position[1] + 200.0, position[2] + 0.5]
@@ -253,6 +276,78 @@ class Vda5050RobotAdapterTests(unittest.TestCase):
 
         self.assertEqual(len(api.navigate_calls), 1)
 
+
+    def test_dsr_wait_keeps_order_queued_until_admit(self) -> None:
+        api = FakeApi(completed=False)
+        dsr = FakeDsrAdmission(["WAIT", "ADMIT"])
+        adapter = RobotAdapter(
+            "ROBOT_01",
+            api=api,
+            nav_nodes={
+                "LEFT": {"x": 0.0, "y": 0.0, "attributes": {}},
+                "RIGHT": {"x": 5.0, "y": 0.0, "attributes": {}},
+            },
+            dsr_admission=dsr,
+        )
+        adapter.last_node_id = "LEFT"
+        execution = FakeExecution()
+        execution.identifier = Identifier()
+
+        adapter.navigate(Destination(), execution)
+
+        self.assertEqual(api.navigate_calls, [])
+        self.assertEqual(len(dsr.admit_calls), 1)
+
+        adapter._command_hsm.pump(force_retry=True)
+
+        self.assertEqual(len(api.navigate_calls), 1)
+        self.assertEqual(len(dsr.admit_calls), 2)
+
+    def test_dsr_blocked_is_fail_closed_without_hsm_block_latch(self) -> None:
+        api = FakeApi(completed=False)
+        dsr = FakeDsrAdmission(["BLOCKED"])
+        adapter = RobotAdapter(
+            "ROBOT_01",
+            api=api,
+            nav_nodes={
+                "LEFT": {"x": 0.0, "y": 0.0, "attributes": {}},
+                "RIGHT": {"x": 5.0, "y": 0.0, "attributes": {}},
+            },
+            dsr_admission=dsr,
+        )
+        adapter.last_node_id = "LEFT"
+        execution = FakeExecution()
+        execution.identifier = Identifier()
+
+        adapter.navigate(Destination(), execution)
+
+        self.assertEqual(api.navigate_calls, [])
+        self.assertEqual(adapter._command_hsm.top_state.value, "AVAILABLE")
+
+    def test_stop_cancels_pending_adapter_authority(self) -> None:
+        api = FakeApi(completed=False)
+        dsr = FakeDsrAdmission(["WAIT"])
+        adapter = RobotAdapter(
+            "ROBOT_01",
+            api=api,
+            nav_nodes={
+                "LEFT": {"x": 0.0, "y": 0.0, "attributes": {}},
+                "RIGHT": {"x": 5.0, "y": 0.0, "attributes": {}},
+            },
+            dsr_admission=dsr,
+        )
+        adapter.last_node_id = "LEFT"
+        execution = FakeExecution()
+        execution.identifier = Identifier()
+        adapter.navigate(Destination(), execution)
+
+        movement_key = adapter._nav.order_id
+        adapter.stop(Identifier())
+
+        self.assertEqual(
+            dsr.cancel_calls,
+            [("ROBOT_01", movement_key)],
+        )
 
 if __name__ == "__main__":
     unittest.main()
