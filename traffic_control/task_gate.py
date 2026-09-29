@@ -25,6 +25,7 @@ from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 from uuid import uuid4
 
+from .adapter_enforcement import AdapterAdmissionController
 from .corridor_chain import CorridorChainPlanner, PlannedAuthority
 from .corridor_registry import CorridorRegistry
 from .direction_arbiter import DirectionArbiter
@@ -125,6 +126,9 @@ class TaskGate:
         self.tracker = tracker
         self.forwarder = forwarder
         self.readiness = readiness
+        self.adapter_admission = AdapterAdmissionController(
+            registry, arbiter, readiness=readiness
+        )
         self._jobs: dict[str, GateJob] = {}
         self._chain_jobs: dict[str, ChainGateJob] = {}
         self._idempotency: dict[str, tuple[str, dict[str, Any] | None]] = {}
@@ -1097,6 +1101,27 @@ def create_app(gate: TaskGate):
     ):
         try:
             return gate.submit(payload, idempotency_key=idempotency_key)
+        except (KeyError, TypeError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @app.post("/traffic/adapter/admission")
+    def adapter_admission(payload: dict[str, Any]):
+        try:
+            return gate.adapter_admission.admit(
+                robot_id=payload.get("robot_id") or payload.get("robot"),
+                movement_key=payload.get("movement_key"),
+                path=payload.get("path"),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @app.post("/traffic/adapter/cancel")
+    def adapter_cancel(payload: dict[str, Any]):
+        try:
+            return gate.adapter_admission.cancel(
+                robot_id=payload.get("robot_id") or payload.get("robot"),
+                movement_key=payload.get("movement_key"),
+            )
         except (KeyError, TypeError, ValueError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 

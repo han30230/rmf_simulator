@@ -57,14 +57,17 @@ class DirectionArbiter:
         self,
         block_ids: tuple[str, ...],
         direction: Direction | str,
-        destination_slot: str,
+        destination_slot: str | None,
         *,
         robot_id: str = "",
         chain_id: str | None = None,
     ) -> bool:
         direction = Direction(direction)
         with self._lock:
-            if destination_slot not in self.registry.holding_bays:
+            if (
+                destination_slot is not None
+                and destination_slot not in self.registry.holding_bays
+            ):
                 return False
             if chain_id is not None:
                 chain = self.registry.corridor_chains[chain_id]
@@ -104,6 +107,8 @@ class DirectionArbiter:
                     and domain.active_direction is direction
                 ):
                     return False
+            if destination_slot is None:
+                return True
             bay = self.registry.holding_bays[destination_slot]
             used_bay = (bay.occupants | bay.reservations) - {robot_id}
             return len(used_bay) < bay.capacity
@@ -155,6 +160,146 @@ class DirectionArbiter:
                     domain.batch_closed = True
             return Decision.WAIT
 
+    @staticmethod
+    def _authority_covers_path(
+        authority: MovementAuthority,
+        block_ids: tuple[str, ...],
+        direction: Direction,
+    ) -> bool:
+        return (
+            authority.direction is direction
+            and all(block_id in authority.block_ids for block_id in block_ids)
+        )
+
+    def request_path_authority(
+        self,
+        *,
+        robot_id: str,
+        request_key: str,
+        block_ids: tuple[str, ...],
+        direction: Direction | str,
+        source_hb: str | None = None,
+        destination_hb: str | None = None,
+        goal_node: str = "",
+        request_time: float | None = None,
+    ) -> Decision:
+        """Request an idempotent authority for an Adapter navigation path.
+
+        Unlike configured TaskGate routes, an RMF-internal Park/Charge/Replan
+        path may leave a managed block through an unmanaged side branch. Such
+        movements still need block authority but do not necessarily have a
+        configured destination Holding Bay.
+        """
+        direction = Direction(direction)
+        normalized_blocks = tuple(dict.fromkeys(str(item) for item in block_ids))
+        normalized_key = str(request_key).strip()
+        if not normalized_key:
+            raise ValueError("adapter authority request_key must not be empty")
+        if not normalized_blocks:
+            raise ValueError("adapter authority requires at least one block")
+        for block_id in normalized_blocks:
+            if block_id not in self.registry.blocks:
+                raise KeyError(block_id)
+        for hb_id in (source_hb, destination_hb):
+            if hb_id is not None and hb_id not in self.registry.holding_bays:
+                raise KeyError(hb_id)
+
+        with self._lock:
+            active = self._authorities.get(robot_id)
+            if active is not None:
+                if self._authority_covers_path(
+                    active, normalized_blocks, direction
+                ):
+                    return Decision.ADMIT
+                logger.error(
+                    "[TRAFFIC] ADAPTER_AUTHORITY_CONFLICT robot=%s "
+                    "request=%s active=%s",
+                    robot_id,
+                    normalized_key,
+                    active.request_key or active.authority_id,
+                )
+                return Decision.BLOCKED
+
+            pending = self._pending_authorities.get(robot_id)
+            if pending is not None:
+                if self._authority_covers_path(
+                    pending, normalized_blocks, direction
+                ):
+                    self._reconcile_authorities()
+                    return self.decision_for_authority(robot_id)
+                logger.error(
+                    "[TRAFFIC] ADAPTER_AUTHORITY_CONFLICT robot=%s "
+                    "request=%s pending=%s",
+                    robot_id,
+                    normalized_key,
+                    pending.request_key or pending.authority_id,
+                )
+                return Decision.BLOCKED
+
+            authority = MovementAuthority(
+                authority_id=uuid4().hex,
+                robot_id=robot_id,
+                chain_id=None,
+                direction=direction,
+                source_group=None,
+                source_slot=source_hb,
+                destination_group=None,
+                destination_slot=destination_hb,
+                goal_node=str(goal_node),
+                block_ids=normalized_blocks,
+                request_time=(
+                    time.monotonic() if request_time is None else request_time
+                ),
+                request_key=normalized_key,
+                adapter_managed=True,
+            )
+            if any(
+                self.registry.blocks[block_id].fault_reason
+                for block_id in authority.block_ids
+            ):
+                return Decision.BLOCKED
+
+            logger.info(
+                "[TRAFFIC] ADAPTER_AUTHORITY_REQUEST robot=%s request=%s "
+                "blocks=%s dir=%s source=%s destination=%s",
+                robot_id,
+                normalized_key,
+                ",".join(normalized_blocks),
+                direction.value,
+                source_hb,
+                destination_hb,
+            )
+            if self._authority_resources_available(authority):
+                self._grant_authority(authority)
+                return Decision.ADMIT
+
+            self._pending_authorities[robot_id] = authority
+            for block_id in authority.block_ids:
+                block = self.registry.blocks[block_id]
+                domain = self._domains[block.direction_domain]
+                if (
+                    domain.active_direction is not None
+                    and domain.active_direction is not authority.direction
+                ):
+                    domain.batch_closed = True
+            return Decision.WAIT
+
+    def cancel_path_authority(self, robot_id: str, request_key: str) -> bool:
+        """Cancel only an Adapter-owned authority with the matching key."""
+        normalized_key = str(request_key).strip()
+        with self._lock:
+            authority = (
+                self._authorities.get(robot_id)
+                or self._pending_authorities.get(robot_id)
+            )
+            if (
+                authority is None
+                or not authority.adapter_managed
+                or authority.request_key != normalized_key
+            ):
+                return False
+            return self.cancel_authority(robot_id)
+
     def authority_for_robot(self, robot_id: str) -> MovementAuthority | None:
         with self._lock:
             return self._authorities.get(robot_id)
@@ -196,9 +341,10 @@ class DirectionArbiter:
                     block.reservations.pop(robot_id, None)
                     self._grants.pop((robot_id, block_id), None)
                     self._robot_states.pop((robot_id, block_id), None)
-                self.registry.holding_bays[
-                    authority.destination_slot
-                ].reservations.discard(robot_id)
+                if authority.destination_slot is not None:
+                    self.registry.holding_bays[
+                        authority.destination_slot
+                    ].reservations.discard(robot_id)
                 self._reconcile_authority_domains(authority)
             if changed:
                 self._reconcile_authorities()
@@ -215,12 +361,16 @@ class DirectionArbiter:
                 block.reservations.pop(robot_id, None)
                 self._grants.pop((robot_id, block_id), None)
                 self._robot_states[(robot_id, block_id)] = RobotCorridorState.EXITED
-            source = self.registry.holding_bays[authority.source_slot]
-            source.occupants.discard(robot_id)
-            source.reservations.discard(robot_id)
-            destination = self.registry.holding_bays[authority.destination_slot]
-            destination.reservations.discard(robot_id)
-            destination.occupants.add(robot_id)
+            if authority.source_slot is not None:
+                source = self.registry.holding_bays[authority.source_slot]
+                source.occupants.discard(robot_id)
+                source.reservations.discard(robot_id)
+            if authority.destination_slot is not None:
+                destination = self.registry.holding_bays[
+                    authority.destination_slot
+                ]
+                destination.reservations.discard(robot_id)
+                destination.occupants.add(robot_id)
             self._reconcile_authority_domains(authority)
             self._reconcile_authorities()
             self._assert_invariants()
@@ -363,9 +513,12 @@ class DirectionArbiter:
             block = self.registry.blocks[block_id]
             block.occupants.pop(robot_id, None)
             block.reservations.pop(robot_id, None)
-            destination = self.registry.holding_bays[reservation.destination_hb]
-            destination.reservations.discard(robot_id)
-            destination.occupants.add(robot_id)
+            if reservation.destination_hb is not None:
+                destination = self.registry.holding_bays[
+                    reservation.destination_hb
+                ]
+                destination.reservations.discard(robot_id)
+                destination.occupants.add(robot_id)
             self._robot_states[key] = RobotCorridorState.EXITED
             self._reconcile_domain(block.direction_domain)
             self._assert_invariants()
@@ -377,8 +530,10 @@ class DirectionArbiter:
             block.occupants.pop(robot_id, None)
             block.reservations.pop(robot_id, None)
             reservation = self._grants.pop((robot_id, block_id), None)
-            if reservation is not None:
-                destination = self.registry.holding_bays[reservation.destination_hb]
+            if reservation is not None and reservation.destination_hb is not None:
+                destination = self.registry.holding_bays[
+                    reservation.destination_hb
+                ]
                 destination.reservations.discard(robot_id)
                 destination.occupants.add(robot_id)
             self._robot_states[(robot_id, block_id)] = RobotCorridorState.EXITED
@@ -467,7 +622,10 @@ class DirectionArbiter:
                     # SafeStop. Keep it until telemetry confirms arrival;
                     # reaching its configured release node can still leave
                     # the robot on the main line before the side bay/endpoint.
-                    if block_id == authority.block_ids[-1]:
+                    if (
+                        block_id == authority.block_ids[-1]
+                        and authority.destination_slot is not None
+                    ):
                         continue
                     reservation = self._grants.get((robot_id, block_id))
                     if reservation is not None and reservation.release_node is not None:
@@ -530,9 +688,10 @@ class DirectionArbiter:
                 reservation = self._grants.pop((robot_id, candidate), None)
                 block.reservations.pop(robot_id, None)
                 if reservation:
-                    self.registry.holding_bays[
-                        reservation.destination_hb
-                    ].reservations.discard(robot_id)
+                    if reservation.destination_hb is not None:
+                        self.registry.holding_bays[
+                            reservation.destination_hb
+                        ].reservations.discard(robot_id)
                     changed = True
                 self._robot_states.pop((robot_id, candidate), None)
             for domain_id in affected_domains:
@@ -661,6 +820,8 @@ class DirectionArbiter:
                         "direction": authority.direction.value,
                         "source_slot": authority.source_slot,
                         "destination_slot": authority.destination_slot,
+                        "request_key": authority.request_key,
+                        "adapter_managed": authority.adapter_managed,
                         "blocks": list(authority.block_ids),
                         "unreleased_blocks": list(authority.unreleased_blocks),
                         "state": "ACTIVE",
@@ -673,6 +834,8 @@ class DirectionArbiter:
                         "chain_id": authority.chain_id,
                         "direction": authority.direction.value,
                         "destination_slot": authority.destination_slot,
+                        "request_key": authority.request_key,
+                        "adapter_managed": authority.adapter_managed,
                         "blocks": list(authority.block_ids),
                         "state": "WAITING",
                     }
@@ -695,7 +858,11 @@ class DirectionArbiter:
         )
 
     def _grant_authority(self, authority: MovementAuthority) -> None:
-        destination = self.registry.holding_bays[authority.destination_slot]
+        destination = (
+            self.registry.holding_bays[authority.destination_slot]
+            if authority.destination_slot is not None
+            else None
+        )
         for index, block_id in enumerate(authority.block_ids):
             block = self.registry.blocks[block_id]
             domain = self._domains[block.direction_domain]
@@ -722,7 +889,8 @@ class DirectionArbiter:
                 block_id,
                 authority.authority_id,
             )
-        destination.reservations.add(authority.robot_id)
+        if destination is not None:
+            destination.reservations.add(authority.robot_id)
         self._authorities[authority.robot_id] = authority
         self._pending_authorities.pop(authority.robot_id, None)
         logger.info(
@@ -788,15 +956,22 @@ class DirectionArbiter:
             source = self.registry.holding_bays[reservation.source_hb]
             if source.reservations - {reservation.robot_id}:
                 return False
+        if reservation.destination_hb is None:
+            return True
         bay = self.registry.holding_bays[reservation.destination_hb]
         used = (bay.occupants | bay.reservations) - {reservation.robot_id}
         return len(used) < bay.capacity
 
     def _grant(self, reservation: Reservation) -> None:
         block = self.registry.blocks[reservation.block_id]
-        bay = self.registry.holding_bays[reservation.destination_hb]
+        bay = (
+            self.registry.holding_bays[reservation.destination_hb]
+            if reservation.destination_hb is not None
+            else None
+        )
         block.reservations[reservation.robot_id] = reservation
-        bay.reservations.add(reservation.robot_id)
+        if bay is not None:
+            bay.reservations.add(reservation.robot_id)
         self._grants[(reservation.robot_id, reservation.block_id)] = reservation
         self._robot_states[
             (reservation.robot_id, reservation.block_id)
@@ -813,11 +988,12 @@ class DirectionArbiter:
             reservation.robot_id,
             reservation.block_id,
         )
-        logger.info(
-            "[TRAFFIC] HB_RESERVED robot=%s hb=%s",
-            reservation.robot_id,
-            reservation.destination_hb,
-        )
+        if reservation.destination_hb is not None:
+            logger.info(
+                "[TRAFFIC] HB_RESERVED robot=%s hb=%s",
+                reservation.robot_id,
+                reservation.destination_hb,
+            )
         self._assert_invariants()
 
     def _domain_busy(self, domain_id: str) -> bool:

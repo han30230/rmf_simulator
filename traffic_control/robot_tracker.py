@@ -116,6 +116,7 @@ class RobotTracker:
                 else []
             )
             matching_blocks: list[str] = []
+            adapter_authority_exited = False
 
             if isinstance(position, dict) and position.get("x") is not None and position.get("y") is not None:
                 x = float(position["x"])
@@ -198,6 +199,22 @@ class RobotTracker:
                 elif (
                     old_block is not None
                     and observed_block is None
+                    and authority is not None
+                    and authority.adapter_managed
+                    and authority.destination_slot is None
+                    and not driving
+                    and bool(last_node_id)
+                ):
+                    # Adapter-level Park/Charge/Replan may leave a managed
+                    # corridor through an unmanaged side branch rather than a
+                    # configured Holding Bay. Require stopped node telemetry
+                    # plus geometry/edge evidence that the robot is outside
+                    # before releasing the block-only authority.
+                    self.arbiter.mark_authority_arrived(robot_id)
+                    adapter_authority_exited = True
+                elif (
+                    old_block is not None
+                    and observed_block is None
                     and hb_id is not None
                     and (hb_id == destination_hb or not granted_blocks)
                 ):
@@ -208,6 +225,8 @@ class RobotTracker:
 
                 if observed_block is not None:
                     block_id = observed_block
+                elif adapter_authority_exited:
+                    block_id = None
                 elif (
                     old_block is not None
                     and (

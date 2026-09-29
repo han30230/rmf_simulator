@@ -79,15 +79,17 @@ class ChainPath:
 class MovementAuthority:
     authority_id: str
     robot_id: str
-    chain_id: str
+    chain_id: str | None
     direction: Direction
-    source_group: str
-    source_slot: str
-    destination_group: str
-    destination_slot: str
+    source_group: str | None
+    source_slot: str | None
+    destination_group: str | None
+    destination_slot: str | None
     goal_node: str
     block_ids: tuple[str, ...]
     request_time: float
+    request_key: str | None = None
+    adapter_managed: bool = False
     released_blocks: set[str] = field(default_factory=set)
 
     @property
@@ -144,7 +146,7 @@ class Reservation:
     robot_id: str
     block_id: str
     direction: Direction
-    destination_hb: str
+    destination_hb: str | None
     source_hb: str | None
     request_time: float
     release_node: str | None = None
