@@ -1,0 +1,204 @@
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.cpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.cpp
+index 846945b..00b2107 100644
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.cpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.cpp
+@@ -16,6 +16,7 @@
+ */
+ 
+ #include "GoToPlace.hpp"
++#include "../local_traffic/SearchBudget.hpp"
+ #include "../project_itinerary.hpp"
+ 
+ #include <rmf_traffic/schedule/StubbornNegotiator.hpp>
+@@ -529,12 +530,13 @@ void GoToPlace::Active::_find_plan()
+     "%s",
+     ss.str().c_str());
+ 
+-  // TODO(MXG): Make the planning time limit configurable
++  const auto search_budget = local_traffic::SearchBudget::load();
+   _find_path_service = std::make_shared<services::FindPath>(
+     _context->planner(), _context->location(), *_chosen_goal,
+     _context->schedule()->snapshot(), _context->itinerary().id(),
+     _context->profile(),
+-    std::chrono::seconds(5));
++    std::chrono::duration_cast<rmf_traffic::Duration>(
++      std::chrono::duration<double>(search_budget.seconds)));
+ 
+   _plan_subscription = rmf_rxcpp::make_job<services::FindPath::Result>(
+     _find_path_service)
+@@ -587,7 +589,8 @@ void GoToPlace::Active::_find_plan()
+     });
+ 
+   _find_path_timeout = _context->node()->try_create_wall_timer(
+-    std::chrono::seconds(10),
++    std::chrono::duration_cast<std::chrono::nanoseconds>(
++      std::chrono::duration<double>(search_budget.enabled ? search_budget.seconds + 5.0 : 10.0)),
+     [
+       weak_service = _find_path_service->weak_from_this(),
+       weak_self = weak_from_this()
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/jobs/Planning.cpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/jobs/Planning.cpp
+index b824e90..0396247 100644
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/jobs/Planning.cpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/jobs/Planning.cpp
+@@ -16,6 +16,7 @@
+ */
+ 
+ #include "Planning.hpp"
++#include "../local_traffic/SearchBudget.hpp"
+ 
+ namespace rmf_fleet_adapter {
+ namespace jobs {
+@@ -28,14 +29,18 @@ Planning::Planning(
+   rmf_traffic::agv::Plan::Options options)
+ : _current_result(planner->setup(starts, std::move(goal), std::move(options)))
+ {
+-  _current_result->options().saturation_limit(10000);
++  const auto budget = local_traffic::SearchBudget::load();
++  _current_result->options().saturation_limit(
++    budget.planning_node_limit(_current_result->options().saturation_limit()));
+ }
+ 
+ //==============================================================================
+ Planning::Planning(rmf_traffic::agv::Planner::Result _setup)
+ : _current_result(std::move(_setup))
+ {
+-  _current_result->options().saturation_limit(10000);
++  const auto budget = local_traffic::SearchBudget::load();
++  _current_result->options().saturation_limit(
++    budget.planning_node_limit(_current_result->options().saturation_limit()));
+ }
+ 
+ //==============================================================================
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/jobs/SearchForPath.cpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/jobs/SearchForPath.cpp
+index d65b292..a5f6a69 100644
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/jobs/SearchForPath.cpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/jobs/SearchForPath.cpp
+@@ -16,6 +16,8 @@
+ */
+ 
+ #include "SearchForPath.hpp"
++#include "../local_traffic/SearchBudget.hpp"
++#include <iostream>
+ 
+ namespace rmf_fleet_adapter {
+ namespace jobs {
+@@ -37,7 +39,7 @@ std::function<bool()> make_interrupter(
+           return true;
+ 
+         const auto now = std::chrono::steady_clock::now();
+-        if (deadline <= now)
++        if (deadline && now >= *deadline)
+           return true;
+       }
+ 
+@@ -66,7 +68,11 @@ SearchForPath::SearchForPath(
+     const auto start_time = std::chrono::steady_clock::now();
+     _deadline = start_time + *planning_time_limit;
+   }
++  const auto budget = local_traffic::SearchBudget::load();
++  _compliant_leeway = budget.compliant_leeway;
++  _compliant_extra_cost = budget.extra_cost;
+   auto greedy_options = _planner->get_default_options();
++  if (budget.enabled) greedy_options.saturation_limit(budget.nodes);
+   greedy_options.validator(nullptr);
+   greedy_options.interrupter(make_interrupter(_interrupt_flag, _deadline));
+ 
+@@ -78,19 +84,31 @@ SearchForPath::SearchForPath(
+     greedy_starts.erase(greedy_starts.begin()+1, greedy_starts.end());
+ 
+   auto greedy_setup = _planner->setup(greedy_starts, _goal, greedy_options);
++  if (!greedy_setup.cost_estimate())
++  {
++    _greedy_job = std::make_shared<Planning>(std::move(greedy_setup));
++    return;
++  }
+   const double base_cost = *greedy_setup.cost_estimate();
+   greedy_setup.options().maximum_cost_estimate(_greedy_leeway*base_cost);
+ 
+   auto compliant_options = _planner->get_default_options();
++  if (budget.enabled) compliant_options.saturation_limit(budget.nodes);
+   compliant_options.validator(
+     rmf_traffic::agv::ScheduleRouteValidator::make(
+       _schedule, _participant_id, *profile));
+-  compliant_options.maximum_cost_estimate(_compliant_leeway*base_cost);
+-  greedy_options.interrupter(make_interrupter(_interrupt_flag, _deadline));
++  compliant_options.maximum_cost_estimate(std::max(
++    _compliant_leeway*base_cost, base_cost + _compliant_extra_cost));
++  compliant_options.interrupter(make_interrupter(_interrupt_flag, _deadline));
+   auto compliant_setup = _planner->setup(_starts, _goal, compliant_options);
+ 
+   _greedy_job = std::make_shared<Planning>(std::move(greedy_setup));
+   _compliant_job = std::make_shared<Planning>(std::move(compliant_setup));
++  if (budget.enabled)
++    std::cerr << "[LocalTrafficBudget] participant=" << _participant_id
++      << " goal=" << _goal.waypoint() << " base_cost=" << base_cost
++      << " compliant_max=" << *_compliant_job->progress().options().maximum_cost_estimate()
++      << " node_limit=" << budget.nodes << std::endl;
+ }
+ 
+ //==============================================================================
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/jobs/SearchForPath.hpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/jobs/SearchForPath.hpp
+index 4291de5..ae5f155 100644
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/jobs/SearchForPath.hpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/jobs/SearchForPath.hpp
+@@ -102,7 +102,8 @@ private:
+ 
+   // TODO(MXG): Make these leeway factors configurable
+   const double _greedy_leeway = 10.0;
+-  const double _compliant_leeway = 3.0;
++  double _compliant_leeway = 3.0;
++  double _compliant_extra_cost = 0.0;
+ };
+ 
+ } // namespace jobs
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/jobs/detail/impl_SearchForPath.hpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/jobs/detail/impl_SearchForPath.hpp
+index 5d24a50..da63d19 100644
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/jobs/detail/impl_SearchForPath.hpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/jobs/detail/impl_SearchForPath.hpp
+@@ -239,7 +239,9 @@ void SearchForPath::operator()(const Subscriber& s, const Worker&)
+         // We don't have an explicit cost limit, so we'll just check if the
+         // greedy job search has granted us any more leeway.
+         const double new_maximum =
+-        search->_compliant_leeway * search->_greedy_job->progress()->get_cost();
++        std::max(
++          search->_compliant_leeway * search->_greedy_job->progress()->get_cost(),
++          search->_greedy_job->progress()->get_cost() + search->_compliant_extra_cost);
+ 
+         if (*r.options().maximum_cost_estimate() < new_maximum)
+         {
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/services/detail/impl_FindPath.hpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/services/detail/impl_FindPath.hpp
+index 4efe6f7..9d48f03 100644
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/services/detail/impl_FindPath.hpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/services/detail/impl_FindPath.hpp
+@@ -19,6 +19,8 @@
+ #define SRC__RMF_FLEET_ADAPTER__SERVICES__DETAIL__PLANNING_HPP
+ 
+ #include "../FindPath.hpp"
++#include "../../local_traffic/SearchBudget.hpp"
++#include <iostream>
+ 
+ namespace rmf_fleet_adapter {
+ namespace services {
+@@ -36,6 +38,10 @@ void FindPath::operator()(const Subscriber& s)
+       // completed.
+       if (result.compliant_job && result.compliant_job->progress().success())
+       {
++        if (local_traffic::SearchBudget::load().enabled)
++          std::cerr << "[LocalTrafficFindPath] selected=compliant cost="
++            << result.compliant_job->progress()->get_cost()
++            << std::endl;
+         s.on_next(result.compliant_job->progress());
+         s.on_completed();
+       }
+@@ -44,6 +50,11 @@ void FindPath::operator()(const Subscriber& s)
+         // We will send back the result of the greedy job, whether or not it
+         // successfully found a plan. It is up to the subscriber to check
+         // whether it was successful and decide what to do about failures.
++        if (local_traffic::SearchBudget::load().enabled)
++          std::cerr << "[LocalTrafficFindPath] selected=greedy success="
++            << result.greedy_job->progress().success()
++            << " saturated=" << result.greedy_job->progress().saturated()
++            << " interrupted=" << result.greedy_job->progress().interrupted() << std::endl;
+         s.on_next(result.greedy_job->progress());
+         s.on_completed();
+       }

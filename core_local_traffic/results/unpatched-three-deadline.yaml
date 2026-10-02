@@ -1,0 +1,6 @@
+external_kill_seconds: 25
+notes: Unpatched C++ solve exceeded external timeout. No output was produced. This
+  is a measured failure, not proof of infeasibility.
+proposal: null
+solve_budget_seconds: 10
+status: HARD_TIMEOUT

@@ -1,0 +1,33 @@
+scope: planner laboratory milestone, not full MD implementation
+upstream:
+  rmf_utils:
+    url: https://github.com/open-rmf/rmf_utils.git
+    commit: 0887bd19828a638d5e83b5ad0c272beada770f9a
+  rmf_traffic:
+    url: https://github.com/open-rmf/rmf_traffic.git
+    commit: ab881a6e841b235a0b58b9acc87dae8549614676
+    patch: patches/rmf_traffic-negotiation-cancellation.patch
+  rmf_ros2:
+    url: https://github.com/open-rmf/rmf_ros2.git
+    commit: 02da9198b246980bbfd6d9fbc86685dfa2212bd6
+    patch: patches/rmf_ros2-search-budgets.patch
+host: Ubuntu 24.04
+compiler: 13.3.0
+traffic_build: PASS (actual rmf_traffic C++ build, including cancellation patch)
+evaluator_build: PASS
+ros_fleet_adapter_build: 'NOT_RUN: ROS/colcon unavailable'
+tests:
+  command: RMF_LOCAL_TRAFFIC_EVALUATOR=<built binary> python3 -m unittest discover
+    -s tests -v
+  count: 49
+  failed: 0
+  skipped: 0
+dynamic_simulation: NOT_RUN
+live_coordinator: NOT_IMPLEMENTED
+patch_application: 'PASS: clean exact-version local clones; git diff --check'
+review: Partial independent review completed targeted tests and found disabled-mode
+  node limit change; fixed and tested. Reviewer did not complete a final review.
+patched_binary_sha256: e07b0052faba26ada3b6002d2f99cd40d39e51f083ba22ca18af943b99ee2032
+patch_sha256:
+  rmf_ros2-search-budgets.patch: 8371fea277ff35f7b0f125097509f65936a2eada381ff30ab2b17be28675f710
+  rmf_traffic-negotiation-cancellation.patch: 77a677edce0987cd3884a6d36fa41e47009490f191d36dc80141a3dd30a3cc19

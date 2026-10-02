@@ -1,0 +1,21 @@
+agents:
+- goal: '2108'
+  name: A1
+  start: '2101'
+  yaw: 0
+- goal: '2101'
+  name: B1
+  start: '2108'
+  yaw: 3.141592653589793
+- goal: '2102'
+  name: C
+  start: PARK_E
+  yaw: 3.141592653589793
+- goal: '2107'
+  name: D
+  start: PARK_W
+  yaw: 0
+cost_leeway: 10
+extra_cost: 120
+node_limit: 100000
+solve_seconds: 10

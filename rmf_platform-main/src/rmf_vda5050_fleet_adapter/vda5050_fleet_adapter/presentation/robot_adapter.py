@@ -194,6 +194,8 @@ class RobotAdapter:
             ack_guard=order_ack_guard(order_id, 0),
             ack_description='state reports order id/update id',
         )
+        logger.info('RMF_NAVIGATE robot=%s cmd_id=%s order_id=%s path=%s',
+                    self.name, cmd_id, order_id, path)
         self._command_hsm.enqueue(command)
 
     def stop(self, activity: Any) -> None:
@@ -206,6 +208,7 @@ class RobotAdapter:
             self._nav = NavigationState()
         self._command_hsm.cancel_pending()
         self.cmd_id += 1
+        logger.info('RMF_STOP robot=%s cmd_id=%s', self.name, self.cmd_id)
         self.api.pause(self.name, self.cmd_id)
 
     def execute_action(

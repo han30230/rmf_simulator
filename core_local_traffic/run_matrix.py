@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""Kill/reap the evaluator process on hard timeout; never leave a solve thread alive."""
+import argparse
+from pathlib import Path
+import subprocess
+import time
+import yaml
+
+ROOT = Path(__file__).resolve().parents[1]
+def run(binary, graph, scenario, hard_timeout):
+    t0 = time.monotonic()
+    try:
+        p = subprocess.run([str(binary),str(graph),str(scenario)],capture_output=True,
+                           text=True,timeout=hard_timeout)
+    except subprocess.TimeoutExpired:
+        return dict(status='HARD_TIMEOUT', wall_seconds=time.monotonic()-t0)
+    if p.returncode:
+        return dict(status='EVALUATOR_ERROR', returncode=p.returncode, stderr=p.stderr,
+                    wall_seconds=time.monotonic()-t0)
+    result=yaml.safe_load(p.stdout)
+    if not isinstance(result,dict) or 'status' not in result:
+        return dict(status='INVALID_OUTPUT', stderr=p.stderr)
+    result['wall_seconds']=time.monotonic()-t0
+    return result
+
+def main():
+    p=argparse.ArgumentParser()
+    p.add_argument('--binary',required=True,type=Path)
+    p.add_argument('--graph',type=Path,default=ROOT/'rmf_platform-main/src/rmf_vda5050_fleet_adapter/map/p4_local_traffic.yaml')
+    p.add_argument('--output',type=Path,required=True)
+    p.add_argument('--repeat',type=int,default=10)
+    args=p.parse_args()
+    if args.repeat < 1: p.error('--repeat must be positive')
+    args.output.mkdir(parents=True,exist_ok=True)
+    summary=[]
+    for scenario in sorted((ROOT/'core_local_traffic/scenarios').glob('*.yaml')):
+        cfg=yaml.safe_load(scenario.read_text())
+        for n in range(args.repeat):
+            result=run(args.binary,args.graph,scenario,float(cfg.get('solve_seconds',10))+5)
+            path=args.output/f'{scenario.stem}-{n:02}.yaml'
+            path.write_text(yaml.safe_dump(result,sort_keys=False))
+            item=dict(scenario=scenario.name,repeat=n,status=result['status'],
+                      wall_seconds=result.get('wall_seconds'),result=path.name)
+            summary.append(item)
+            print(item,flush=True)
+    (args.output/'summary.yaml').write_text(yaml.safe_dump(summary,sort_keys=False))
+if __name__=='__main__': main()

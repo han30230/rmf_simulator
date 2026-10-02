@@ -1,0 +1,59 @@
+schema_version: 1
+backend: rmf_traffic::agv::CentralizedNegotiation
+solve_seconds: 60.173765381000003
+logs:
+  - Selected table [ 0:0 ]
+  - "Submitted plan:\nL1: t: 7425.79, ( 6.833 92.871), yaw: 0 -> t: 7494.02, (73.7274 92.8248), yaw: -0.00649287"
+  - Selected table [ 0:1 1:0 ]
+  - Rejected parent
+  - Selected table [ 0:1 2:0 ]
+  - Skipping
+  - Selected table [ 1:0 ]
+  - "Submitted plan:\nL1: t: 7425.79, (73.7274 92.8248), yaw: 3.14159 -> t: 7494.02, ( 6.833 92.871), yaw: 3.14159"
+  - Selected table [ 1:1 0:0 ]
+  - Rejected parent
+  - Selected table [ 1:1 2:0 ]
+  - Skipping
+  - Selected table [ 2:0 ]
+  - "Submitted plan:\nL1: t: 7425.79, (     80 92.8248), yaw: 3.14159 -> t: 7494.63, (  12.5 92.871), yaw: 3.14159"
+  - Selected table [ 2:1 0:0 ]
+  - Rejected parent
+  - Selected table [ 2:1 1:0 ]
+  - Skipping
+  - Selected table [ 0:1 ]
+  - "Submitted plan:\nL1: t: 7425.79, ( 6.833 92.871), yaw: 0 -> t: 7494.02, (73.7274 92.8248), yaw: -0.00649287"
+  - Selected table [ 0:2 1:0 ]
+  - Rejected parent
+  - Selected table [ 0:2 2:0 ]
+  - Skipping
+  - Selected table [ 1:1 ]
+  - "Submitted plan:\nL1: t: 7425.79, (73.7274 92.8248), yaw: 3.14159 -> t: 7458.35, (42.508 92.871), yaw: 3.14159 -> t: 7461.26, (42.508 92.871), yaw: -1.5708 -> t: 7465.67, (42.508   89.8), yaw: -1.5708 -> t: 7471.21, (42.508   89.8), yaw: 1.5708 -> t: 7475.61, (42.508 92.871), yaw: 1.5708 -> t: 7478.53, (42.508 92.871), yaw: 3.14159 -> t: 7515.54, ( 6.833 92.871), yaw: 3.14159"
+  - Selected table [ 1:2 0:0 ]
+  - "Submitted plan:\nL1: t: 7425.79, ( 6.833 92.871), yaw: 0 -> t: 7427.79, ( 6.833 92.871), yaw: 0 -> t: 7496.02, (73.7274 92.8248), yaw: -0.00649287"
+  - Selected table [ 1:2 0:1 2:0 ]
+  - Rejected parent
+  - Selected table [ 1:2 2:0 ]
+  - "Submitted plan:\nL1: t: 7425.79, (     80 92.8248), yaw: 3.14159 -> t: 7426.79, (     80 92.8248), yaw: 3.14159 -> t: 7495.63, (  12.5 92.871), yaw: 3.14159"
+  - Selected table [ 1:2 2:1 0:0 ]
+  - Rejected parent
+  - Selected table [ 2:1 ]
+  - "Submitted plan:\nL1: t: 7425.79, (     80 92.8248), yaw: 3.14159 -> t: 7494.63, (  12.5 92.871), yaw: 3.14159"
+  - Selected table [ 2:2 0:0 ]
+  - Rejected parent
+  - Selected table [ 2:2 1:0 ]
+  - Skipping
+  - Selected table [ 0:2 ]
+  - "Submitted plan:\nL1: t: 7425.79, ( 6.833 92.871), yaw: 0 -> t: 7494.02, (73.7274 92.8248), yaw: -0.00649287"
+  - Selected table [ 0:3 1:0 ]
+  - Rejected parent
+  - Selected table [ 0:3 2:0 ]
+  - Skipping
+  - Selected table [ 1:2 0:1 ]
+  - "Submitted plan:\nL1: t: 7425.79, ( 6.833 92.871), yaw: 0 -> t: 7427.79, ( 6.833 92.871), yaw: 0 -> t: 7496.02, (73.7274 92.8248), yaw: -0.00649287"
+  - Selected table [ 1:2 0:2 2:0 ]
+  - Rejected parent
+  - Selected table [ 1:2 2:1 ]
+  - Rejected parent
+blockers:
+  []
+status: TIMEOUT

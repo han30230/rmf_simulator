@@ -1,0 +1,11 @@
+rmf_utils:
+  url: https://github.com/open-rmf/rmf_utils.git
+  commit: 0887bd19828a638d5e83b5ad0c272beada770f9a
+rmf_traffic:
+  url: https://github.com/open-rmf/rmf_traffic.git
+  commit: ab881a6e841b235a0b58b9acc87dae8549614676
+  patch: patches/rmf_traffic-negotiation-cancellation.patch
+rmf_ros2:
+  url: https://github.com/open-rmf/rmf_ros2.git
+  commit: 02da9198b246980bbfd6d9fbc86685dfa2212bd6
+  patch: patches/rmf_ros2-search-budgets.patch

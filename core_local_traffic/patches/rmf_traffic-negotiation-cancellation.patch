@@ -1,0 +1,51 @@
+diff --git a/rmf_traffic/src/rmf_traffic/agv/CentralizedNegotiation.cpp b/rmf_traffic/src/rmf_traffic/agv/CentralizedNegotiation.cpp
+index ea230dd..c09e50c 100644
+--- a/rmf_traffic/src/rmf_traffic/agv/CentralizedNegotiation.cpp
++++ b/rmf_traffic/src/rmf_traffic/agv/CentralizedNegotiation.cpp
+@@ -330,6 +330,12 @@ auto CentralizedNegotiation::solve(const std::vector<Agent>& agents) const
+ 
+   auto finished = [&]()
+     {
++      for (const auto& agent : agents)
++      {
++        const auto& interrupted = agent.planner()->get_default_options().interrupter();
++        if (interrupted && interrupted())
++          return true;
++      }
+       if (_pimpl->optimal)
+         return negotiation->complete();
+ 
+diff --git a/rmf_traffic/src/rmf_traffic/agv/SimpleNegotiator.cpp b/rmf_traffic/src/rmf_traffic/agv/SimpleNegotiator.cpp
+index 7657152..676ae87 100644
+--- a/rmf_traffic/src/rmf_traffic/agv/SimpleNegotiator.cpp
++++ b/rmf_traffic/src/rmf_traffic/agv/SimpleNegotiator.cpp
+@@ -419,8 +419,8 @@ void SimpleNegotiator::respond(
+ 
+   AlternativesTracker tracker(rv_generator.alternative_sets());
+ 
+-  const auto interrupt_flag = _pimpl->planner_options.interrupt_flag();
+-  while (!validators.empty() && !(interrupt_flag && *interrupt_flag))
++  const auto interrupter = _pimpl->planner_options.interrupter();
++  while (!validators.empty() && !(interrupter && interrupter()))
+   {
+     const auto validator = std::move(validators.front());
+     validators.pop_front();
+@@ -578,7 +578,8 @@ void SimpleNegotiator::respond(
+     }
+ 
+     validator->mask(parent_id);
+-    options.interrupt_flag(nullptr);
++    // Keep the caller deadline/cancellation during potentially expensive rollouts.
++    options.interrupter(interrupter);
+     options.validator(validator);
+     const auto old_holding_time = options.minimum_holding_time();
+     options.minimum_holding_time(std::chrono::seconds(5));
+@@ -614,7 +615,7 @@ void SimpleNegotiator::respond(
+       }
+     }
+ 
+-    options.interrupt_flag(interrupt_flag);
++    options.interrupter(interrupter);
+     options.minimum_holding_time(old_holding_time);
+   }
+ 

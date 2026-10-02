@@ -2,6 +2,10 @@
 
 집과 회사에서 재현한 RMF/VDA5050 시뮬레이션 작업공간이다. 현재 P4 단일 1차선 양방향 통로에서 Direction Arbiter가 로봇의 진입 방향, Block 점유, Holding Bay 예약, 대기 작업을 제어한다.
 
+## 코어 국소 교행 실험 브랜치
+
+[core_local_traffic 실험과 결과](core_local_traffic/README.md): 실제 RMF C++ 공동 플래너, 취소/탐색 예산 패치, 별도 베이 맵, opt-in 리플랜 요청 도구를 추가했다. 2대 planner-only 교행은 검증했지만 3·4대는 timeout이다. 공유 coordinator와 실제 동적 ROS/VDA5050 완료는 아직 구현·검증되지 않았다. 기존 Arbiter가 기본 동작이다.
+
 ## 현재 확인된 범위
 
 - Ubuntu 24.04 / ROS 2 Jazzy / Docker Desktop WSL2

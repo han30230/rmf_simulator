@@ -38,6 +38,10 @@ def create_argument_parser() -> argparse.ArgumentParser:
         '-sim', '--use_sim_time', action='store_true',
         help='Use ROS simulation time',
     )
+    parser.add_argument(
+        '--enable-replan-test-control', action='store_true',
+        help='SIMULATION ONLY: accept robot names on /local_traffic/replan',
+    )
     return parser
 
 
@@ -154,6 +158,23 @@ def run_adapter(args: argparse.Namespace) -> None:
         )
         for robot_name in fleet_config.known_robots
     }
+    replan_subscription = None
+    if args.enable_replan_test_control:
+        from std_msgs.msg import String
+        from vda5050_fleet_adapter.presentation.replan_control import request_replan
+
+        def on_replan(message: String) -> None:
+            name = message.data.strip()
+            try:
+                accepted = request_replan(robots, name)
+                logger.info('RMF_REPLAN_REQUEST robot=%s accepted=%s', name, accepted)
+            except Exception:
+                logger.exception('RMF_REPLAN_REQUEST failed robot=%s', name)
+
+        replan_subscription = node.create_subscription(
+            String, '/local_traffic/replan', on_replan, 10,
+        )
+        logger.warning('Simulation replan control enabled: /local_traffic/replan')
     registration_started: set[str] = set()
     period = 1.0 / float(
         raw['rmf_fleet'].get('robot_state_update_frequency', 10.0)

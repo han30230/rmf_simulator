@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.16)
+project(rmf_local_traffic_lab LANGUAGES CXX)
+find_package(rmf_traffic REQUIRED)
+find_package(yaml-cpp REQUIRED)
+add_executable(local_traffic_evaluator evaluator.cpp)
+target_compile_features(local_traffic_evaluator PRIVATE cxx_std_17)
+target_link_libraries(local_traffic_evaluator PRIVATE rmf_traffic::rmf_traffic yaml-cpp::yaml-cpp)
+install(TARGETS local_traffic_evaluator RUNTIME DESTINATION bin)
