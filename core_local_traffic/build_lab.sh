@@ -27,6 +27,7 @@ cmake --build "$lab_workspace/build/utils" -j2
 cmake --install "$lab_workspace/build/utils"
 cmake -S "$lab_workspace/src/rmf_traffic/rmf_traffic" -B "$lab_workspace/build/traffic" \
   -DCMAKE_PREFIX_PATH="$lab_workspace/install" -DCMAKE_INSTALL_PREFIX="$lab_workspace/install" \
+  -DCMAKE_INSTALL_RPATH="$lab_workspace/install/lib" \
   -DBUILD_TESTING=OFF -DFCL_WITH_OCTOMAP=OFF
 cmake --build "$lab_workspace/build/traffic" -j2
 cmake --install "$lab_workspace/build/traffic"

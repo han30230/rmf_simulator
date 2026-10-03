@@ -1,0 +1,35 @@
+schema_version: 1
+date: '2026-10-03'
+branch: feat/local-traffic-replan
+core_build:
+  result: PASS
+  workspace: /home/han30230/rmf-local-lab-20261003
+  linkage_verified: true
+focused_tests:
+  result: PASS
+  tests_run: 12
+opposite_3:
+  unchanged_runs:
+  - {status: TIMEOUT, solve_seconds: 10.005151905, cost_limited_plans: 14}
+  - {status: TIMEOUT, cost_limited_plans: 15}
+  - {status: TIMEOUT, cost_limited_plans: 15}
+  cost_leeway_100_control:
+    status: TIMEOUT
+    solve_seconds: 10.103890969
+    cost_limited_plans: 2
+    tables_selected: 8
+  conclusion: >-
+    Cost limits dominate baseline planner time, but the observed count is not a
+    configured cap and a higher ceiling alone does not solve the case. The
+    rollout set omits side-bay waypoint 6137, so candidate generation is the
+    next required solver change.
+fresh_matrix:
+  single: {status: VALID, solve_seconds: 0.001078707}
+  opposite_two: {status: VALID, solve_seconds: 2.440305995}
+  opposite_3: {status: TIMEOUT, solve_seconds: 10.002671948}
+  opposite_3_60s: {status: TIMEOUT, solve_seconds: 60.014208343}
+  opposite_4: {status: TIMEOUT, solve_seconds: 10.009887103}
+runtime_simulation:
+  four_robot_occupied_goal: INCOMPLETE
+  isolated_replan_to_original_goal: COMPLETE
+  actual_robot_deployment: false

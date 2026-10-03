@@ -1,9 +1,76 @@
+diff --git a/rmf_traffic/include/rmf_traffic/agv/CentralizedNegotiation.hpp b/rmf_traffic/include/rmf_traffic/agv/CentralizedNegotiation.hpp
+index b96445b..2aea232 100644
+--- a/rmf_traffic/include/rmf_traffic/agv/CentralizedNegotiation.hpp
++++ b/rmf_traffic/include/rmf_traffic/agv/CentralizedNegotiation.hpp
+@@ -184,6 +184,9 @@ public:
+   /// running. Off by default.
+   CentralizedNegotiation& print(bool on = true);
+
++  /// Optional per-solve observer; no candidate selection changes.
++  CentralizedNegotiation& diagnostics(std::shared_ptr<SearchDiagnostics> value);
++
+   /// Solve a centralized negotiation for the given agents.
+   Result solve(const std::vector<Agent>& agents) const;
+
+diff --git a/rmf_traffic/include/rmf_traffic/agv/SimpleNegotiator.hpp b/rmf_traffic/include/rmf_traffic/agv/SimpleNegotiator.hpp
+index 1115317..b74604e 100644
+--- a/rmf_traffic/include/rmf_traffic/agv/SimpleNegotiator.hpp
++++ b/rmf_traffic/include/rmf_traffic/agv/SimpleNegotiator.hpp
+@@ -19,6 +19,7 @@
+ #define RMF_TRAFFIC__AGV__NEGOTIATOR_HPP
+
+ #include <rmf_traffic/agv/Planner.hpp>
++#include <rmf_traffic/agv/SearchDiagnostics.hpp>
+ #include <rmf_traffic/schedule/Participant.hpp>
+ #include <rmf_traffic/schedule/Negotiator.hpp>
+
+@@ -67,6 +68,10 @@ public:
+       std::optional<std::size_t> maximum_alts = std::nullopt,
+       Duration min_hold_time = Planner::Options::DefaultMinHoldingTime);
+
++    /// Optional synchronous per-solve diagnostic collector.
++    Options& diagnostics(std::shared_ptr<SearchDiagnostics> value);
++    std::shared_ptr<SearchDiagnostics> diagnostics() const;
++
+     /// Set the approval callback
+     // TODO(MXG): The approval_callback option needs to be unit tested
+     Options& approval_callback(ApprovalCallback cb);
 diff --git a/rmf_traffic/src/rmf_traffic/agv/CentralizedNegotiation.cpp b/rmf_traffic/src/rmf_traffic/agv/CentralizedNegotiation.cpp
-index ea230dd..c09e50c 100644
+index ea230dd..9b8758e 100644
 --- a/rmf_traffic/src/rmf_traffic/agv/CentralizedNegotiation.cpp
 +++ b/rmf_traffic/src/rmf_traffic/agv/CentralizedNegotiation.cpp
-@@ -330,6 +330,12 @@ auto CentralizedNegotiation::solve(const std::vector<Agent>& agents) const
- 
+@@ -188,6 +188,7 @@ class CentralizedNegotiation::Implementation
+ {
+ public:
+   std::shared_ptr<const schedule::Viewer> viewer;
++  std::shared_ptr<SearchDiagnostics> diagnostics;
+   bool optimal = false;
+   bool log = false;
+   bool print = false;
+@@ -217,6 +218,12 @@ CentralizedNegotiation& CentralizedNegotiation::viewer(
+   return *this;
+ }
+
++CentralizedNegotiation& CentralizedNegotiation::diagnostics(std::shared_ptr<SearchDiagnostics> value)
++{
++  _pimpl->diagnostics = std::move(value);
++  return *this;
++}
++
+ //==============================================================================
+ CentralizedNegotiation& CentralizedNegotiation::optimal(bool on)
+ {
+@@ -284,6 +291,8 @@ auto CentralizedNegotiation::solve(const std::vector<Agent>& agents) const
+     if (a.options().has_value())
+       options = *a.options();
+
++    if (_pimpl->diagnostics) options.diagnostics(_pimpl->diagnostics);
++
+     using UpdateVersion = SimpleNegotiator::Responder::UpdateVersion;
+     options.approval_callback(
+       [&proposal, id = a.id()](rmf_traffic::agv::Plan plan) -> UpdateVersion
+@@ -330,6 +339,12 @@ auto CentralizedNegotiation::solve(const std::vector<Agent>& agents) const
+
    auto finished = [&]()
      {
 +      for (const auto& agent : agents)
@@ -14,15 +81,82 @@ index ea230dd..c09e50c 100644
 +      }
        if (_pimpl->optimal)
          return negotiation->complete();
- 
+
+@@ -385,12 +400,14 @@ auto CentralizedNegotiation::solve(const std::vector<Agent>& agents) const
+   {
+     const auto top = queue.back();
+     queue.pop_back();
++    if (_pimpl->diagnostics) ++_pimpl->diagnostics->tables_selected;
+
+     if (log_or_print)
+       progress(selected_table(top));
+
+     if (skip(top))
+     {
++      if (_pimpl->diagnostics) ++_pimpl->diagnostics->tables_skipped;
+       if (log_or_print)
+         progress("Skipping");
+
 diff --git a/rmf_traffic/src/rmf_traffic/agv/SimpleNegotiator.cpp b/rmf_traffic/src/rmf_traffic/agv/SimpleNegotiator.cpp
-index 7657152..676ae87 100644
+index 7657152..6f42186 100644
 --- a/rmf_traffic/src/rmf_traffic/agv/SimpleNegotiator.cpp
 +++ b/rmf_traffic/src/rmf_traffic/agv/SimpleNegotiator.cpp
-@@ -419,8 +419,8 @@ void SimpleNegotiator::respond(
- 
+@@ -35,6 +35,7 @@ class SimpleNegotiator::Options::Implementation
+ {
+ public:
+
++  std::shared_ptr<SearchDiagnostics> diagnostics;
+   ApprovalCallback approval_cb;
+   std::shared_ptr<const bool> interrupt_flag;
+   std::optional<double> maximum_cost_leeway;
+@@ -59,6 +60,7 @@ SimpleNegotiator::Options::Options(
+   Duration min_hold_time)
+ : _pimpl(rmf_utils::make_impl<Implementation>(
+       Implementation{
++        nullptr,
+         std::move(approval_cb),
+         std::move(interrupt_flag),
+         maximum_cost_leeway,
+@@ -69,6 +71,16 @@ SimpleNegotiator::Options::Options(
+   // Do nothing
+ }
+
++auto SimpleNegotiator::Options::diagnostics(std::shared_ptr<SearchDiagnostics> value) -> Options&
++{
++  _pimpl->diagnostics = std::move(value);
++  return *this;
++}
++std::shared_ptr<SearchDiagnostics> SimpleNegotiator::Options::diagnostics() const
++{
++  return _pimpl->diagnostics;
++}
++
+ //==============================================================================
+ auto SimpleNegotiator::Options::approval_callback(
+   ApprovalCallback approval_cb) -> Options&
+@@ -384,6 +396,18 @@ void SimpleNegotiator::respond(
+   const schedule::Negotiation::Table::ViewerPtr& table_viewer,
+   const ResponderPtr& responder)
+ {
++  const auto diagnostics = _pimpl->negotiator_options.diagnostics();
++  using DiagnosticClock = std::chrono::steady_clock;
++  const auto respond_started = DiagnosticClock::now();
++  // Scope guard accounts for all submit/reject/forfeit returns.
++  const auto respond_timer = std::shared_ptr<void>(nullptr, [=](void*) {
++    if (diagnostics)
++    {
++      ++diagnostics->respond_calls;
++      diagnostics->respond_seconds += std::chrono::duration<double>(
++        DiagnosticClock::now() - respond_started).count();
++    }
++  });
+   const auto& profile =
+     _pimpl->planner->get_configuration().vehicle_traits().profile();
+   NegotiatingRouteValidator::Generator rv_generator(table_viewer, profile);
+@@ -419,8 +443,8 @@ void SimpleNegotiator::respond(
+
    AlternativesTracker tracker(rv_generator.alternative_sets());
- 
+
 -  const auto interrupt_flag = _pimpl->planner_options.interrupt_flag();
 -  while (!validators.empty() && !(interrupt_flag && *interrupt_flag))
 +  const auto interrupter = _pimpl->planner_options.interrupter();
@@ -30,9 +164,63 @@ index 7657152..676ae87 100644
    {
      const auto validator = std::move(validators.front());
      validators.pop_front();
-@@ -578,7 +578,8 @@ void SimpleNegotiator::respond(
+@@ -453,7 +477,24 @@ void SimpleNegotiator::respond(
      }
- 
+
+     options.validator(validator);
++    const auto plan_started = DiagnosticClock::now();
+     auto plan = _pimpl->planner->setup(_pimpl->starts, _pimpl->goal, options);
++    if (!plan.ideal_cost())
++    {
++      if (diagnostics)
++      {
++        ++diagnostics->plan_calls;
++        ++diagnostics->no_route_plans;
++        SearchDiagnostics::Event event;
++        event.phase = "plan"; event.outcome = "NO_ROUTE";
++        event.participant = table_viewer->sequence().back().participant;
++        event.goal = _pimpl->goal.waypoint();
++        event.elapsed_seconds = std::chrono::duration<double>(DiagnosticClock::now()-plan_started).count();
++        diagnostics->plan_seconds += event.elapsed_seconds;
++        diagnostics->record(std::move(event));
++      }
++      continue;
++    }
+     const double initial_cost_estimate = *plan.cost_estimate();
+     if (_pimpl->debug_print)
+     {
+@@ -488,6 +529,28 @@ void SimpleNegotiator::respond(
+     plan.options().maximum_cost_estimate(cost_limit);
+
+     plan.resume();
++    if (diagnostics)
++    {
++      ++diagnostics->plan_calls;
++      SearchDiagnostics::Event event;
++      event.phase = "plan";
++      event.participant = table_viewer->sequence().back().participant;
++      event.goal = _pimpl->goal.waypoint();
++      event.elapsed_seconds = std::chrono::duration<double>(DiagnosticClock::now()-plan_started).count();
++      diagnostics->plan_seconds += event.elapsed_seconds;
++      event.cost_estimate = plan.cost_estimate(); event.cost_limit = cost_limit;
++      if (plan) event.outcome = "SUCCESS";
++      else if (plan.interrupted()) { event.outcome = "INTERRUPTED"; ++diagnostics->interrupted_plans; }
++      else if (plan.saturated()) { event.outcome = "SATURATED"; ++diagnostics->saturated_plans; }
++      else if (cost_limit && plan.cost_estimate() && *plan.cost_estimate() > *cost_limit)
++      { event.outcome = "COST_LIMIT"; ++diagnostics->cost_limited_plans; }
++      else event.outcome = "NO_PROPOSAL";
++      if (plan)
++        for (const auto& route : plan->get_itinerary())
++          if (!route.trajectory().empty() && event.candidate_endpoints.size() < 16)
++            event.candidate_endpoints.push_back(route.trajectory().back().position());
++      diagnostics->record(std::move(event));
++    }
+
+     if (plan)
+     {
+@@ -578,16 +641,36 @@ void SimpleNegotiator::respond(
+     }
+
      validator->mask(parent_id);
 -    options.interrupt_flag(nullptr);
 +    // Keep the caller deadline/cancellation during potentially expensive rollouts.
@@ -40,12 +228,79 @@ index 7657152..676ae87 100644
      options.validator(validator);
      const auto old_holding_time = options.minimum_holding_time();
      options.minimum_holding_time(std::chrono::seconds(5));
-@@ -614,7 +615,7 @@ void SimpleNegotiator::respond(
+
+     Rollout rollout(plan);
+     // TODO(MXG): Make the span configurable
++    const auto rollout_started = DiagnosticClock::now();
+     alternatives = rollout.expand(
+       parent_id, std::chrono::seconds(15), options, max_alts);
+
++    if (diagnostics)
++    {
++      ++diagnostics->rollout_calls;
++      diagnostics->rollout_alternatives += alternatives->size();
++      SearchDiagnostics::Event event;
++      event.phase = "rollout";
++      event.participant = table_viewer->sequence().back().participant;
++      event.goal = _pimpl->goal.waypoint();
++      event.count = alternatives->size();
++      event.outcome = (interrupter && interrupter()) ? "INTERRUPTED" : "RETURNED";
++      event.elapsed_seconds = std::chrono::duration<double>(DiagnosticClock::now()-rollout_started).count();
++      diagnostics->rollout_seconds += event.elapsed_seconds;
++      for (const auto& itinerary : *alternatives)
++        for (const auto& route : itinerary)
++          if (!route.trajectory().empty() && event.candidate_endpoints.size() < 16)
++            event.candidate_endpoints.push_back(route.trajectory().back().position());
++      diagnostics->record(std::move(event));
++    }
+     if (alternatives->empty())
+     {
+       alternatives = rmf_utils::nullopt;
+@@ -614,7 +697,7 @@ void SimpleNegotiator::respond(
        }
      }
- 
+
 -    options.interrupt_flag(interrupt_flag);
 +    options.interrupter(interrupter);
      options.minimum_holding_time(old_holding_time);
    }
- 
+
+diff --git a/rmf_traffic/include/rmf_traffic/agv/SearchDiagnostics.hpp b/rmf_traffic/include/rmf_traffic/agv/SearchDiagnostics.hpp
+new file mode 100644
+--- /dev/null
++++ b/rmf_traffic/include/rmf_traffic/agv/SearchDiagnostics.hpp
+@@ -0,0 +1,34 @@
++#ifndef RMF_TRAFFIC__AGV__SEARCHDIAGNOSTICS_HPP
++#define RMF_TRAFFIC__AGV__SEARCHDIAGNOSTICS_HPP
++#include <rmf_traffic/agv/Planner.hpp>
++#include <chrono>
++#include <string>
++#include <vector>
++namespace rmf_traffic { namespace agv {
++/// Optional, per-solve observer. Use only on the synchronous solve thread.
++/// Counts all calls; stores bounded samples, never changes search decisions.
++struct SearchDiagnostics
++{
++  struct Event
++  {
++    std::string phase, outcome;
++    std::size_t participant = 0, goal = 0, count = 0;
++    double elapsed_seconds = 0;
++    std::optional<double> cost_estimate, cost_limit;
++    std::vector<Eigen::Vector3d> candidate_endpoints;
++  };
++  static constexpr std::size_t event_limit = 256;
++  std::size_t tables_selected = 0, tables_skipped = 0, respond_calls = 0,
++    plan_calls = 0, rollout_calls = 0, rollout_alternatives = 0,
++    interrupted_plans = 0, saturated_plans = 0, cost_limited_plans = 0,
++    no_route_plans = 0, events_dropped = 0;
++  double respond_seconds = 0, plan_seconds = 0, rollout_seconds = 0;
++  std::vector<Event> events;
++  void record(Event event)
++  {
++    if (events.size() < event_limit) events.push_back(std::move(event));
++    else ++events_dropped;
++  }
++};
++} }
++#endif

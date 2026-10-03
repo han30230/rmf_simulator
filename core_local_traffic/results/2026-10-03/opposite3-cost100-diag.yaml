@@ -1,0 +1,235 @@
+schema_version: 1
+backend: rmf_traffic::agv::CentralizedNegotiation
+solve_seconds: &1 10.103890969
+logs:
+  - Selected table [ 0:0 ]
+  - "Submitted plan:\nL1: t: 692.152, ( 6.833 92.871), yaw: 0 -> t: 760.38, (73.7274 92.8248), yaw: -0.00649287"
+  - Selected table [ 0:1 1:0 ]
+  - Rejected parent
+  - Selected table [ 0:1 2:0 ]
+  - Skipping
+  - Selected table [ 1:0 ]
+  - "Submitted plan:\nL1: t: 692.152, (73.7274 92.8248), yaw: 3.14159 -> t: 760.38, ( 6.833 92.871), yaw: 3.14159"
+  - Selected table [ 1:1 0:0 ]
+  - Rejected parent
+  - Selected table [ 1:1 2:0 ]
+  - Skipping
+  - Selected table [ 2:0 ]
+  - "Submitted plan:\nL1: t: 692.152, (     80 92.8248), yaw: 3.14159 -> t: 760.985, (  12.5 92.871), yaw: 3.14159"
+  - Selected table [ 2:1 0:0 ]
+  - Forfeited
+diagnostics:
+  elapsed_seconds: *1
+  event_limit: 256
+  endpoint_limit_per_event: 16
+  limits:
+    solve_seconds: 10
+    node_limit: 100000
+    cost_leeway: 100
+    extra_cost: 120
+    tail_seconds: 60
+    maximum_alternatives: 100
+  tables_selected: 8
+  tables_skipped: 2
+  respond_calls: 6
+  respond_seconds: 10.103129251
+  plan_calls: 6
+  plan_seconds: 9.9451282279999997
+  rollout_calls: 3
+  rollout_seconds: 0.013946742000000002
+  rollout_alternatives: 200
+  interrupted_plans: 1
+  saturated_plans: 0
+  cost_limited_plans: 2
+  no_route_plans: 0
+  events_dropped: 0
+  events:
+    - phase: plan
+      outcome: SUCCESS
+      participant: 0
+      goal_waypoint: 7
+      elapsed_seconds: 0.00081369999999999999
+      count: 0
+      cost_estimate: 69.227749286999995
+      cost_limit: 6822.7749286999997
+      candidate_endpoints:
+        - x: 73.727400000000003
+          y: 92.824799999999996
+          yaw: -0.0064928676919468889
+    - phase: plan
+      outcome: COST_LIMIT
+      participant: 1
+      goal_waypoint: 0
+      elapsed_seconds: 2.8308900939999999
+      count: 0
+      cost_estimate: 6823.3304889129995
+      cost_limit: 6822.7749286999997
+      candidate_endpoints:
+        []
+    - phase: rollout
+      outcome: RETURNED
+      participant: 1
+      goal_waypoint: 0
+      elapsed_seconds: 0.0039946360000000002
+      count: 100
+      candidate_endpoints:
+        - x: 0
+          y: 92.870999999999995
+          yaw: 3.1415926535897931
+        - x: 42.508000000000003
+          y: 92.870999999999995
+          yaw: 3.1415926535897931
+        - x: 80
+          y: 92.824799999999996
+          yaw: 0
+        - x: 6.8329999999999984
+          y: 92.870999999999995
+          yaw: 3.1415926535897931
+        - x: 0
+          y: 92.870999999999995
+          yaw: 3.1415926535897931
+        - x: 6.8329999999999984
+          y: 92.870999999999995
+          yaw: 3.1415926535897931
+        - x: 12.5
+          y: 92.870999999999995
+          yaw: 3.1415926535897931
+        - x: 18.460000000000001
+          y: 92.870999999999995
+          yaw: 3.1415926535897931
+        - x: 30.423999999999999
+          y: 92.870999999999995
+          yaw: 3.1415926535897931
+        - x: 42.508000000000003
+          y: 92.870999999999995
+          yaw: 3.1415926535897931
+        - x: 42.508000000000003
+          y: 92.870999999999995
+          yaw: 3.1415926535897931
+        - x: 6.8329999999999984
+          y: 92.870999999999995
+          yaw: 3.1415926535897931
+        - x: 12.5
+          y: 92.870999999999995
+          yaw: 3.1415926535897931
+        - x: 18.460000000000001
+          y: 92.870999999999995
+          yaw: 3.1415926535897931
+        - x: 30.423999999999999
+          y: 92.870999999999995
+          yaw: 3.1415926535897931
+        - x: 42.508000000000003
+          y: 92.870999999999995
+          yaw: 3.1415926535897931
+    - phase: plan
+      outcome: SUCCESS
+      participant: 1
+      goal_waypoint: 0
+      elapsed_seconds: 0.00018973699999999999
+      count: 0
+      cost_estimate: 69.227749286999995
+      cost_limit: 6822.7749286999997
+      candidate_endpoints:
+        - x: 6.8329999999999984
+          y: 92.870999999999995
+          yaw: 3.1415926535897931
+    - phase: plan
+      outcome: COST_LIMIT
+      participant: 0
+      goal_waypoint: 7
+      elapsed_seconds: 3.8202037770000001
+      count: 0
+      cost_estimate: 6822.8143899839997
+      cost_limit: 6822.7749286999997
+      candidate_endpoints:
+        []
+    - phase: rollout
+      outcome: RETURNED
+      participant: 0
+      goal_waypoint: 7
+      elapsed_seconds: 0.0060516420000000003
+      count: 100
+      candidate_endpoints:
+        - x: 80
+          y: 92.824799999999996
+          yaw: 0
+        - x: 80
+          y: 92.824799999999996
+          yaw: 0
+        - x: 0
+          y: 92.870999999999995
+          yaw: 3.1415926535897931
+        - x: 30.423999999999999
+          y: 92.870999999999995
+          yaw: 0
+        - x: 42.508000000000003
+          y: 92.870999999999995
+          yaw: 0
+        - x: 66.611999999999995
+          y: 92.870999999999995
+          yaw: 0
+        - x: 30.423999999999999
+          y: 92.870999999999995
+          yaw: 0
+        - x: 54.817999999999998
+          y: 92.870999999999995
+          yaw: 0
+        - x: 80
+          y: 92.824799999999996
+          yaw: 0
+        - x: 73.727400000000003
+          y: 92.824799999999996
+          yaw: -0.0064928676919468889
+        - x: 0
+          y: 92.870999999999995
+          yaw: 3.1415926535897931
+        - x: 30.423999999999999
+          y: 92.870999999999995
+          yaw: 0
+        - x: 42.508000000000003
+          y: 92.870999999999995
+          yaw: 0
+        - x: 73.727400000000003
+          y: 92.824799999999996
+          yaw: -0.0064928676919468889
+        - x: 66.611999999999995
+          y: 92.870999999999995
+          yaw: 0
+        - x: 54.817999999999998
+          y: 92.870999999999995
+          yaw: 0
+    - phase: plan
+      outcome: SUCCESS
+      participant: 2
+      goal_waypoint: 1
+      elapsed_seconds: 0.000599921
+      count: 0
+      cost_estimate: 69.833349143000007
+      cost_limit: 6883.3349143000005
+      candidate_endpoints:
+        - x: 12.5
+          y: 92.870999999999995
+          yaw: 3.1415926535897931
+    - phase: plan
+      outcome: INTERRUPTED
+      participant: 0
+      goal_waypoint: 7
+      elapsed_seconds: 3.292430999
+      count: 0
+      cost_estimate: 3771.1375700170001
+      cost_limit: 6822.7749286999997
+      candidate_endpoints:
+        []
+    - phase: rollout
+      outcome: INTERRUPTED
+      participant: 0
+      goal_waypoint: 7
+      elapsed_seconds: 0.0039004640000000002
+      count: 0
+      candidate_endpoints:
+        []
+  termination_reason: TIMEOUT
+loaded_rmf_traffic_library: /home/han30230/rmf-local-lab-20261003/install/lib/librmf_traffic.so
+blockers:
+  []
+status: TIMEOUT

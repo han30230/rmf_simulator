@@ -50,6 +50,37 @@ class CoreEvaluatorTests(unittest.TestCase):
         self.assertEqual(r['status'], 'TIMEOUT')
         self.assertLess(r['solve_seconds'], 12.0)
 
+    def test_timeout_has_bounded_search_diagnostics_not_impossibility(self):
+        r = self.solve([dict(name='a', start='2101', goal='2108'),
+                        dict(name='b', start='2108', goal='2101', yaw=3.141592653589793),
+                        dict(name='c', start='PARK_E', goal='2102', yaw=3.141592653589793)],
+                       solve_seconds=0.2, node_limit=12345, cost_leeway=7, extra_cost=99)
+        self.assertEqual(r['status'], 'TIMEOUT')
+        self.assertIn('diagnostics', r)
+        d = r['diagnostics']
+        self.assertEqual(d['termination_reason'], 'TIMEOUT')
+        self.assertEqual(d['limits']['node_limit'], 12345)
+        self.assertEqual(d['limits']['cost_leeway'], 7)
+        self.assertEqual(d['limits']['extra_cost'], 99)
+        self.assertEqual(d['limits']['solve_seconds'], 0.2)
+        self.assertGreater(d['tables_selected'], 0)
+        self.assertGreater(d['respond_calls'], 0)
+        self.assertGreater(d['plan_calls'], 0)
+        self.assertGreater(d['rollout_calls'], 0)
+        self.assertGreaterEqual(d['elapsed_seconds'], 0.2)
+        self.assertLessEqual(len(d['events']), d['event_limit'])
+        self.assertTrue(any(e.get('candidate_endpoints') for e in d['events']))
+        self.assertNotIn('physical_impossibility: true', yaml.safe_dump(r))
+
+    def test_disconnected_goal_reports_no_route(self):
+        cfg = yaml.safe_load(MAP.read_text())
+        cfg['levels']['L1']['lanes'] = []
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml') as graph:
+            yaml.safe_dump(cfg, graph); graph.flush()
+            r = self.solve([dict(name='one', start='2101', goal='2108')], graph=graph.name)
+        self.assertEqual(r['status'], 'NO_ROUTE')
+        self.assertGreater(r['diagnostics']['no_route_plans'], 0)
+
     def test_opposite_two_uses_bay_and_keeps_original_goals(self):
         r=self.solve([dict(name='a',start='2101',goal='2108'),
                       dict(name='b',start='2108',goal='2101',yaw=3.141592653589793)])

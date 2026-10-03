@@ -1,0 +1,867 @@
+schema_version: 1
+backend: rmf_traffic::agv::CentralizedNegotiation
+solve_seconds: 10.002671948
+logs:
+- Selected table [ 0:0 ]
+- 'Submitted plan:
+
+  L1: t: 2175.76, ( 6.833 92.871), yaw: 0 -> t: 2243.99, (73.7274 92.8248), yaw: -0.00649287'
+- Selected table [ 0:1 1:0 ]
+- Rejected parent
+- Selected table [ 0:1 2:0 ]
+- Skipping
+- Selected table [ 1:0 ]
+- 'Submitted plan:
+
+  L1: t: 2175.76, (73.7274 92.8248), yaw: 3.14159 -> t: 2243.99, ( 6.833 92.871),
+  yaw: 3.14159'
+- Selected table [ 1:1 0:0 ]
+- Rejected parent
+- Selected table [ 1:1 2:0 ]
+- Skipping
+- Selected table [ 2:0 ]
+- 'Submitted plan:
+
+  L1: t: 2175.76, (     80 92.8248), yaw: 3.14159 -> t: 2244.59, (  12.5 92.871),
+  yaw: 3.14159'
+- Selected table [ 2:1 0:0 ]
+- Rejected parent
+- Selected table [ 2:1 1:0 ]
+- Skipping
+- Selected table [ 0:1 ]
+- 'Submitted plan:
+
+  L1: t: 2175.76, ( 6.833 92.871), yaw: 0 -> t: 2243.99, (73.7274 92.8248), yaw: -0.00649287'
+- Selected table [ 0:2 1:0 ]
+- Rejected parent
+- Selected table [ 0:2 2:0 ]
+- Skipping
+- Selected table [ 1:1 ]
+- 'Submitted plan:
+
+  L1: t: 2175.76, (73.7274 92.8248), yaw: 3.14159 -> t: 2208.31, (42.508 92.871),
+  yaw: 3.14159 -> t: 2211.23, (42.508 92.871), yaw: -1.5708 -> t: 2215.63, (42.508   89.8),
+  yaw: -1.5708 -> t: 2221.17, (42.508   89.8), yaw: 1.5708 -> t: 2225.57, (42.508
+  92.871), yaw: 1.5708 -> t: 2228.49, (42.508 92.871), yaw: 3.14159 -> t: 2265.5,
+  ( 6.833 92.871), yaw: 3.14159'
+- Selected table [ 1:2 0:0 ]
+- 'Submitted plan:
+
+  L1: t: 2175.76, ( 6.833 92.871), yaw: 0 -> t: 2177.76, ( 6.833 92.871), yaw: 0 ->
+  t: 2245.99, (73.7274 92.8248), yaw: -0.00649287'
+- Selected table [ 1:2 0:1 2:0 ]
+- Rejected parent
+- Selected table [ 1:2 2:0 ]
+- 'Submitted plan:
+
+  L1: t: 2175.76, (     80 92.8248), yaw: 3.14159 -> t: 2176.76, (     80 92.8248),
+  yaw: 3.14159 -> t: 2245.59, (  12.5 92.871), yaw: 3.14159'
+- Selected table [ 1:2 2:1 0:0 ]
+- Rejected parent
+- Selected table [ 2:1 ]
+- 'Submitted plan:
+
+  L1: t: 2175.76, (     80 92.8248), yaw: 3.14159 -> t: 2244.59, (  12.5 92.871),
+  yaw: 3.14159'
+- Selected table [ 2:2 0:0 ]
+- Rejected parent
+- Selected table [ 2:2 1:0 ]
+- Skipping
+- Selected table [ 0:2 ]
+- 'Submitted plan:
+
+  L1: t: 2175.76, ( 6.833 92.871), yaw: 0 -> t: 2243.99, (73.7274 92.8248), yaw: -0.00649287'
+- Selected table [ 0:3 1:0 ]
+- Rejected parent
+- Selected table [ 0:3 2:0 ]
+- Skipping
+- Selected table [ 1:2 0:1 ]
+- 'Submitted plan:
+
+  L1: t: 2175.76, ( 6.833 92.871), yaw: 0 -> t: 2177.76, ( 6.833 92.871), yaw: 0 ->
+  t: 2245.99, (73.7274 92.8248), yaw: -0.00649287'
+- Selected table [ 1:2 0:2 2:0 ]
+- Rejected parent
+- Selected table [ 1:2 2:1 ]
+- Rejected parent
+diagnostics:
+  elapsed_seconds: 10.002671948
+  event_limit: 256
+  endpoint_limit_per_event: 16
+  limits:
+    solve_seconds: 10
+    node_limit: 100000
+    cost_leeway: 10
+    extra_cost: 120
+    tail_seconds: 60
+    maximum_alternatives: 100
+  tables_selected: 26
+  tables_skipped: 6
+  respond_calls: 20
+  respond_seconds: 9.999875857000001
+  plan_calls: 32
+  plan_seconds: 9.884111637999998
+  rollout_calls: 10
+  rollout_seconds: 0.029115525999999996
+  rollout_alternatives: 703
+  interrupted_plans: 1
+  saturated_plans: 0
+  cost_limited_plans: 16
+  no_route_plans: 0
+  events_dropped: 0
+  events:
+  - phase: plan
+    outcome: SUCCESS
+    participant: 0
+    goal_waypoint: 7
+    elapsed_seconds: 0.000668876
+    count: 0
+    cost_estimate: 69.227749287
+    cost_limit: 682.27749287
+    candidate_endpoints:
+    - x: 73.7274
+      y: 92.8248
+      yaw: -0.006492867691946889
+  - phase: plan
+    outcome: COST_LIMIT
+    participant: 1
+    goal_waypoint: 0
+    elapsed_seconds: 0.250408539
+    count: 0
+    cost_estimate: 682.3304889130001
+    cost_limit: 682.27749287
+    candidate_endpoints: []
+  - phase: rollout
+    outcome: RETURNED
+    participant: 1
+    goal_waypoint: 0
+    elapsed_seconds: 0.002635348
+    count: 100
+    candidate_endpoints:
+    - x: 0
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 42.508
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 80
+      y: 92.8248
+      yaw: 0
+    - x: 6.832999999999998
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 0
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 6.832999999999998
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 12.5
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 18.46
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 30.424
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 42.508
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 42.508
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 6.832999999999998
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 12.5
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 18.46
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 30.424
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 42.508
+      y: 92.871
+      yaw: 3.141592653589793
+  - phase: plan
+    outcome: SUCCESS
+    participant: 1
+    goal_waypoint: 0
+    elapsed_seconds: 0.000146154
+    count: 0
+    cost_estimate: 69.227749287
+    cost_limit: 682.27749287
+    candidate_endpoints:
+    - x: 6.832999999999998
+      y: 92.871
+      yaw: 3.141592653589793
+  - phase: plan
+    outcome: COST_LIMIT
+    participant: 0
+    goal_waypoint: 7
+    elapsed_seconds: 0.327483544
+    count: 0
+    cost_estimate: 682.8143899840001
+    cost_limit: 682.27749287
+    candidate_endpoints: []
+  - phase: rollout
+    outcome: RETURNED
+    participant: 0
+    goal_waypoint: 7
+    elapsed_seconds: 0.002340565
+    count: 100
+    candidate_endpoints:
+    - x: 80
+      y: 92.8248
+      yaw: 0
+    - x: 80
+      y: 92.8248
+      yaw: 0
+    - x: 0
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 30.424
+      y: 92.871
+      yaw: 0
+    - x: 42.508
+      y: 92.871
+      yaw: 0
+    - x: 66.612
+      y: 92.871
+      yaw: 0
+    - x: 30.424
+      y: 92.871
+      yaw: 0
+    - x: 54.818
+      y: 92.871
+      yaw: 0
+    - x: 80
+      y: 92.8248
+      yaw: 0
+    - x: 73.7274
+      y: 92.8248
+      yaw: -0.006492867691946889
+    - x: 0
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 30.424
+      y: 92.871
+      yaw: 0
+    - x: 42.508
+      y: 92.871
+      yaw: 0
+    - x: 73.7274
+      y: 92.8248
+      yaw: -0.006492867691946889
+    - x: 66.612
+      y: 92.871
+      yaw: 0
+    - x: 54.818
+      y: 92.871
+      yaw: 0
+  - phase: plan
+    outcome: SUCCESS
+    participant: 2
+    goal_waypoint: 1
+    elapsed_seconds: 0.0004864
+    count: 0
+    cost_estimate: 69.833349143
+    cost_limit: 688.3334914300001
+    candidate_endpoints:
+    - x: 12.5
+      y: 92.871
+      yaw: 3.141592653589793
+  - phase: plan
+    outcome: COST_LIMIT
+    participant: 0
+    goal_waypoint: 7
+    elapsed_seconds: 0.487088063
+    count: 0
+    cost_estimate: 682.299056651
+    cost_limit: 682.27749287
+    candidate_endpoints: []
+  - phase: rollout
+    outcome: RETURNED
+    participant: 0
+    goal_waypoint: 7
+    elapsed_seconds: 0.002795857
+    count: 100
+    candidate_endpoints:
+    - x: 80
+      y: 92.8248
+      yaw: 0
+    - x: 80
+      y: 92.8248
+      yaw: 0
+    - x: 0
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 80
+      y: 92.8248
+      yaw: 0
+    - x: 0
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 30.424
+      y: 92.871
+      yaw: 0
+    - x: 54.818
+      y: 92.871
+      yaw: 0
+    - x: 42.508
+      y: 92.871
+      yaw: 0
+    - x: 66.612
+      y: 92.871
+      yaw: 0
+    - x: 30.424
+      y: 92.871
+      yaw: 0
+    - x: 66.612
+      y: 92.871
+      yaw: 0
+    - x: 42.508
+      y: 92.871
+      yaw: 0
+    - x: 54.818
+      y: 92.871
+      yaw: 0
+    - x: 80
+      y: 92.8248
+      yaw: 0
+    - x: 73.7274
+      y: 92.8248
+      yaw: -0.006492867691946889
+    - x: 0
+      y: 92.871
+      yaw: 3.141592653589793
+  - phase: plan
+    outcome: NO_PROPOSAL
+    participant: 0
+    goal_waypoint: 7
+    elapsed_seconds: 0.058871661
+    count: 0
+    cost_limit: 682.27749287
+    candidate_endpoints: []
+  - phase: plan
+    outcome: COST_LIMIT
+    participant: 0
+    goal_waypoint: 7
+    elapsed_seconds: 1.403643105
+    count: 0
+    cost_estimate: 682.299056651
+    cost_limit: 682.27749287
+    candidate_endpoints: []
+  - phase: plan
+    outcome: SUCCESS
+    participant: 0
+    goal_waypoint: 7
+    elapsed_seconds: 0.001243138
+    count: 0
+    cost_estimate: 69.227749287
+    cost_limit: 682.27749287
+    candidate_endpoints:
+    - x: 73.7274
+      y: 92.8248
+      yaw: -0.006492867691946889
+  - phase: plan
+    outcome: COST_LIMIT
+    participant: 1
+    goal_waypoint: 0
+    elapsed_seconds: 0.236155431
+    count: 0
+    cost_estimate: 682.3304889130001
+    cost_limit: 682.27749287
+    candidate_endpoints: []
+  - phase: rollout
+    outcome: RETURNED
+    participant: 1
+    goal_waypoint: 0
+    elapsed_seconds: 0.002418852
+    count: 100
+    candidate_endpoints:
+    - x: 0
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 42.508
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 80
+      y: 92.8248
+      yaw: 0
+    - x: 6.832999999999998
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 0
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 6.832999999999998
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 12.5
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 18.46
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 30.424
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 42.508
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 42.508
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 6.832999999999998
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 12.5
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 18.46
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 30.424
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 42.508
+      y: 92.871
+      yaw: 3.141592653589793
+  - phase: plan
+    outcome: NO_PROPOSAL
+    participant: 1
+    goal_waypoint: 0
+    elapsed_seconds: 0.042819662
+    count: 0
+    cost_limit: 682.27749287
+    candidate_endpoints: []
+  - phase: plan
+    outcome: SUCCESS
+    participant: 1
+    goal_waypoint: 0
+    elapsed_seconds: 0.015328295
+    count: 0
+    cost_estimate: 90.227749287
+    cost_limit: 682.27749287
+    candidate_endpoints:
+    - x: 6.832999999999998
+      y: 92.871
+      yaw: 3.141592653589793
+  - phase: plan
+    outcome: SUCCESS
+    participant: 0
+    goal_waypoint: 7
+    elapsed_seconds: 0.004563091
+    count: 0
+    cost_estimate: 70.561084096
+    cost_limit: 682.27749287
+    candidate_endpoints:
+    - x: 73.7274
+      y: 92.8248
+      yaw: -0.006492867691946889
+  - phase: plan
+    outcome: COST_LIMIT
+    participant: 2
+    goal_waypoint: 1
+    elapsed_seconds: 0.478095031
+    count: 0
+    cost_estimate: 688.833349143
+    cost_limit: 688.3334914300001
+    candidate_endpoints: []
+  - phase: rollout
+    outcome: RETURNED
+    participant: 2
+    goal_waypoint: 1
+    elapsed_seconds: 0.000122252
+    count: 1
+    candidate_endpoints:
+    - x: 80
+      y: 92.8248
+      yaw: 3.141592653589793
+  - phase: plan
+    outcome: SUCCESS
+    participant: 2
+    goal_waypoint: 1
+    elapsed_seconds: 0.004107459
+    count: 0
+    cost_estimate: 70.16674638
+    cost_limit: 688.3334914300001
+    candidate_endpoints:
+    - x: 12.5
+      y: 92.871
+      yaw: 3.141592653589793
+  - phase: plan
+    outcome: COST_LIMIT
+    participant: 0
+    goal_waypoint: 7
+    elapsed_seconds: 0.248954272
+    count: 0
+    cost_estimate: 682.703698827
+    cost_limit: 682.27749287
+    candidate_endpoints: []
+  - phase: rollout
+    outcome: RETURNED
+    participant: 0
+    goal_waypoint: 7
+    elapsed_seconds: 0.013421329
+    count: 100
+    candidate_endpoints:
+    - x: 73.7274
+      y: 92.8248
+      yaw: -0.006492867691946889
+    - x: 66.612
+      y: 92.871
+      yaw: 0
+    - x: 73.7274
+      y: 92.8248
+      yaw: -0.006492867691946889
+    - x: 73.7274
+      y: 92.8248
+      yaw: -0.006492867691946889
+    - x: 66.612
+      y: 92.871
+      yaw: 0
+    - x: 73.7274
+      y: 92.8248
+      yaw: -0.006492867691946889
+    - x: 66.612
+      y: 92.871
+      yaw: 0
+    - x: 66.612
+      y: 92.871
+      yaw: 0
+    - x: 73.7274
+      y: 92.8248
+      yaw: -0.006492867691946889
+    - x: 66.612
+      y: 92.871
+      yaw: 0
+    - x: 54.818
+      y: 92.871
+      yaw: 0
+    - x: 73.7274
+      y: 92.8248
+      yaw: -0.006492867691946889
+    - x: 54.818
+      y: 92.871
+      yaw: 0
+    - x: 66.612
+      y: 92.871
+      yaw: 0
+    - x: 66.612
+      y: 92.871
+      yaw: 0
+    - x: 54.818
+      y: 92.871
+      yaw: 0
+  - phase: plan
+    outcome: NO_PROPOSAL
+    participant: 2
+    goal_waypoint: 1
+    elapsed_seconds: 0.039273023
+    count: 0
+    cost_limit: 688.3334914300001
+    candidate_endpoints: []
+  - phase: plan
+    outcome: NO_PROPOSAL
+    participant: 2
+    goal_waypoint: 1
+    elapsed_seconds: 0.052093259
+    count: 0
+    cost_limit: 688.3334914300001
+    candidate_endpoints: []
+  - phase: plan
+    outcome: SUCCESS
+    participant: 2
+    goal_waypoint: 1
+    elapsed_seconds: 0.001498573
+    count: 0
+    cost_estimate: 69.833349143
+    cost_limit: 688.3334914300001
+    candidate_endpoints:
+    - x: 12.5
+      y: 92.871
+      yaw: 3.141592653589793
+  - phase: plan
+    outcome: COST_LIMIT
+    participant: 0
+    goal_waypoint: 7
+    elapsed_seconds: 0.500558449
+    count: 0
+    cost_estimate: 682.299056651
+    cost_limit: 682.27749287
+    candidate_endpoints: []
+  - phase: rollout
+    outcome: RETURNED
+    participant: 0
+    goal_waypoint: 7
+    elapsed_seconds: 0.00297403
+    count: 100
+    candidate_endpoints:
+    - x: 80
+      y: 92.8248
+      yaw: 0
+    - x: 80
+      y: 92.8248
+      yaw: 0
+    - x: 0
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 80
+      y: 92.8248
+      yaw: 0
+    - x: 0
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 30.424
+      y: 92.871
+      yaw: 0
+    - x: 54.818
+      y: 92.871
+      yaw: 0
+    - x: 42.508
+      y: 92.871
+      yaw: 0
+    - x: 66.612
+      y: 92.871
+      yaw: 0
+    - x: 30.424
+      y: 92.871
+      yaw: 0
+    - x: 66.612
+      y: 92.871
+      yaw: 0
+    - x: 42.508
+      y: 92.871
+      yaw: 0
+    - x: 54.818
+      y: 92.871
+      yaw: 0
+    - x: 80
+      y: 92.8248
+      yaw: 0
+    - x: 73.7274
+      y: 92.8248
+      yaw: -0.006492867691946889
+    - x: 0
+      y: 92.871
+      yaw: 3.141592653589793
+  - phase: plan
+    outcome: NO_PROPOSAL
+    participant: 0
+    goal_waypoint: 7
+    elapsed_seconds: 0.059925638
+    count: 0
+    cost_limit: 682.27749287
+    candidate_endpoints: []
+  - phase: plan
+    outcome: COST_LIMIT
+    participant: 0
+    goal_waypoint: 7
+    elapsed_seconds: 1.423929187
+    count: 0
+    cost_estimate: 682.299056651
+    cost_limit: 682.27749287
+    candidate_endpoints: []
+  - phase: plan
+    outcome: SUCCESS
+    participant: 0
+    goal_waypoint: 7
+    elapsed_seconds: 0.001351081
+    count: 0
+    cost_estimate: 69.227749287
+    cost_limit: 682.27749287
+    candidate_endpoints:
+    - x: 73.7274
+      y: 92.8248
+      yaw: -0.006492867691946889
+  - phase: plan
+    outcome: COST_LIMIT
+    participant: 1
+    goal_waypoint: 0
+    elapsed_seconds: 0.244820862
+    count: 0
+    cost_estimate: 682.3304889130001
+    cost_limit: 682.27749287
+    candidate_endpoints: []
+  - phase: rollout
+    outcome: RETURNED
+    participant: 1
+    goal_waypoint: 0
+    elapsed_seconds: 0.002264416
+    count: 100
+    candidate_endpoints:
+    - x: 0
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 42.508
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 80
+      y: 92.8248
+      yaw: 0
+    - x: 6.832999999999998
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 0
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 6.832999999999998
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 12.5
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 18.46
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 30.424
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 42.508
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 42.508
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 6.832999999999998
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 12.5
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 18.46
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 30.424
+      y: 92.871
+      yaw: 3.141592653589793
+    - x: 42.508
+      y: 92.871
+      yaw: 3.141592653589793
+  - phase: plan
+    outcome: SUCCESS
+    participant: 0
+    goal_waypoint: 7
+    elapsed_seconds: 0.00692596
+    count: 0
+    cost_estimate: 70.561084096
+    cost_limit: 682.27749287
+    candidate_endpoints:
+    - x: 73.7274
+      y: 92.8248
+      yaw: -0.006492867691946889
+  - phase: plan
+    outcome: COST_LIMIT
+    participant: 2
+    goal_waypoint: 1
+    elapsed_seconds: 0.46923111
+    count: 0
+    cost_estimate: 688.833349143
+    cost_limit: 688.3334914300001
+    candidate_endpoints: []
+  - phase: rollout
+    outcome: RETURNED
+    participant: 2
+    goal_waypoint: 1
+    elapsed_seconds: 0.000117327
+    count: 1
+    candidate_endpoints:
+    - x: 80
+      y: 92.8248
+      yaw: 3.141592653589793
+  - phase: plan
+    outcome: COST_LIMIT
+    participant: 2
+    goal_waypoint: 1
+    elapsed_seconds: 0.525952392
+    count: 0
+    cost_estimate: 688.833349143
+    cost_limit: 688.3334914300001
+    candidate_endpoints: []
+  - phase: rollout
+    outcome: RETURNED
+    participant: 2
+    goal_waypoint: 1
+    elapsed_seconds: 2.555e-05
+    count: 1
+    candidate_endpoints:
+    - x: 80
+      y: 92.8248
+      yaw: 3.141592653589793
+  - phase: plan
+    outcome: COST_LIMIT
+    participant: 2
+    goal_waypoint: 1
+    elapsed_seconds: 0.695970839
+    count: 0
+    cost_estimate: 688.380070311
+    cost_limit: 688.3334914300001
+    candidate_endpoints: []
+  - phase: plan
+    outcome: COST_LIMIT
+    participant: 2
+    goal_waypoint: 1
+    elapsed_seconds: 0.579146783
+    count: 0
+    cost_estimate: 688.833349143
+    cost_limit: 688.3334914300001
+    candidate_endpoints: []
+  - phase: plan
+    outcome: COST_LIMIT
+    participant: 2
+    goal_waypoint: 1
+    elapsed_seconds: 0.533903094
+    count: 0
+    cost_estimate: 688.833349143
+    cost_limit: 688.3334914300001
+    candidate_endpoints: []
+  - phase: plan
+    outcome: COST_LIMIT
+    participant: 2
+    goal_waypoint: 1
+    elapsed_seconds: 0.687795454
+    count: 0
+    cost_estimate: 688.380070311
+    cost_limit: 688.3334914300001
+    candidate_endpoints: []
+  - phase: plan
+    outcome: INTERRUPTED
+    participant: 2
+    goal_waypoint: 1
+    elapsed_seconds: 0.501673213
+    count: 0
+    cost_estimate: 642.936076079
+    cost_limit: 688.3334914300001
+    candidate_endpoints: []
+  termination_reason: TIMEOUT
+loaded_rmf_traffic_library: /home/han30230/rmf-local-lab-20261003/install/lib/librmf_traffic.so
+blockers: []
+status: TIMEOUT
+wall_seconds: 10.049932731999888
+provenance:
+  binary:
+    path: /home/han30230/rmf-local-lab-20261003/build/evaluator/local_traffic_evaluator
+    sha256: 84e92b62e77a11978db6046537bdf408b8a4460f8ccac65057248c5fa57eeda9
+  graph:
+    path: /home/han30230/rmf-work/rmf_passing_bay_poc/rmf_platform-main/src/rmf_vda5050_fleet_adapter/map/p4_local_traffic.yaml
+    sha256: 08aa05fdd43917b08c66674f3d1b291268790079c394d6b062ade5aaea7de1b0
+  scenario:
+    path: /home/han30230/rmf-work/rmf_passing_bay_poc/core_local_traffic/scenarios/opposite_3.yaml
+    sha256: dc94889d715e8b9aacd060b3b376effcbc064e5386d20ae5c678806a010b03b3
+  rmf_traffic_library:
+    path: /home/han30230/rmf-local-lab-20261003/install/lib/librmf_traffic.so
+    sha256: 5ca5ddd130bef8e21b4254f327829173a4e9ab37a01709e33138874deadafcae
+    observation: evaluator_proc_maps
+limits:
+  solve_seconds: 10
+  node_limit: 100000
+  cost_leeway: 10
+  extra_cost: 120
+  tail_seconds: 60.0
+  maximum_alternatives: 100
+  hard_timeout_seconds: 15.0

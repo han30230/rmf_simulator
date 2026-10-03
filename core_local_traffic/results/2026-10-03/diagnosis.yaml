@@ -1,0 +1,70 @@
+schema_version: 1
+subject: opposite_3 TIMEOUT and reported cost-limit count
+verdict: >-
+  TIMEOUT is a bounded-search result. Cost-limited branches consume most of the
+  baseline budget, but raising cost_leeway alone does not generate the missing
+  side-bay candidate and still times out.
+baseline_repetitions:
+- file: opposite3-diag.yaml
+  status: TIMEOUT
+  solve_seconds: 10.005151905
+  tables_selected: 26
+  plan_calls: 30
+  plan_seconds: 9.858075553
+  rollout_calls: 10
+  rollout_seconds: 0.031304896
+  rollout_alternatives: 703
+  cost_limited_plans: 14
+  interrupted_plans: 1
+- file: opposite3-diag-repeat1.yaml
+  status: TIMEOUT
+  cost_limited_plans: 15
+- file: opposite3-diag-repeat2.yaml
+  status: TIMEOUT
+  cost_limited_plans: 15
+reported_17_count_interpretation: >-
+  The reported 17 is not a configured limit. It is the number of plan attempts
+  observed to stop at maximum_cost_estimate in that particular timed run. Fresh
+  identical runs observed 14, 15, and 15 because the 10-second deadline changes
+  how many negotiation branches finish before interruption.
+cost_only_control:
+  file: opposite3-cost100-diag.yaml
+  change: cost_leeway 10 -> 100; all other scenario limits unchanged
+  status: TIMEOUT
+  solve_seconds: 10.103890969
+  tables_selected: 8
+  plan_calls: 6
+  plan_seconds: 9.945128228
+  cost_limited_plans: 2
+  interrupted_plans: 1
+candidate_generation:
+  bay_waypoint:
+    name: '6137'
+    position: [42.508, 89.8]
+    seen_in_rollout_candidate_endpoints: false
+  same_x_mainline_waypoint:
+    name: '2105'
+    position: [42.508, 92.871]
+    seen_in_rollout_candidate_endpoints: true
+  conclusion: >-
+    SimpleNegotiator rollout alternatives follow the conflicting route and
+    holding points on it; the diagnostics never produced the off-route bay
+    endpoint. A larger cost ceiling searches fewer, more expensive branches
+    for longer without adding the required bay-yield/return candidate.
+runtime:
+  multi_robot_blocked:
+    result: INCOMPLETE
+    reason: AGV_B1 remained stationary on goal 2108; AGV_A1 stopped at its occupied goal.
+    evidence: runtime-blocked/
+  single_robot_replan:
+    result: COMPLETE
+    original_task: 2101 -> 2108
+    replan_effects:
+    - startPause issued while moving
+    - VDA5050 order changed from order_1 to order_3 and order_4
+    - motion resumed and reached 2108
+    - final RMF task state status was completed with completed phase [1]
+    evidence: runtime-replan-complete/
+scope:
+  actual_robot_deployment: false
+  shared_multi_robot_local_traffic_coordinator_validated: false

@@ -1,0 +1,132 @@
+schema_version: 1
+backend: rmf_traffic::agv::CentralizedNegotiation
+solve_seconds: &1 0.0010787069999999999
+logs:
+  - Selected table [ 0:0 ]
+  - "Submitted plan:\nL1: t: 2428.32, ( 6.833 92.871), yaw: 0 -> t: 2496.55, (73.7274 92.8248), yaw: -0.00649287"
+diagnostics:
+  elapsed_seconds: *1
+  event_limit: 256
+  endpoint_limit_per_event: 16
+  limits:
+    solve_seconds: 10
+    node_limit: 100000
+    cost_leeway: 10
+    extra_cost: 120
+    tail_seconds: 60
+    maximum_alternatives: 100
+  tables_selected: 1
+  tables_skipped: 0
+  respond_calls: 1
+  respond_seconds: 0.000803661
+  plan_calls: 1
+  plan_seconds: 0.00077742999999999996
+  rollout_calls: 0
+  rollout_seconds: 0
+  rollout_alternatives: 0
+  interrupted_plans: 0
+  saturated_plans: 0
+  cost_limited_plans: 0
+  no_route_plans: 0
+  events_dropped: 0
+  events:
+    - phase: plan
+      outcome: SUCCESS
+      participant: 0
+      goal_waypoint: 7
+      elapsed_seconds: 0.00077742999999999996
+      count: 0
+      cost_estimate: 69.227749286999995
+      cost_limit: 682.27749286999995
+      candidate_endpoints:
+        - x: 73.727400000000003
+          y: 92.824799999999996
+          yaw: -0.0064928676919468889
+  termination_reason: PROPOSAL
+loaded_rmf_traffic_library: /home/han30230/rmf-local-lab-20261003/install/lib/librmf_traffic.so
+blockers:
+  []
+plans:
+  - name: !<tag:yaml.org,2002:str> one
+    goal: !<tag:yaml.org,2002:str> 2108
+    finish_seconds: 68.227749286999995
+    trajectory:
+      - t: 0
+        x: 6.8330000000000002
+        y: 92.870999999999995
+        yaw: 0
+        vx: 0
+        vy: 0
+        omega: 0
+      - t: 1.3333333329999999
+        x: 7.4996665076718321
+        y: 92.870539572929047
+        yaw: -0.0064928676919468889
+        vx: 0.99999976150774783
+        vy: -0.00069064060641334485
+        omega: 0
+      - t: 6.3334312219999997
+        x: 12.5
+        y: 92.870999999999995
+        yaw: -0.0064928676919468889
+        vx: 0.99999976150883318
+        vy: -0.00069064060641409446
+        omega: 0
+      - t: 12.293866996
+        x: 18.460000000000001
+        y: 92.870999999999995
+        yaw: -0.0064928676919468889
+        vx: 0.99999976151012726
+        vy: -0.00069064060641498817
+        omega: 0
+      - t: 24.257692953999999
+        x: 30.423999999999999
+        y: 92.870999999999995
+        yaw: -0.0064928676919468889
+        vx: 0.99999976151272474
+        vy: -0.00069064060641678209
+        omega: 0
+      - t: 36.341177627
+        x: 42.508000000000003
+        y: 92.870999999999995
+        yaw: -0.0064928676919468889
+        vx: 0.9999997615153482
+        vy: -0.00069064060641859401
+        omega: 0
+      - t: 48.651707039000001
+        x: 54.817999999999998
+        y: 92.870999999999995
+        yaw: -0.0064928676919468889
+        vx: 0.99999976151802095
+        vy: -0.00069064060642043987
+        omega: 0
+      - t: 60.445760804999999
+        x: 66.611999999999995
+        y: 92.870999999999995
+        yaw: -0.0064928676919468889
+        vx: 0.99999976152058156
+        vy: -0.00069064060642220831
+        omega: 0
+      - t: 66.894415953000006
+        x: 73.060733492328168
+        y: 92.825260427070944
+        yaw: -0.0064928676919468889
+        vx: 0.99999976150774783
+        vy: -0.00069064060641334485
+        omega: 0
+      - t: 68.227749286999995
+        x: 73.727400000000003
+        y: 92.824799999999996
+        yaw: -0.0064928676919468889
+        vx: 0
+        vy: -0
+        omega: 0
+      - t: 128.22774928699999
+        x: 73.727400000000003
+        y: 92.824799999999996
+        yaw: -0.0064928676919468889
+        vx: 0
+        vy: 0
+        omega: 0
+horizon_seconds: 128.22774928699999
+status: VALID

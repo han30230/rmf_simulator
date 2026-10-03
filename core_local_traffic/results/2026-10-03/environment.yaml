@@ -1,0 +1,37 @@
+date: '2026-10-03'
+host:
+  os: Ubuntu 24.04.4 LTS
+  kernel: 6.18.40.1-microsoft-standard-WSL2
+  compiler: gcc 13.3.0
+  cmake: 3.28.3
+  python: 3.12.3
+  host_ros: unavailable
+docker:
+  client: 29.0.1
+  server: 29.0.1
+  image: rmf-core:latest
+  image_id: sha256:f93e1c74f5747e9a10740730f9fca9aa43cce31e5528a8bc603bed66b5ce3d63
+  entrypoint: /ros_entrypoint.sh
+  image_libraries:
+    rmf_traffic:
+      path: /rmf_demos_ws/install/rmf_traffic/lib/librmf_traffic.so
+      sha256: 5c6be3054c0ca4c70b04fe9b8b410b4f6c7a961c5a5deb277d68d033ed780500
+    rmf_fleet_adapter:
+      path: /rmf_demos_ws/install/rmf_fleet_adapter/lib/librmf_fleet_adapter.so
+      sha256: 4fcdfdcf78b20b5fd17b7ed4ace5bdc7ebb96fabf7b25a48af3f20cd164eb689
+standalone_build:
+  workspace: /home/han30230/rmf-local-lab-20261003
+  source_commits:
+    rmf_utils: 0887bd19828a638d5e83b5ad0c272beada770f9a
+    rmf_traffic: ab881a6e841b235a0b58b9acc87dae8549614676
+    rmf_ros2: 02da9198b246980bbfd6d9fbc86685dfa2212bd6
+  artifacts:
+    evaluator:
+      path: /home/han30230/rmf-local-lab-20261003/build/evaluator/local_traffic_evaluator
+      sha256: 84e92b62e77a11978db6046537bdf408b8a4460f8ccac65057248c5fa57eeda9
+    rmf_traffic:
+      path: /home/han30230/rmf-local-lab-20261003/install/lib/librmf_traffic.so
+      sha256: 5ca5ddd130bef8e21b4254f327829173a4e9ab37a01709e33138874deadafcae
+  patch_sha256:
+    rmf_traffic: ad24d5caae5229ef666f7e092a2df8b3d77f07f8fea96b5b9cb8a8dbfaed5a71
+    rmf_ros2: 8371fea277ff35f7b0f125097509f65936a2eada381ff30ab2b17be28675f710

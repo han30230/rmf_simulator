@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <iostream>
+#include <fstream>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -144,14 +145,72 @@ int main(int argc, char** argv)
     }
     require(!agents.empty(), "at least one movable agent is required");
     agv::CentralizedNegotiation negotiation{db};
+    auto diagnostics = std::make_shared<agv::SearchDiagnostics>();
+    negotiation.diagnostics(diagnostics);
     negotiation.log(true);
     auto result = negotiation.solve(agents);
     out["solve_seconds"] = elapsed(Clock::now(), t0);
     out["logs"] = result.log();
+    auto d = out["diagnostics"];
+    d["elapsed_seconds"] = out["solve_seconds"];
+    d["event_limit"] = agv::SearchDiagnostics::event_limit;
+    d["endpoint_limit_per_event"] = 16;
+    auto limits = d["limits"];
+    limits["solve_seconds"] = budget;
+    limits["node_limit"] = static_cast<std::size_t>(node_limit);
+    limits["cost_leeway"] = cost_leeway;
+    limits["extra_cost"] = extra_cost;
+    limits["tail_seconds"] = tail;
+    limits["maximum_alternatives"] = 100;
+    // The loaded mapping is observed in this evaluator process, not inferred
+    // from the build directory or an install prefix.
+    std::ifstream mappings("/proc/self/maps");
+    std::string mapping;
+    while (std::getline(mappings, mapping))
+      if (mapping.find("librmf_traffic.so") != std::string::npos)
+      {
+        const auto slash = mapping.find('/');
+        if (slash != std::string::npos) out["loaded_rmf_traffic_library"] = mapping.substr(slash);
+        break;
+      }
+#define DIAGNOSTIC_FIELD(name) d[#name] = diagnostics->name
+    DIAGNOSTIC_FIELD(tables_selected); DIAGNOSTIC_FIELD(tables_skipped);
+    DIAGNOSTIC_FIELD(respond_calls); DIAGNOSTIC_FIELD(respond_seconds);
+    DIAGNOSTIC_FIELD(plan_calls); DIAGNOSTIC_FIELD(plan_seconds);
+    DIAGNOSTIC_FIELD(rollout_calls); DIAGNOSTIC_FIELD(rollout_seconds);
+    DIAGNOSTIC_FIELD(rollout_alternatives); DIAGNOSTIC_FIELD(interrupted_plans);
+    DIAGNOSTIC_FIELD(saturated_plans); DIAGNOSTIC_FIELD(cost_limited_plans);
+    DIAGNOSTIC_FIELD(no_route_plans); DIAGNOSTIC_FIELD(events_dropped);
+#undef DIAGNOSTIC_FIELD
+    d["events"] = YAML::Node(YAML::NodeType::Sequence);
+    for (const auto& event : diagnostics->events)
+    {
+      YAML::Node e;
+      e["phase"] = event.phase; e["outcome"] = event.outcome;
+      e["participant"] = event.participant; e["goal_waypoint"] = event.goal;
+      e["elapsed_seconds"] = event.elapsed_seconds; e["count"] = event.count;
+      if (event.cost_estimate) e["cost_estimate"] = *event.cost_estimate;
+      if (event.cost_limit) e["cost_limit"] = *event.cost_limit;
+      e["candidate_endpoints"] = YAML::Node(YAML::NodeType::Sequence);
+      for (const auto& endpoint : event.candidate_endpoints)
+      {
+        YAML::Node point;
+        point["x"] = endpoint.x(); point["y"] = endpoint.y(); point["yaw"] = endpoint.z();
+        e["candidate_endpoints"].push_back(point);
+      }
+      d["events"].push_back(e);
+    }
+    // These are observed stopping conditions, never proofs of physical impossibility.
+    const std::string termination = Clock::now() >= deadline ? "TIMEOUT"
+      : result.proposal() ? "PROPOSAL"
+      : diagnostics->saturated_plans ? "SATURATED"
+      : diagnostics->cost_limited_plans ? "COST_LIMIT"
+      : diagnostics->no_route_plans ? "NO_ROUTE" : "NO_PROPOSAL";
+    d["termination_reason"] = termination;
     out["blockers"] = std::vector<rt::schedule::ParticipantId>(result.blockers().begin(), result.blockers().end());
     if (!result.proposal())
     {
-      out["status"] = Clock::now() >= deadline ? "TIMEOUT" : "NO_PROPOSAL";
+      out["status"] = termination;
       emit(out); return 0;
     }
     if (Clock::now() >= deadline)
