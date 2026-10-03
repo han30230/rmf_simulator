@@ -5,6 +5,7 @@
 #include <rmf_traffic/schedule/Database.hpp>
 #include <rmf_traffic/schedule/Participant.hpp>
 #include <yaml-cpp/yaml.h>
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <iostream>
@@ -155,6 +156,8 @@ int main(int argc, char** argv)
     d["elapsed_seconds"] = out["solve_seconds"];
     d["event_limit"] = agv::SearchDiagnostics::event_limit;
     d["endpoint_limit_per_event"] = 16;
+    d["candidate_limit_per_event"] = agv::SearchDiagnostics::candidate_limit;
+    d["candidate_point_limit"] = agv::SearchDiagnostics::candidate_point_limit;
     auto limits = d["limits"];
     limits["solve_seconds"] = budget;
     limits["node_limit"] = static_cast<std::size_t>(node_limit);
@@ -191,6 +194,9 @@ int main(int argc, char** argv)
       e["elapsed_seconds"] = event.elapsed_seconds; e["count"] = event.count;
       if (event.cost_estimate) e["cost_estimate"] = *event.cost_estimate;
       if (event.cost_limit) e["cost_limit"] = *event.cost_limit;
+      if (event.phase == "rollout")
+        e["rollout_span_seconds"] = event.rollout_span_seconds;
+      e["candidate_points_dropped"] = event.candidate_points_dropped;
       e["candidate_endpoints"] = YAML::Node(YAML::NodeType::Sequence);
       for (const auto& endpoint : event.candidate_endpoints)
       {
@@ -198,7 +204,49 @@ int main(int argc, char** argv)
         point["x"] = endpoint.x(); point["y"] = endpoint.y(); point["yaw"] = endpoint.z();
         e["candidate_endpoints"].push_back(point);
       }
+      e["candidate_trajectories"] = YAML::Node(YAML::NodeType::Sequence);
+      for (std::size_t i = 0; i < event.candidate_trajectories.size(); ++i)
+      {
+        YAML::Node candidate;
+        candidate["duration_seconds"] = event.candidate_durations_seconds.at(i);
+        candidate["points"] = YAML::Node(YAML::NodeType::Sequence);
+        for (const auto& position : event.candidate_trajectories[i])
+        {
+          YAML::Node point;
+          point["x"] = position.x(); point["y"] = position.y(); point["yaw"] = position.z();
+          candidate["points"].push_back(point);
+        }
+        e["candidate_trajectories"].push_back(candidate);
+      }
       d["events"].push_back(e);
+    }
+    auto visit_summary = d["waypoint_candidate_visits"];
+    for (const auto& named : names)
+    {
+      const auto& waypoint = graph.get_waypoint(named.second);
+      if (!waypoint.is_holding_point() && !waypoint.is_passthrough_point())
+        continue;
+      const auto location = waypoint.get_location();
+      std::size_t endpoint_count = 0;
+      std::size_t trajectory_count = 0;
+      for (const auto& event : diagnostics->events)
+      {
+        for (const auto& endpoint : event.candidate_endpoints)
+          if ((endpoint.head<2>() - location).norm() < 1e-3)
+            ++endpoint_count;
+        for (const auto& candidate : event.candidate_trajectories)
+          if (std::any_of(candidate.begin(), candidate.end(), [&](const auto& point)
+              { return (point.template head<2>() - location).norm() < 1e-3; }))
+            ++trajectory_count;
+      }
+      YAML::Node summary;
+      summary["role"] = waypoint.is_holding_point() && waypoint.is_passthrough_point()
+        ? "holding,passthrough" : waypoint.is_holding_point() ? "holding" : "passthrough";
+      summary["endpoint_count"] = endpoint_count;
+      summary["trajectory_count"] = trajectory_count;
+      YAML::Node key(named.first);
+      key.SetTag("tag:yaml.org,2002:str");
+      visit_summary[key] = summary;
     }
     // These are observed stopping conditions, never proofs of physical impossibility.
     const std::string termination = Clock::now() >= deadline ? "TIMEOUT"

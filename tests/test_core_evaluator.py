@@ -72,6 +72,23 @@ class CoreEvaluatorTests(unittest.TestCase):
         self.assertTrue(any(e.get('candidate_endpoints') for e in d['events']))
         self.assertNotIn('physical_impossibility: true', yaml.safe_dump(r))
 
+    def test_rollout_diagnostics_distinguish_endpoints_from_full_trajectory_visits(self):
+        """Catches regressions where endpoint-only samples hide a bay visit."""
+        r = self.solve([dict(name='a', start='2101', goal='2108'),
+                        dict(name='b', start='2108', goal='2101', yaw=3.141592653589793),
+                        dict(name='c', start='PARK_E', goal='2102', yaw=3.141592653589793)],
+                       solve_seconds=0.5)
+        rollout_events = [e for e in r['diagnostics']['events']
+                          if e['phase'] == 'rollout']
+        self.assertTrue(rollout_events)
+        self.assertTrue(all('candidate_trajectories' in e for e in rollout_events))
+        self.assertTrue(all('rollout_span_seconds' in e for e in rollout_events))
+        self.assertIn('waypoint_candidate_visits', r['diagnostics'])
+        bay = r['diagnostics']['waypoint_candidate_visits']['6137']
+        self.assertEqual(bay['role'], 'holding')
+        self.assertIn('endpoint_count', bay)
+        self.assertIn('trajectory_count', bay)
+
     def test_disconnected_goal_reports_no_route(self):
         cfg = yaml.safe_load(MAP.read_text())
         cfg['levels']['L1']['lanes'] = []

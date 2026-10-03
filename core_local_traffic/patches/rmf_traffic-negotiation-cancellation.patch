@@ -98,7 +98,7 @@ index ea230dd..9b8758e 100644
          progress("Skipping");
 
 diff --git a/rmf_traffic/src/rmf_traffic/agv/SimpleNegotiator.cpp b/rmf_traffic/src/rmf_traffic/agv/SimpleNegotiator.cpp
-index 7657152..6f42186 100644
+index 7657152..95a610a 100644
 --- a/rmf_traffic/src/rmf_traffic/agv/SimpleNegotiator.cpp
 +++ b/rmf_traffic/src/rmf_traffic/agv/SimpleNegotiator.cpp
 @@ -35,6 +35,7 @@ class SimpleNegotiator::Options::Implementation
@@ -218,7 +218,7 @@ index 7657152..6f42186 100644
 
      if (plan)
      {
-@@ -578,16 +641,36 @@ void SimpleNegotiator::respond(
+@@ -578,16 +641,62 @@ void SimpleNegotiator::respond(
      }
 
      validator->mask(parent_id);
@@ -246,17 +246,43 @@ index 7657152..6f42186 100644
 +      event.count = alternatives->size();
 +      event.outcome = (interrupter && interrupter()) ? "INTERRUPTED" : "RETURNED";
 +      event.elapsed_seconds = std::chrono::duration<double>(DiagnosticClock::now()-rollout_started).count();
++      event.rollout_span_seconds = 15.0;
 +      diagnostics->rollout_seconds += event.elapsed_seconds;
 +      for (const auto& itinerary : *alternatives)
++      {
++        std::vector<Eigen::Vector3d> candidate;
++        std::optional<Time> first_time;
++        std::optional<Time> last_time;
 +        for (const auto& route : itinerary)
++        {
 +          if (!route.trajectory().empty() && event.candidate_endpoints.size() < 16)
 +            event.candidate_endpoints.push_back(route.trajectory().back().position());
++          for (const auto& waypoint : route.trajectory())
++          {
++            if (!first_time)
++              first_time = waypoint.time();
++            last_time = waypoint.time();
++            if (candidate.size() < SearchDiagnostics::candidate_point_limit)
++              candidate.push_back(waypoint.position());
++            else
++              ++event.candidate_points_dropped;
++          }
++        }
++        if (event.candidate_trajectories.size() < SearchDiagnostics::candidate_limit)
++        {
++          event.candidate_trajectories.push_back(std::move(candidate));
++          event.candidate_durations_seconds.push_back(
++            first_time && last_time
++            ? std::chrono::duration<double>(*last_time - *first_time).count()
++            : 0.0);
++        }
++      }
 +      diagnostics->record(std::move(event));
 +    }
      if (alternatives->empty())
      {
        alternatives = rmf_utils::nullopt;
-@@ -614,7 +697,7 @@ void SimpleNegotiator::respond(
+@@ -614,7 +723,7 @@ void SimpleNegotiator::respond(
        }
      }
 
@@ -267,9 +293,10 @@ index 7657152..6f42186 100644
 
 diff --git a/rmf_traffic/include/rmf_traffic/agv/SearchDiagnostics.hpp b/rmf_traffic/include/rmf_traffic/agv/SearchDiagnostics.hpp
 new file mode 100644
+index 0000000..5301331
 --- /dev/null
 +++ b/rmf_traffic/include/rmf_traffic/agv/SearchDiagnostics.hpp
-@@ -0,0 +1,34 @@
+@@ -0,0 +1,40 @@
 +#ifndef RMF_TRAFFIC__AGV__SEARCHDIAGNOSTICS_HPP
 +#define RMF_TRAFFIC__AGV__SEARCHDIAGNOSTICS_HPP
 +#include <rmf_traffic/agv/Planner.hpp>
@@ -288,8 +315,14 @@ new file mode 100644
 +    double elapsed_seconds = 0;
 +    std::optional<double> cost_estimate, cost_limit;
 +    std::vector<Eigen::Vector3d> candidate_endpoints;
++    std::vector<std::vector<Eigen::Vector3d>> candidate_trajectories;
++    std::vector<double> candidate_durations_seconds;
++    double rollout_span_seconds = 0;
++    std::size_t candidate_points_dropped = 0;
 +  };
 +  static constexpr std::size_t event_limit = 256;
++  static constexpr std::size_t candidate_limit = 100;
++  static constexpr std::size_t candidate_point_limit = 2048;
 +  std::size_t tables_selected = 0, tables_skipped = 0, respond_calls = 0,
 +    plan_calls = 0, rollout_calls = 0, rollout_alternatives = 0,
 +    interrupted_plans = 0, saturated_plans = 0, cost_limited_plans = 0,

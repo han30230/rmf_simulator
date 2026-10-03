@@ -1,0 +1,9 @@
+agents:
+- name: probe
+  start: '2105'
+  goal: '6137'
+  yaw: 0
+solve_seconds: 10
+node_limit: 100000
+cost_leeway: 10
+extra_cost: 120
