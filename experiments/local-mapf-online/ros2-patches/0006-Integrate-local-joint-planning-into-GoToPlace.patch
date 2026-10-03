@@ -1,0 +1,1441 @@
+From 42c5058090500594f3b764076be5b1831eacba87 Mon Sep 17 00:00:00 2001
+From: han30230 <han30230@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 23:18:31 +0900
+Subject: [PATCH 6/9] Integrate local joint planning into GoToPlace
+
+---
+ .../agv/FleetUpdateHandle.cpp                 |   3 +-
+ .../rmf_fleet_adapter/agv/RobotContext.cpp    | 132 ++++-
+ .../rmf_fleet_adapter/agv/RobotContext.hpp    |  29 +-
+ .../agv/internal_FleetUpdateHandle.hpp        |   7 +
+ .../rmf_fleet_adapter/events/GoToPlace.cpp    | 526 +++++++++++++++++-
+ .../rmf_fleet_adapter/events/GoToPlace.hpp    |  22 +-
+ .../LocalJointPlanningCoordinator.cpp         | 189 +++++++
+ .../LocalJointPlanningCoordinator.hpp         |  33 ++
+ .../rmf_fleet_adapter/services/Negotiate.cpp  |  10 +-
+ .../rmf_fleet_adapter/services/Negotiate.hpp  |   8 +-
+ .../services/detail/impl_Negotiate.hpp        |  19 +-
+ .../test_LocalJointPlanningCoordinator.cpp    |  31 ++
+ 12 files changed, 990 insertions(+), 19 deletions(-)
+
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/agv/FleetUpdateHandle.cpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/agv/FleetUpdateHandle.cpp
+index cd9d3a2..57fa514 100644
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/agv/FleetUpdateHandle.cpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/agv/FleetUpdateHandle.cpp
+@@ -1796,7 +1796,8 @@ void FleetUpdateHandle::add_robot(
+         fleet->_pimpl->worker,
+         fleet->_pimpl->default_maximum_delay,
+         state,
+-        fleet->_pimpl->task_planner);
++        fleet->_pimpl->task_planner,
++        fleet->_pimpl->local_joint_planning);
+ 
+       // We schedule the following operations on the worker to make sure we do not
+       // have a multiple read/write race condition on the FleetUpdateHandle.
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/agv/RobotContext.cpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/agv/RobotContext.cpp
+index ec5ebb4..33517e2 100644
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/agv/RobotContext.cpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/agv/RobotContext.cpp
+@@ -17,6 +17,9 @@
+ 
+ #include "internal_RobotUpdateHandle.hpp"
+ #include "../TaskManager.hpp"
++#include "../local_traffic/LocalJointPlanningCoordinator.hpp"
++#include "../local_traffic/GroupPlanApplication.hpp"
++#include "../local_traffic/RobotObservation.hpp"
+ 
+ #include <rmf_traffic_ros2/Time.hpp>
+ 
+@@ -454,6 +457,118 @@ void RobotContext::set_location(rmf_traffic::agv::Plan::StartSet location_)
+   }
+ 
+   _most_recent_valid_location = _location;
++  const auto report_time = now();
++  _local_observation->update({
++      report_time,
++      report_time,
++      position(),
++      std::nullopt,
++      std::nullopt,
++      true,
++      _location});
++  if (_local_joint_planning)
++  {
++    _local_joint_planning->refresh_intent_location(
++      itinerary().id(),
++      _location,
++      _local_observation->movement_revision(),
++      report_time);
++  }
++}
++
++//==============================================================================
++std::shared_ptr<local_traffic::LocalJointPlanningCoordinator>
++RobotContext::local_joint_planning() const
++{
++  return _local_joint_planning;
++}
++
++//==============================================================================
++std::uint64_t RobotContext::local_movement_revision() const
++{
++  return _local_observation->movement_revision();
++}
++
++//==============================================================================
++rmf_traffic::Time RobotContext::last_location_report_time() const
++{
++  const auto& latest = _local_observation->latest();
++  return latest.has_value() ? latest->received_at : now();
++}
++
++//==============================================================================
++void RobotContext::request_local_stop()
++{
++  _local_observation->request_stop(now());
++  if (const auto handle = command())
++    handle->stop();
++}
++
++//==============================================================================
++void RobotContext::request_local_stop_and_hold()
++{
++  request_local_stop();
++  _local_hold_timer = node()->try_create_wall_timer(
++    std::chrono::milliseconds(100),
++    [w = weak_from_this()]()
++    {
++      const auto self = w.lock();
++      if (!self)
++        return;
++
++      self->worker().schedule(
++        [w](const auto&)
++        {
++          const auto self = w.lock();
++          if (!self)
++            return;
++
++          const auto status = self->local_quiescence_status();
++          if (status == local_traffic::QuiescenceStatus::ready)
++          {
++            self->restore_local_stationary_occupancy();
++            self->_local_hold_timer = nullptr;
++            return;
++          }
++
++          if (status == local_traffic::QuiescenceStatus::timeout
++            || status == local_traffic::QuiescenceStatus::stale_report
++            || status == local_traffic::QuiescenceStatus::disconnected)
++          {
++            // Keep the previous schedule rather than erasing physical
++            // occupancy when stopping cannot be confirmed.
++            self->_local_hold_timer = nullptr;
++          }
++        });
++    });
++}
++
++//==============================================================================
++local_traffic::QuiescenceStatus RobotContext::local_quiescence_status() const
++{
++  local_traffic::QuiescenceOptions options;
++  if (_local_joint_planning)
++  {
++    options.report_freshness = _local_joint_planning->options().report_freshness;
++    options.settle_duration = _local_joint_planning->options().settle_duration;
++    options.stop_timeout = _local_joint_planning->options().stop_timeout;
++  }
++
++  return _local_observation->evaluate(now(), options);
++}
++
++//==============================================================================
++bool RobotContext::restore_local_stationary_occupancy()
++{
++  const auto start = now();
++  const auto hold_duration = _local_joint_planning
++    ? _local_joint_planning->options().stationary_hold_duration
++    : std::chrono::hours(1);
++  const auto finish = start + hold_duration;
++  auto hold = local_traffic::make_stationary_itinerary(
++    map(), position(), start, finish);
++  const auto plan_id = itinerary().assign_plan_id();
++  return itinerary().set(plan_id, hold);
+ }
+ 
+ //==============================================================================
+@@ -1154,7 +1269,9 @@ RobotContext::RobotContext(
+   const rxcpp::schedulers::worker& worker,
+   rmf_utils::optional<rmf_traffic::Duration> maximum_delay,
+   rmf_task::State state,
+-  std::shared_ptr<const rmf_task::TaskPlanner> task_planner)
++  std::shared_ptr<const rmf_task::TaskPlanner> task_planner,
++  std::shared_ptr<local_traffic::LocalJointPlanningCoordinator>
++  local_joint_planning)
+ : _command_handle(std::move(command_handle)),
+   _location(std::move(_initial_location)),
+   _itinerary(std::move(itinerary)),
+@@ -1174,12 +1291,25 @@ RobotContext::RobotContext(
+   _current_task_end_state(state),
+   _current_task_id(std::nullopt),
+   _task_planner(std::move(task_planner)),
++  _local_joint_planning(std::move(local_joint_planning)),
++  _local_observation(
++    std::make_shared<local_traffic::RobotObservationTracker>()),
+   _reporting(_worker)
+ {
+   _most_recent_valid_location = _location;
+   _profile = std::make_shared<rmf_traffic::Profile>(
+     _itinerary.description().profile());
+ 
++  const auto report_time = now();
++  _local_observation->update({
++      report_time,
++      report_time,
++      position(),
++      std::nullopt,
++      std::nullopt,
++      true,
++      _location});
++
+   _replan_obs = _replan_publisher.get_observable();
+   _graph_change_obs = _graph_change_publisher.get_observable();
+   _charging_change_obs = _charging_change_publisher.get_observable();
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/agv/RobotContext.hpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/agv/RobotContext.hpp
+index 95beb8f..a8ef35e 100644
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/agv/RobotContext.hpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/agv/RobotContext.hpp
+@@ -51,6 +51,12 @@
+ 
+ namespace rmf_fleet_adapter {
+ 
++namespace local_traffic {
++class LocalJointPlanningCoordinator;
++class RobotObservationTracker;
++enum class QuiescenceStatus;
++} // namespace local_traffic
++
+ // Forward declaration
+ class TaskManager;
+ 
+@@ -428,6 +434,21 @@ public:
+   /// Set the current location for the robot in terms of a planner start set
+   void set_location(rmf_traffic::agv::Plan::StartSet location_);
+ 
++  std::shared_ptr<local_traffic::LocalJointPlanningCoordinator>
++  local_joint_planning() const;
++
++  std::uint64_t local_movement_revision() const;
++
++  rmf_traffic::Time last_location_report_time() const;
++
++  void request_local_stop();
++
++  void request_local_stop_and_hold();
++
++  local_traffic::QuiescenceStatus local_quiescence_status() const;
++
++  bool restore_local_stationary_occupancy();
++
+   /// If the robot is lost, this will let you view its localization and issue
+   /// ticket
+   const std::optional<Lost>& lost() const;
+@@ -816,7 +837,9 @@ private:
+     const rxcpp::schedulers::worker& worker,
+     rmf_utils::optional<rmf_traffic::Duration> maximum_delay,
+     rmf_task::State state,
+-    std::shared_ptr<const rmf_task::TaskPlanner> task_planner);
++    std::shared_ptr<const rmf_task::TaskPlanner> task_planner,
++    std::shared_ptr<local_traffic::LocalJointPlanningCoordinator>
++    local_joint_planning);
+ 
+   std::weak_ptr<RobotCommandHandle> _command_handle;
+   std::vector<rmf_traffic::agv::Plan::Start> _location;
+@@ -863,6 +886,10 @@ private:
+   std::unique_ptr<std::mutex> _current_task_id_mutex =
+     std::make_unique<std::mutex>();
+   std::shared_ptr<const rmf_task::TaskPlanner> _task_planner;
++  std::shared_ptr<local_traffic::LocalJointPlanningCoordinator>
++  _local_joint_planning;
++  std::shared_ptr<local_traffic::RobotObservationTracker> _local_observation;
++  rclcpp::TimerBase::SharedPtr _local_hold_timer;
+   std::weak_ptr<TaskManager> _task_manager;
+ 
+   RobotUpdateHandle::Unstable::Watchdog _lift_watchdog;
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/agv/internal_FleetUpdateHandle.hpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/agv/internal_FleetUpdateHandle.hpp
+index 7b58004..42aad96 100644
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/agv/internal_FleetUpdateHandle.hpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/agv/internal_FleetUpdateHandle.hpp
+@@ -34,6 +34,7 @@
+ #include <rmf_task_sequence/Phase.hpp>
+ #include <rmf_task_sequence/Event.hpp>
+ #include <rmf_task_sequence/events/PerformAction.hpp>
++#include "../local_traffic/LocalJointPlanningCoordinator.hpp"
+ 
+ #include <rmf_building_map_msgs/msg/graph.hpp>
+ 
+@@ -271,6 +272,8 @@ public:
+   std::shared_ptr<const rmf_traffic::schedule::Mirror> mirror;
+   std::shared_ptr<rmf_traffic_ros2::schedule::Negotiation> negotiation;
+   std::optional<std::string> server_uri;
++  std::shared_ptr<local_traffic::LocalJointPlanningCoordinator>
++  local_joint_planning = nullptr;
+ 
+   std::shared_ptr<std::mutex> update_callback_mutex =
+     std::make_shared<std::mutex>();
+@@ -388,6 +391,10 @@ public:
+     handle->_pimpl->reassignment_worker =
+       rxcpp::schedulers::make_event_loop().create_worker();
+ 
++    handle->_pimpl->local_joint_planning =
++      std::make_shared<local_traffic::LocalJointPlanningCoordinator>(
++      local_traffic::LocalJointPlanningCoordinator::Options::load());
++
+     handle->_pimpl->add_standard_tasks();
+ 
+     handle->_pimpl->emergency_obs =
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.cpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.cpp
+index 00b2107..ecd08b1 100644
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.cpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.cpp
+@@ -16,12 +16,16 @@
+ */
+ 
+ #include "GoToPlace.hpp"
++#include "../local_traffic/GroupPlanApplication.hpp"
++#include "../local_traffic/LocalJointPlanningCoordinator.hpp"
+ #include "../local_traffic/SearchBudget.hpp"
+ #include "../project_itinerary.hpp"
+ 
+ #include <rmf_traffic/schedule/StubbornNegotiator.hpp>
+ #include <rmf_traffic/agv/Planner.hpp>
+ 
++#include <thread>
++
+ namespace rmf_fleet_adapter {
+ namespace events {
+ 
+@@ -513,6 +517,13 @@ void GoToPlace::Active::_find_plan()
+     return;
+   }
+ 
++  ++_local_generation;
++  if (_register_local_intent())
++  {
++    _update();
++    return;
++  }
++
+   _state->update_status(Status::Underway);
+   const auto start_name = wp_name(*_context);
+   const auto goal_name = wp_name(*_context, *_chosen_goal);
+@@ -578,6 +589,16 @@ void GoToPlace::Active::_find_plan()
+         *result, self->_description.expected_next_destinations(),
+         *self->_context->planner());
+ 
++      const auto coordinator = self->_context->local_joint_planning();
++      if (coordinator
++        && coordinator->owner(self->_context->itinerary().id())
++        != local_traffic::LocalJointPlanningCoordinator::Owner::ordinary)
++      {
++        self->_find_path_service = nullptr;
++        self->_retry_timer = nullptr;
++        return;
++      }
++
+       self->_execute_plan(
+         self->_context->itinerary().assign_plan_id(),
+         *std::move(result),
+@@ -641,7 +662,8 @@ void GoToPlace::Active::_execute_plan(
+   const rmf_traffic::PlanId plan_id,
+   rmf_traffic::agv::Plan plan,
+   rmf_traffic::schedule::Itinerary full_itinerary,
+-  rmf_traffic::agv::Plan::Goal goal)
++  rmf_traffic::agv::Plan::Goal goal,
++  const ExecutePlan::SchedulePolicy schedule_policy)
+ {
+   if (_is_interrupted)
+     return;
+@@ -661,6 +683,7 @@ void GoToPlace::Active::_execute_plan(
+     _context->retain_mutex_groups(
+       {graph.get_waypoint(goal.waypoint()).in_mutex_group()});
+ 
++    _unregister_local_intent();
+     _finished();
+     return;
+   }
+@@ -677,7 +700,17 @@ void GoToPlace::Active::_execute_plan(
+   _execution = ExecutePlan::make(
+     _context, plan_id, std::move(plan), std::move(goal),
+     std::move(full_itinerary),
+-    _assign_id, _state, _update, _finished, _tail_period);
++    _assign_id, _state, _update,
++    [w = weak_from_this()]()
++    {
++      if (const auto self = w.lock())
++      {
++        self->_unregister_local_intent();
++        self->_finished();
++      }
++    },
++    _tail_period,
++    schedule_policy);
+ 
+   if (!_execution.has_value())
+   {
+@@ -692,11 +725,407 @@ void GoToPlace::Active::_execute_plan(
+ //==============================================================================
+ void GoToPlace::Active::_stop_and_clear()
+ {
++  _unregister_local_intent();
+   _execution = std::nullopt;
+-  if (const auto command = _context->command())
+-    command->stop();
++  const auto coordinator = _context->local_joint_planning();
++  if (coordinator && coordinator->options().enabled)
++  {
++    _context->request_local_stop_and_hold();
++  }
++  else
++  {
++    if (const auto command = _context->command())
++      command->stop();
+ 
+-  _context->itinerary().clear();
++    _context->itinerary().clear();
++  }
++}
++
++//==============================================================================
++bool GoToPlace::Active::_register_local_intent()
++{
++  const auto coordinator = _context->local_joint_planning();
++  if (!coordinator || !coordinator->options().enabled
++    || !_chosen_goal.has_value())
++  {
++    return false;
++  }
++
++  coordinator->upsert_intent({
++      _context->itinerary().id(),
++      _context->location(),
++      *_chosen_goal,
++      _context->planner(),
++      _local_generation,
++      _context->local_movement_revision(),
++      _context->last_location_report_time(),
++      false,
++      [w = weak_from_this()]()
++      {
++        if (const auto self = w.lock())
++        {
++          if (self->_find_path_service)
++            self->_find_path_service->interrupt();
++          self->_context->request_local_stop();
++        }
++      },
++      [w = weak_from_this()]()
++      {
++        if (const auto self = w.lock())
++          return self->_context->local_quiescence_status();
++
++        return local_traffic::QuiescenceStatus::disconnected;
++      },
++      [w = weak_from_this(), generation = _local_generation](
++        const rmf_traffic::agv::Plan& plan)
++      {
++        const auto self = w.lock();
++        if (!self || generation != self->_local_generation
++          || !self->_chosen_goal.has_value())
++        {
++          return false;
++        }
++
++        auto itinerary = project_itinerary(
++          plan,
++          self->_description.expected_next_destinations(),
++          *self->_context->planner());
++        const auto plan_id = self->_context->itinerary().assign_plan_id();
++        if (!self->_context->itinerary().set(plan_id, itinerary))
++          return false;
++
++        self->_pending_local_plan = plan;
++        self->_pending_local_itinerary = std::move(itinerary);
++        self->_pending_local_plan_id = plan_id;
++        return true;
++      },
++      [w = weak_from_this(), generation = _local_generation]()
++      {
++        const auto self = w.lock();
++        if (!self || generation != self->_local_generation
++          || !self->_chosen_goal.has_value()
++          || !self->_pending_local_plan.has_value()
++          || !self->_pending_local_itinerary.has_value()
++          || !self->_pending_local_plan_id.has_value())
++        {
++          return false;
++        }
++
++        self->_execute_plan(
++          *self->_pending_local_plan_id,
++          std::move(*self->_pending_local_plan),
++          std::move(*self->_pending_local_itinerary),
++          *self->_chosen_goal,
++          ExecutePlan::SchedulePolicy::already_registered);
++        self->_pending_local_plan = std::nullopt;
++        self->_pending_local_itinerary = std::nullopt;
++        self->_pending_local_plan_id = std::nullopt;
++        return self->_execution.has_value();
++      },
++      [w = weak_from_this()]()
++      {
++        if (const auto self = w.lock())
++          return self->_context->restore_local_stationary_occupancy();
++
++        return false;
++      },
++      [w = weak_from_this()]()
++      {
++        if (const auto self = w.lock())
++        {
++          self->_skip_local_once = true;
++          self->_find_plan();
++        }
++      }});
++
++  if (_skip_local_once)
++  {
++    _skip_local_once = false;
++    return false;
++  }
++
++  _try_local_planning();
++  return coordinator->owner(_context->itinerary().id())
++    != local_traffic::LocalJointPlanningCoordinator::Owner::ordinary;
++}
++
++//==============================================================================
++void GoToPlace::Active::_try_local_planning()
++{
++  const auto coordinator = _context->local_joint_planning();
++  if (!coordinator)
++    return;
++
++  const auto cycle = coordinator->begin_local_cycle();
++  if (!cycle.has_value())
++    return;
++
++  auto intents = coordinator->active_intents();
++  for (const auto& intent : intents)
++  {
++    if (!intent.request_stop || !intent.quiescence_status
++      || !intent.register_plan || !intent.start_plan
++      || !intent.restore_stationary_occupancy || !intent.fallback)
++    {
++      coordinator->finish_local_cycle(*cycle);
++      return;
++    }
++
++    intent.request_stop();
++  }
++
++  _local_quiescence_timer = _context->node()->try_create_wall_timer(
++    std::chrono::milliseconds(100),
++    [w = weak_from_this(), coordinator, cycle = *cycle]()
++    {
++      const auto self = w.lock();
++      if (!self)
++        return;
++
++      self->_context->worker().schedule(
++        [w, coordinator, cycle](const auto&)
++        {
++      const auto self = w.lock();
++      if (!self)
++        return;
++
++      if (!coordinator->cycle_active(cycle))
++      {
++        self->_local_quiescence_timer = nullptr;
++        return;
++      }
++
++      auto current = coordinator->active_intents();
++      bool ready = true;
++      for (const auto& intent : current)
++      {
++        const auto status = intent.quiescence_status();
++        if (status == local_traffic::QuiescenceStatus::timeout
++          || status == local_traffic::QuiescenceStatus::stale_report
++          || status == local_traffic::QuiescenceStatus::disconnected
++          || status == local_traffic::QuiescenceStatus::invalid_starts)
++        {
++          self->_local_quiescence_timer = nullptr;
++          self->_fallback_local_group(cycle, false);
++          return;
++        }
++
++        ready = ready && status == local_traffic::QuiescenceStatus::ready;
++      }
++
++      if (!ready)
++        return;
++
++      for (const auto& intent : current)
++      {
++        if (!intent.restore_stationary_occupancy())
++        {
++          self->_local_quiescence_timer = nullptr;
++          self->_fallback_local_group(cycle, false);
++          return;
++        }
++      }
++
++      self->_local_quiescence_timer = nullptr;
++      coordinator->mark_solving(cycle);
++      const auto solve_start = self->_context->now();
++      for (auto& intent : current)
++      {
++        for (auto& start : intent.starts)
++          start.time(solve_start);
++      }
++
++      const auto viewer = self->_context->schedule()->snapshot();
++      const auto worker = self->_context->worker();
++      std::thread(
++        [w, coordinator, cycle, current = std::move(current), viewer, worker]()
++        mutable
++        {
++          auto decision = coordinator->solve(viewer, current);
++          worker.schedule(
++            [w, coordinator, cycle, current = std::move(current),
++            decision = std::move(decision)](const auto&) mutable
++            {
++              const auto self = w.lock();
++              if (!self || !coordinator->cycle_active(cycle))
++                return;
++
++              const auto validation = coordinator->validate(
++                current, coordinator->active_intents(), self->_context->now());
++              if (!validation.valid || !decision.proposal.has_value())
++              {
++                self->_fallback_local_group(cycle, false);
++                return;
++              }
++
++              const auto conflict_validation = coordinator->validate_proposal(
++                self->_context->schedule()->snapshot(),
++                current,
++                *decision.proposal);
++              if (!conflict_validation.valid)
++              {
++                self->_fallback_local_group(cycle, false);
++                return;
++              }
++
++              const auto stale_before =
++                self->_context->now() - std::chrono::seconds(1);
++              bool starts_in_past = false;
++              for (const auto& [id, plan] : *decision.proposal)
++              {
++                (void)id;
++                for (const auto& route : plan.get_itinerary())
++                {
++                  if (route.trajectory().start_time()
++                    && *route.trajectory().start_time() < stale_before)
++                  {
++                    starts_in_past = true;
++                    break;
++                  }
++                }
++              }
++
++              if (starts_in_past && self->_local_stale_retries++ == 0)
++              {
++                coordinator->finish_local_cycle(cycle);
++                self->_try_local_planning();
++                return;
++              }
++
++              if (starts_in_past)
++              {
++                self->_fallback_local_group(cycle, false);
++                return;
++              }
++
++              coordinator->mark_applying(cycle);
++              const auto intents = coordinator->active_intents();
++              std::unordered_map<rmf_traffic::ParticipantId,
++                local_traffic::LocalJointPlanningCoordinator::Intent> by_id;
++              for (const auto& intent : intents)
++                by_id.insert_or_assign(intent.participant, intent);
++
++              std::vector<local_traffic::GroupPlanApplication::Participant>
++              participants;
++              for (const auto& [id, plan] : *decision.proposal)
++              {
++                const auto found = by_id.find(id);
++                if (found == by_id.end())
++                {
++                  self->_fallback_local_group(cycle, false);
++                  return;
++                }
++
++                const auto intent = found->second;
++                participants.push_back({
++                    id,
++                    [intent, plan]() { return intent.register_plan(plan); },
++                    intent.start_plan,
++                    intent.request_stop,
++                    [intent]()
++                    {
++                      intent.restore_stationary_occupancy();
++                    }});
++              }
++
++              const auto result = local_traffic::GroupPlanApplication::apply(
++                participants,
++                [w, cycle]()
++                {
++                  if (const auto self = w.lock())
++                    self->_fallback_local_group(cycle, true);
++                });
++
++              if (result.status
++                == local_traffic::GroupPlanApplication::Status::success)
++              {
++                self->_local_stale_retries = 0;
++                coordinator->finish_local_cycle(cycle);
++              }
++              else if (result.status
++                == local_traffic::GroupPlanApplication::Status::
++                registration_failed)
++              {
++                self->_fallback_local_group(cycle, false);
++              }
++            });
++        }).detach();
++        });
++    });
++}
++
++//==============================================================================
++void GoToPlace::Active::_fallback_local_group(
++  const std::uint64_t cycle,
++  const bool wait_for_quiescence)
++{
++  const auto coordinator = _context->local_joint_planning();
++  if (!coordinator || !coordinator->cycle_active(cycle))
++    return;
++
++  if (wait_for_quiescence)
++  {
++    _local_quiescence_timer = _context->node()->try_create_wall_timer(
++      std::chrono::milliseconds(100),
++      [w = weak_from_this(), coordinator, cycle]()
++      {
++        const auto self = w.lock();
++        if (!self || !coordinator->cycle_active(cycle))
++          return;
++
++        self->_context->worker().schedule(
++          [w, coordinator, cycle](const auto&)
++          {
++        const auto self = w.lock();
++        if (!self || !coordinator->cycle_active(cycle))
++          return;
++
++        const auto intents = coordinator->active_intents();
++        bool ready = true;
++        bool terminal = false;
++        for (const auto& intent : intents)
++        {
++          const auto status = intent.quiescence_status();
++          ready = ready && status == local_traffic::QuiescenceStatus::ready;
++          terminal = terminal
++            || status == local_traffic::QuiescenceStatus::timeout
++            || status == local_traffic::QuiescenceStatus::stale_report
++            || status == local_traffic::QuiescenceStatus::disconnected;
++        }
++
++        if (!ready && !terminal)
++          return;
++
++        if (ready)
++        {
++          for (const auto& intent : intents)
++            intent.restore_stationary_occupancy();
++        }
++
++        self->_local_quiescence_timer = nullptr;
++        coordinator->finish_local_cycle(cycle);
++        for (const auto& intent : intents)
++          intent.fallback();
++          });
++      });
++    return;
++  }
++
++  const auto intents = coordinator->active_intents();
++  coordinator->finish_local_cycle(cycle);
++  for (const auto& intent : intents)
++    intent.fallback();
++}
++
++//==============================================================================
++void GoToPlace::Active::_unregister_local_intent()
++{
++  const auto coordinator = _context->local_joint_planning();
++  if (!coordinator || _local_generation == 0)
++    return;
++
++  coordinator->unregister_intent(
++    _context->itinerary().id(), _local_generation);
+ }
+ 
+ //==============================================================================
+@@ -710,7 +1139,80 @@ Negotiator::NegotiatePtr GoToPlace::Active::_respond(
+     return nullptr;
+   }
+ 
+-  auto approval_cb = [w = weak_from_this(), goal = *_chosen_goal](
++  const auto coordinator = _context->local_joint_planning();
++  if (coordinator && coordinator->options().enabled)
++  {
++    const auto participant = _context->itinerary().id();
++    const auto cleanup = coordinator->request_negotiation(participant);
++    if (cleanup.invalidate_local_cycle)
++    {
++      const auto intents = coordinator->active_intents();
++      for (const auto& intent : intents)
++      {
++        if (intent.request_stop)
++          intent.request_stop();
++      }
++
++      _local_quiescence_timer = _context->node()->try_create_wall_timer(
++        std::chrono::milliseconds(100),
++        [w = weak_from_this(), coordinator, participant]()
++        {
++          const auto self = w.lock();
++          if (!self)
++            return;
++
++          self->_context->worker().schedule(
++            [w, coordinator, participant](const auto&)
++            {
++          const auto self = w.lock();
++          if (!self)
++            return;
++
++          const auto intents = coordinator->active_intents();
++          bool ready = true;
++          bool terminal = false;
++          for (const auto& intent : intents)
++          {
++            if (!intent.quiescence_status)
++            {
++              terminal = true;
++              continue;
++            }
++
++            const auto status = intent.quiescence_status();
++            ready = ready
++              && status == local_traffic::QuiescenceStatus::ready;
++            terminal = terminal
++              || status == local_traffic::QuiescenceStatus::timeout
++              || status == local_traffic::QuiescenceStatus::stale_report
++              || status == local_traffic::QuiescenceStatus::disconnected;
++          }
++
++          if (!ready && !terminal)
++            return;
++
++          if (ready)
++          {
++            for (const auto& intent : intents)
++            {
++              if (intent.restore_stationary_occupancy)
++                intent.restore_stationary_occupancy();
++            }
++          }
++
++          coordinator->finish_negotiation_cleanup(participant);
++          self->_local_quiescence_timer = nullptr;
++            });
++        });
++
++      responder->reject({});
++      return nullptr;
++    }
++
++    coordinator->finish_negotiation_cleanup(participant);
++  }
++
++  auto approval_cb = [w = weak_from_this(), goal = *_chosen_goal, coordinator](
+     const rmf_traffic::PlanId plan_id,
+     const rmf_traffic::agv::Plan& plan,
+     rmf_traffic::schedule::Itinerary itinerary)
+@@ -719,6 +1221,8 @@ Negotiator::NegotiatePtr GoToPlace::Active::_respond(
+       if (auto self = w.lock())
+       {
+         self->_execute_plan(plan_id, plan, std::move(itinerary), goal);
++        if (coordinator)
++          coordinator->release_negotiation(self->_context->itinerary().id());
+         return self->_context->itinerary().version();
+       }
+ 
+@@ -730,7 +1234,15 @@ Negotiator::NegotiatePtr GoToPlace::Active::_respond(
+     _context->itinerary().assign_plan_id(), _context->planner(),
+     _context->location(), *_chosen_goal,
+     _description.expected_next_destinations(), table_view,
+-    responder, std::move(approval_cb), std::move(evaluator));
++    responder, std::move(approval_cb), std::move(evaluator), {},
++    [w = weak_from_this(), coordinator]()
++    {
++      if (const auto self = w.lock())
++      {
++        if (coordinator)
++          coordinator->release_negotiation(self->_context->itinerary().id());
++      }
++    });
+ }
+ 
+ } // namespace events
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.hpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.hpp
+index fca0959..c9c06c4 100644
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.hpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.hpp
+@@ -113,11 +113,23 @@ public:
+ 
+     void _find_plan();
+ 
++    bool _register_local_intent();
++
++    void _unregister_local_intent();
++
++    void _try_local_planning();
++
++    void _fallback_local_group(
++      std::uint64_t cycle,
++      bool wait_for_quiescence);
++
+     void _execute_plan(
+       rmf_traffic::PlanId plan_id,
+       rmf_traffic::agv::Plan plan,
+       rmf_traffic::schedule::Itinerary full_itinerary,
+-      rmf_traffic::agv::Plan::Goal goal);
++      rmf_traffic::agv::Plan::Goal goal,
++      ExecutePlan::SchedulePolicy schedule_policy =
++      ExecutePlan::SchedulePolicy::register_itinerary);
+ 
+     void _stop_and_clear();
+ 
+@@ -139,11 +151,19 @@ public:
+     rmf_rxcpp::subscription_guard _plan_subscription;
+     rclcpp::TimerBase::SharedPtr _find_path_timeout;
+     rclcpp::TimerBase::SharedPtr _retry_timer;
++    rclcpp::TimerBase::SharedPtr _local_quiescence_timer;
++
++    std::optional<rmf_traffic::agv::Plan> _pending_local_plan;
++    std::optional<rmf_traffic::schedule::Itinerary> _pending_local_itinerary;
++    std::optional<rmf_traffic::PlanId> _pending_local_plan_id;
+ 
+     rmf_rxcpp::subscription_guard _replan_request_subscription;
+     rmf_rxcpp::subscription_guard _graph_change_subscription;
+ 
+     bool _is_interrupted = false;
++    std::uint64_t _local_generation = 0;
++    bool _skip_local_once = false;
++    std::size_t _local_stale_retries = 0;
+   };
+ };
+ 
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.cpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.cpp
+index 861701d..b816efb 100644
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.cpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.cpp
+@@ -5,6 +5,9 @@
+ 
+ #include "LocalJointPlanningCoordinator.hpp"
+ 
++#include <rmf_traffic/DetectConflict.hpp>
++#include <rmf_traffic/schedule/Query.hpp>
++
+ #include <algorithm>
+ #include <cstdlib>
+ 
+@@ -85,6 +88,41 @@ LocalJointPlanningCoordinator::Options::load(
+   parse_size(
+     "RMF_LOCAL_MAPF_MAX_LOW_LEVEL_REPLANS", result.max_low_level_replans);
+ 
++  const auto parse_milliseconds = [&value](
++    const std::string& name,
++    auto& output)
++    {
++      const auto input = value(name);
++      if (!input.has_value())
++        return;
++
++      try
++      {
++        const auto parsed = std::stoll(*input);
++        if (parsed > 0)
++          output = std::chrono::milliseconds(parsed);
++      }
++      catch (const std::exception&)
++      {
++        // Keep the safe default.
++      }
++    };
++
++  parse_milliseconds("RMF_LOCAL_MAPF_MAX_SOLVE_MS", result.max_solve_time);
++  parse_milliseconds(
++    "RMF_LOCAL_MAPF_MAX_LOW_LEVEL_MS", result.max_low_level_time);
++  parse_milliseconds(
++    "RMF_LOCAL_MAPF_REPORT_FRESHNESS_MS", result.report_freshness);
++  parse_milliseconds(
++    "RMF_LOCAL_MAPF_SETTLE_MS", result.settle_duration);
++  parse_milliseconds(
++    "RMF_LOCAL_MAPF_STOP_TIMEOUT_MS", result.stop_timeout);
++  parse_milliseconds(
++    "RMF_LOCAL_MAPF_STATIONARY_HOLD_MS", result.stationary_hold_duration);
++  parse_size(
++    "RMF_LOCAL_MAPF_MAX_NEGOTIATION_PREEMPTIONS",
++    result.max_negotiation_preemptions);
++
+   return result;
+ }
+ 
+@@ -227,6 +265,98 @@ LocalJointPlanningCoordinator::validate(
+   return {true, "valid"};
+ }
+ 
++LocalJointPlanningCoordinator::Validation
++LocalJointPlanningCoordinator::validate_proposal(
++  std::shared_ptr<const rmf_traffic::schedule::Viewer> viewer,
++  const std::vector<Intent>& intents,
++  const rmf_traffic::agv::LocalConflictResolver::Proposal& proposal) const
++{
++  if (!viewer)
++    return {false, "missing_schedule_snapshot"};
++
++  std::unordered_map<rmf_traffic::ParticipantId, const Intent*> by_id;
++  std::vector<rmf_traffic::ParticipantId> local_ids;
++  for (const auto& intent : intents)
++  {
++    by_id[intent.participant] = &intent;
++    local_ids.push_back(intent.participant);
++  }
++
++  if (proposal.size() != intents.size())
++    return {false, "incomplete_proposal"};
++
++  const auto conflicts = [](
++    const rmf_traffic::Profile& profile_a,
++    const rmf_traffic::schedule::Itinerary& itinerary_a,
++    const rmf_traffic::Profile& profile_b,
++    const rmf_traffic::schedule::Itinerary& itinerary_b)
++    {
++      for (const auto& route_a : itinerary_a)
++      {
++        for (const auto& route_b : itinerary_b)
++        {
++          if (route_a.map() != route_b.map())
++            continue;
++
++          if (rmf_traffic::DetectConflict::between(
++              profile_a, route_a.trajectory(), nullptr,
++              profile_b, route_b.trajectory(), nullptr).has_value())
++          {
++            return true;
++          }
++        }
++      }
++      return false;
++    };
++
++  for (auto a = proposal.begin(); a != proposal.end(); ++a)
++  {
++    const auto a_intent = by_id.find(a->first);
++    if (a_intent == by_id.end() || !a_intent->second->planner)
++      return {false, "proposal_has_unknown_participant"};
++
++    const auto& a_profile = a_intent->second->planner->get_configuration()
++      .vehicle_traits().profile();
++    auto b = a;
++    for (++b; b != proposal.end(); ++b)
++    {
++      const auto b_intent = by_id.find(b->first);
++      if (b_intent == by_id.end() || !b_intent->second->planner)
++        return {false, "proposal_has_unknown_participant"};
++
++      const auto& b_profile = b_intent->second->planner->get_configuration()
++        .vehicle_traits().profile();
++      if (conflicts(
++          a_profile, a->second.get_itinerary(),
++          b_profile, b->second.get_itinerary()))
++      {
++        return {false, "proposal_internal_conflict"};
++      }
++    }
++  }
++
++  auto query = rmf_traffic::schedule::query_all();
++  query.participants().exclude(std::move(local_ids));
++  const auto external = viewer->query(query);
++  for (const auto& [id, plan] : proposal)
++  {
++    const auto intent = by_id.find(id);
++    const auto& local_profile = intent->second->planner->get_configuration()
++      .vehicle_traits().profile();
++    for (const auto& element : external)
++    {
++      if (conflicts(
++          local_profile, plan.get_itinerary(),
++          element.description.profile(), {*element.route}))
++      {
++        return {false, "new_external_conflict"};
++      }
++    }
++  }
++
++  return {true, "valid"};
++}
++
+ void LocalJointPlanningCoordinator::upsert_intent(Intent intent)
+ {
+   const auto id = intent.participant;
+@@ -234,6 +364,21 @@ void LocalJointPlanningCoordinator::upsert_intent(Intent intent)
+   _owners.try_emplace(id, Owner::ordinary);
+ }
+ 
++void LocalJointPlanningCoordinator::refresh_intent_location(
++  const rmf_traffic::ParticipantId participant,
++  rmf_traffic::agv::Plan::StartSet starts,
++  const std::uint64_t movement_revision,
++  const rmf_traffic::Time report_received)
++{
++  const auto it = _intents.find(participant);
++  if (it == _intents.end())
++    return;
++
++  it->second.starts = std::move(starts);
++  it->second.movement_revision = movement_revision;
++  it->second.report_received = report_received;
++}
++
+ void LocalJointPlanningCoordinator::unregister_intent(
+   const rmf_traffic::ParticipantId participant,
+   const std::uint64_t generation)
+@@ -298,6 +443,50 @@ LocalJointPlanningCoordinator::begin_local_cycle()
+   return _active_cycle;
+ }
+ 
++bool LocalJointPlanningCoordinator::cycle_active(
++  const std::uint64_t cycle) const
++{
++  return _active_cycle.has_value() && *_active_cycle == cycle;
++}
++
++void LocalJointPlanningCoordinator::mark_solving(const std::uint64_t cycle)
++{
++  if (!cycle_active(cycle))
++    return;
++
++  for (auto& [id, value] : _owners)
++  {
++    (void)id;
++    value = Owner::local_solving;
++  }
++}
++
++void LocalJointPlanningCoordinator::mark_applying(const std::uint64_t cycle)
++{
++  if (!cycle_active(cycle))
++    return;
++
++  for (auto& [id, value] : _owners)
++  {
++    (void)id;
++    value = Owner::local_applying;
++  }
++}
++
++void LocalJointPlanningCoordinator::finish_local_cycle(
++  const std::uint64_t cycle)
++{
++  if (!cycle_active(cycle))
++    return;
++
++  _active_cycle = std::nullopt;
++  for (auto& [id, value] : _owners)
++  {
++    (void)id;
++    value = Owner::ordinary;
++  }
++}
++
+ LocalJointPlanningCoordinator::Cleanup
+ LocalJointPlanningCoordinator::request_negotiation(
+   const rmf_traffic::ParticipantId participant)
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.hpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.hpp
+index 6a3acd5..cfb7739 100644
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.hpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.hpp
+@@ -7,6 +7,7 @@
+ #define RMF_FLEET_ADAPTER__LOCAL_TRAFFIC__LOCALJOINTPLANNINGCOORDINATOR_HPP
+ 
+ #include <rmf_traffic/agv/LocalConflictResolver.hpp>
++#include "RobotObservation.hpp"
+ 
+ #include <chrono>
+ #include <cstdint>
+@@ -32,6 +33,9 @@ public:
+     std::chrono::steady_clock::duration max_low_level_time =
+       std::chrono::milliseconds(500);
+     rmf_traffic::Duration report_freshness = std::chrono::seconds(1);
++    rmf_traffic::Duration settle_duration = std::chrono::milliseconds(500);
++    rmf_traffic::Duration stop_timeout = std::chrono::seconds(5);
++    rmf_traffic::Duration stationary_hold_duration = std::chrono::hours(1);
+     std::size_t max_negotiation_preemptions = 3;
+ 
+     static Options load(
+@@ -48,6 +52,12 @@ public:
+     std::uint64_t movement_revision;
+     rmf_traffic::Time report_received;
+     bool cancelled;
++    std::function<void()> request_stop = nullptr;
++    std::function<QuiescenceStatus()> quiescence_status = nullptr;
++    std::function<bool(const rmf_traffic::agv::Plan&)> register_plan = nullptr;
++    std::function<bool()> start_plan = nullptr;
++    std::function<bool()> restore_stationary_occupancy = nullptr;
++    std::function<void()> fallback = nullptr;
+   };
+ 
+   enum class Status
+@@ -114,8 +124,23 @@ public:
+     const std::vector<Intent>& current,
+     rmf_traffic::Time now) const;
+ 
++  /// Recheck a completed proposal against both itself and a fresh schedule
++  /// snapshot. The local participants are excluded from the schedule query
++  /// because their stopped occupancy is replaced by this proposal only after
++  /// this check succeeds.
++  Validation validate_proposal(
++    std::shared_ptr<const rmf_traffic::schedule::Viewer> viewer,
++    const std::vector<Intent>& intents,
++    const rmf_traffic::agv::LocalConflictResolver::Proposal& proposal) const;
++
+   void upsert_intent(Intent intent);
+ 
++  void refresh_intent_location(
++    rmf_traffic::ParticipantId participant,
++    rmf_traffic::agv::Plan::StartSet starts,
++    std::uint64_t movement_revision,
++    rmf_traffic::Time report_received);
++
+   void unregister_intent(
+     rmf_traffic::ParticipantId participant,
+     std::uint64_t generation);
+@@ -124,6 +149,14 @@ public:
+ 
+   std::optional<std::uint64_t> begin_local_cycle();
+ 
++  bool cycle_active(std::uint64_t cycle) const;
++
++  void mark_solving(std::uint64_t cycle);
++
++  void mark_applying(std::uint64_t cycle);
++
++  void finish_local_cycle(std::uint64_t cycle);
++
+   Cleanup request_negotiation(rmf_traffic::ParticipantId participant);
+ 
+   void finish_negotiation_cleanup(rmf_traffic::ParticipantId participant);
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/services/Negotiate.cpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/services/Negotiate.cpp
+index 83f7310..42b7848 100644
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/services/Negotiate.cpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/services/Negotiate.cpp
+@@ -31,7 +31,8 @@ Negotiate::Negotiate(
+   rmf_traffic::schedule::Negotiator::ResponderPtr responder,
+   ApprovalCallback approval,
+   const ProgressEvaluator evaluator,
+-  std::vector<rmf_traffic::Route> initial_itinerary)
++  std::vector<rmf_traffic::Route> initial_itinerary,
++  ConclusionCallback failure_conclusion)
+ // We add 1000 to the assigned ID to give room for other plan adjustments that
+ // could happen while the negotiation is ongoing.
+ : _plan_id(assigned_id + 1000),
+@@ -42,6 +43,7 @@ Negotiate::Negotiate(
+   _viewer(std::move(viewer)),
+   _responder(std::move(responder)),
+   _approval(std::move(approval)),
++  _failure_conclusion(std::move(failure_conclusion)),
+   _initial_itinerary(std::move(initial_itinerary)),
+   _evaluator(evaluator)
+ {
+@@ -59,7 +61,8 @@ std::shared_ptr<Negotiate> Negotiate::path(
+   rmf_traffic::schedule::Negotiator::ResponderPtr responder,
+   ApprovalCallback approval,
+   const ProgressEvaluator evaluator,
+-  std::vector<rmf_traffic::Route> initial_itinerary)
++  std::vector<rmf_traffic::Route> initial_itinerary,
++  ConclusionCallback failure_conclusion)
+ {
+   return std::make_shared<Negotiate>(
+     plan_id,
+@@ -71,7 +74,8 @@ std::shared_ptr<Negotiate> Negotiate::path(
+     std::move(responder),
+     std::move(approval),
+     evaluator,
+-    std::move(initial_itinerary));
++    std::move(initial_itinerary),
++    std::move(failure_conclusion));
+ }
+ 
+ //==============================================================================
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/services/Negotiate.hpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/services/Negotiate.hpp
+index 1aeb022..5559ea1 100644
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/services/Negotiate.hpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/services/Negotiate.hpp
+@@ -39,6 +39,7 @@ public:
+         const rmf_traffic::agv::Plan&,
+         rmf_traffic::schedule::Itinerary)
+     >;
++  using ConclusionCallback = std::function<void()>;
+ 
+   Negotiate(
+     rmf_traffic::PlanId assigned_id,
+@@ -50,7 +51,8 @@ public:
+     rmf_traffic::schedule::Negotiator::ResponderPtr responder,
+     ApprovalCallback approval,
+     ProgressEvaluator evaluator,
+-    std::vector<rmf_traffic::Route> initial_itinerary = {});
++    std::vector<rmf_traffic::Route> initial_itinerary = {},
++    ConclusionCallback failure_conclusion = nullptr);
+ 
+   static std::shared_ptr<Negotiate> path(
+     rmf_traffic::PlanId plan_id,
+@@ -62,7 +64,8 @@ public:
+     rmf_traffic::schedule::Negotiator::ResponderPtr responder,
+     ApprovalCallback approval,
+     ProgressEvaluator evaluator,
+-    std::vector<rmf_traffic::Route> initial_itinerary = {});
++    std::vector<rmf_traffic::Route> initial_itinerary = {},
++    ConclusionCallback failure_conclusion = nullptr);
+ 
+   static std::shared_ptr<Negotiate> emergency_pullover(
+     rmf_traffic::PlanId plan_id,
+@@ -104,6 +107,7 @@ private:
+   rmf_traffic::schedule::Negotiator::TableViewerPtr _viewer;
+   rmf_traffic::schedule::Negotiator::ResponderPtr _responder;
+   ApprovalCallback _approval;
++  ConclusionCallback _failure_conclusion;
+   std::vector<rmf_traffic::Route> _initial_itinerary;
+ 
+   using JobPtr = std::shared_ptr<jobs::Planning>;
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/services/detail/impl_Negotiate.hpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/services/detail/impl_Negotiate.hpp
+index 77d71a0..3b5a3fc 100644
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/services/detail/impl_Negotiate.hpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/services/detail/impl_Negotiate.hpp
+@@ -165,9 +165,13 @@ void Negotiate::operator()(const Subscriber& s)
+           s.on_next(
+             Result{
+               self->shared_from_this(),
+-              [alts = *self->_alternatives, responder = self->_responder]()
++              [alts = *self->_alternatives,
++              responder = self->_responder,
++              conclusion = std::move(self->_failure_conclusion)]()
+               {
+                 responder->reject(alts);
++                if (conclusion)
++                  conclusion();
+               }
+             });
+ 
+@@ -183,12 +187,15 @@ void Negotiate::operator()(const Subscriber& s)
+           s.on_next(
+             Result{
+               self->shared_from_this(),
+-              [n = self->shared_from_this()]()
++              [n = self->shared_from_this(),
++              conclusion = std::move(self->_failure_conclusion)]()
+               {
+                 std::vector<rmf_traffic::schedule::ParticipantId> blockers(
+                   n->_blockers.begin(), n->_blockers.end());
+ 
+                 n->_responder->forfeit(std::move(blockers));
++                if (conclusion)
++                  conclusion();
+               }
+             });
+ 
+@@ -220,7 +227,13 @@ void Negotiate::operator()(const Subscriber& s)
+ 
+       if (n->discarded())
+       {
+-        s.on_next(Result{n, []() {}});
++        s.on_next(Result{
++            n,
++            [conclusion = std::move(n->_failure_conclusion)]()
++            {
++              if (conclusion)
++                conclusion();
++            }});
+         s.on_completed();
+         return;
+       }
+diff --git a/rmf_fleet_adapter/test/local_traffic/test_LocalJointPlanningCoordinator.cpp b/rmf_fleet_adapter/test/local_traffic/test_LocalJointPlanningCoordinator.cpp
+index 09e20bf..84f9926 100644
+--- a/rmf_fleet_adapter/test/local_traffic/test_LocalJointPlanningCoordinator.cpp
++++ b/rmf_fleet_adapter/test/local_traffic/test_LocalJointPlanningCoordinator.cpp
+@@ -46,6 +46,26 @@ TEST_CASE("Configured maximum cannot exceed the core hard limit")
+   CHECK(options.max_agents == 4);
+ }
+ 
++TEST_CASE("Search and telemetry budgets are configurable")
++{
++  const auto options = LocalJointPlanningCoordinator::Options::load({
++      {"RMF_LOCAL_MAPF_MAX_SOLVE_MS", "1750"},
++      {"RMF_LOCAL_MAPF_MAX_LOW_LEVEL_MS", "275"},
++      {"RMF_LOCAL_MAPF_REPORT_FRESHNESS_MS", "900"},
++      {"RMF_LOCAL_MAPF_SETTLE_MS", "600"},
++      {"RMF_LOCAL_MAPF_STOP_TIMEOUT_MS", "4500"},
++      {"RMF_LOCAL_MAPF_STATIONARY_HOLD_MS", "120000"},
++      {"RMF_LOCAL_MAPF_MAX_NEGOTIATION_PREEMPTIONS", "5"}});
++
++  CHECK(options.max_solve_time == 1750ms);
++  CHECK(options.max_low_level_time == 275ms);
++  CHECK(options.report_freshness == 900ms);
++  CHECK(options.settle_duration == 600ms);
++  CHECK(options.stop_timeout == 4500ms);
++  CHECK(options.stationary_hold_duration == 120000ms);
++  CHECK(options.max_negotiation_preemptions == 5);
++}
++
+ TEST_CASE("More than four active intents safely returns legacy ownership")
+ {
+   LocalJointPlanningCoordinator::Options options;
+@@ -71,6 +91,17 @@ TEST_CASE("Unsupported intents safely return legacy ownership")
+   CHECK_FALSE(decision.proposal.has_value());
+ }
+ 
++TEST_CASE("A proposal cannot be applied without a fresh schedule snapshot")
++{
++  LocalJointPlanningCoordinator coordinator;
++  rmf_traffic::agv::LocalConflictResolver::Proposal proposal;
++  const auto result = coordinator.validate_proposal(
++    nullptr, {intent(1), intent(2)}, proposal);
++
++  CHECK_FALSE(result.valid);
++  CHECK(result.reason == "missing_schedule_snapshot");
++}
++
+ TEST_CASE("Generation goal cancellation and material motion are strict stale checks")
+ {
+   LocalJointPlanningCoordinator::Options options;
+-- 
+2.43.0
+

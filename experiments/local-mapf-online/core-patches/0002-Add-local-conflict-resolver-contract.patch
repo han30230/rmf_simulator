@@ -1,0 +1,501 @@
+From b09b4a0fa2e88aa81ad8767204e7a5855d62f20b Mon Sep 17 00:00:00 2001
+From: han30230 <han30230@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 20:20:48 +0900
+Subject: [PATCH 2/5] Add local conflict resolver contract
+
+---
+ .../rmf_traffic/agv/LocalConflictResolver.hpp | 124 ++++++++++++
+ .../rmf_traffic/agv/LocalConflictResolver.cpp | 191 ++++++++++++++++++
+ .../unit/agv/test_LocalConflictResolver.cpp   | 154 ++++++++++++++
+ 3 files changed, 469 insertions(+)
+ create mode 100644 rmf_traffic/include/rmf_traffic/agv/LocalConflictResolver.hpp
+ create mode 100644 rmf_traffic/src/rmf_traffic/agv/LocalConflictResolver.cpp
+ create mode 100644 rmf_traffic/test/unit/agv/test_LocalConflictResolver.cpp
+
+diff --git a/rmf_traffic/include/rmf_traffic/agv/LocalConflictResolver.hpp b/rmf_traffic/include/rmf_traffic/agv/LocalConflictResolver.hpp
+new file mode 100644
+index 0000000..5239186
+--- /dev/null
++++ b/rmf_traffic/include/rmf_traffic/agv/LocalConflictResolver.hpp
+@@ -0,0 +1,124 @@
++/*
++ * Copyright (C) 2026 Open Source Robotics Foundation
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#ifndef RMF_TRAFFIC__AGV__LOCALCONFLICTRESOLVER_HPP
++#define RMF_TRAFFIC__AGV__LOCALCONFLICTRESOLVER_HPP
++
++#include <rmf_traffic/agv/Planner.hpp>
++#include <rmf_traffic/schedule/Viewer.hpp>
++
++#include <rmf_utils/impl_ptr.hpp>
++
++#include <chrono>
++#include <unordered_map>
++#include <unordered_set>
++
++namespace rmf_traffic {
++namespace agv {
++
++//==============================================================================
++/// A bounded prioritized joint planner for small local conflict sets.
++///
++/// This solver is not complete MAPF. Callers should fall back to the standard
++/// RMF negotiation when it does not return a proposal.
++class LocalConflictResolver
++{
++public:
++
++  static constexpr std::size_t hard_maximum_agents = 4;
++
++  enum class Status
++  {
++    success,
++    no_conflict,
++    unsupported,
++    infeasible,
++    budget_exceeded,
++    interrupted
++  };
++
++  struct Agent
++  {
++    schedule::ParticipantId id;
++    std::vector<Plan::Start> starts;
++    Plan::Goal goal;
++    std::shared_ptr<const Planner> planner;
++  };
++
++  struct Options
++  {
++    std::size_t max_agents = hard_maximum_agents;
++    std::size_t max_high_level_nodes = 64;
++    std::size_t max_low_level_replans = 96;
++    std::chrono::steady_clock::duration max_solve_time =
++      std::chrono::seconds(2);
++  };
++
++  struct Metrics
++  {
++    Status status = Status::unsupported;
++    std::string termination_reason = "not_started";
++    double solve_seconds = 0.0;
++    std::size_t high_level_nodes = 0;
++    std::size_t low_level_replans = 0;
++    std::size_t conflicts_detected = 0;
++    std::size_t conflicts_resolved = 0;
++    std::size_t holding_points_used = 0;
++    double makespan_seconds = 0.0;
++    double total_arrival_seconds = 0.0;
++    double total_delay_seconds = 0.0;
++  };
++
++  using Proposal = std::unordered_map<schedule::ParticipantId, Plan>;
++
++  class Result
++  {
++  public:
++
++    const std::optional<Proposal>& proposal() const;
++
++    const std::unordered_set<schedule::ParticipantId>& blockers() const;
++
++    const Metrics& metrics() const;
++
++    class Implementation;
++  private:
++    rmf_utils::impl_ptr<Implementation> _pimpl;
++    friend class LocalConflictResolver;
++  };
++
++  explicit LocalConflictResolver(
++    std::shared_ptr<const schedule::Viewer> viewer);
++
++  LocalConflictResolver(
++    std::shared_ptr<const schedule::Viewer> viewer,
++    Options options);
++
++  const Options& options() const;
++
++  LocalConflictResolver& options(Options value);
++
++  Result solve(const std::vector<Agent>& agents) const;
++
++  class Implementation;
++private:
++  rmf_utils::impl_ptr<Implementation> _pimpl;
++};
++
++} // namespace agv
++} // namespace rmf_traffic
++
++#endif // RMF_TRAFFIC__AGV__LOCALCONFLICTRESOLVER_HPP
+diff --git a/rmf_traffic/src/rmf_traffic/agv/LocalConflictResolver.cpp b/rmf_traffic/src/rmf_traffic/agv/LocalConflictResolver.cpp
+new file mode 100644
+index 0000000..3b33a1b
+--- /dev/null
++++ b/rmf_traffic/src/rmf_traffic/agv/LocalConflictResolver.cpp
+@@ -0,0 +1,191 @@
++/*
++ * Copyright (C) 2026 Open Source Robotics Foundation
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#include <rmf_traffic/agv/LocalConflictResolver.hpp>
++
++#include <chrono>
++
++namespace rmf_traffic {
++namespace agv {
++
++//==============================================================================
++class LocalConflictResolver::Result::Implementation
++{
++public:
++  std::optional<Proposal> proposal;
++  std::unordered_set<schedule::ParticipantId> blockers;
++  Metrics metrics;
++};
++
++//==============================================================================
++const std::optional<LocalConflictResolver::Proposal>&
++LocalConflictResolver::Result::proposal() const
++{
++  return _pimpl->proposal;
++}
++
++//==============================================================================
++const std::unordered_set<schedule::ParticipantId>&
++LocalConflictResolver::Result::blockers() const
++{
++  return _pimpl->blockers;
++}
++
++//==============================================================================
++const LocalConflictResolver::Metrics&
++LocalConflictResolver::Result::metrics() const
++{
++  return _pimpl->metrics;
++}
++
++//==============================================================================
++class LocalConflictResolver::Implementation
++{
++public:
++  std::shared_ptr<const schedule::Viewer> viewer;
++  Options options;
++};
++
++//==============================================================================
++LocalConflictResolver::LocalConflictResolver(
++  std::shared_ptr<const schedule::Viewer> viewer)
++: LocalConflictResolver(std::move(viewer), Options{})
++{
++  // Do nothing
++}
++
++//==============================================================================
++LocalConflictResolver::LocalConflictResolver(
++  std::shared_ptr<const schedule::Viewer> viewer,
++  Options options)
++: _pimpl(rmf_utils::make_impl<Implementation>(
++      Implementation{std::move(viewer), std::move(options)}))
++{
++  // Do nothing
++}
++
++//==============================================================================
++const LocalConflictResolver::Options& LocalConflictResolver::options() const
++{
++  return _pimpl->options;
++}
++
++//==============================================================================
++LocalConflictResolver& LocalConflictResolver::options(Options value)
++{
++  _pimpl->options = std::move(value);
++  return *this;
++}
++
++//==============================================================================
++LocalConflictResolver::Result LocalConflictResolver::solve(
++  const std::vector<Agent>& agents) const
++{
++  const auto started = std::chrono::steady_clock::now();
++  Result result;
++  result._pimpl = rmf_utils::make_impl<Result::Implementation>();
++
++  const auto finish = [&](Status status, std::string reason)
++    {
++      result._pimpl->metrics.status = status;
++      result._pimpl->metrics.termination_reason = std::move(reason);
++      result._pimpl->metrics.solve_seconds =
++        std::chrono::duration<double>(
++        std::chrono::steady_clock::now() - started).count();
++      return result;
++    };
++
++  const auto& options = _pimpl->options;
++  if (options.max_agents == 0
++    || options.max_agents > hard_maximum_agents)
++  {
++    return finish(Status::unsupported, "invalid_max_agents");
++  }
++
++  if (options.max_high_level_nodes == 0
++    || options.max_low_level_replans == 0
++    || options.max_solve_time <= std::chrono::steady_clock::duration::zero())
++  {
++    return finish(Status::unsupported, "invalid_budget");
++  }
++
++  if (agents.empty())
++    return finish(Status::unsupported, "empty_conflict_set");
++
++  if (agents.size() > options.max_agents)
++    return finish(Status::unsupported, "too_many_agents");
++
++  std::unordered_set<schedule::ParticipantId> ids;
++  for (const auto& agent : agents)
++  {
++    if (!ids.insert(agent.id).second)
++      return finish(Status::unsupported, "duplicate_participant");
++  }
++
++  for (const auto& agent : agents)
++  {
++    if (!agent.planner)
++      return finish(Status::unsupported, "null_planner");
++
++    if (agent.starts.empty())
++      return finish(Status::unsupported, "empty_starts");
++  }
++
++  Proposal independent;
++  Time epoch = agents.front().starts.front().time();
++  for (const auto& agent : agents)
++  {
++    for (const auto& start : agent.starts)
++      epoch = std::min(epoch, start.time());
++
++    if (result._pimpl->metrics.low_level_replans
++      >= options.max_low_level_replans)
++    {
++      return finish(Status::budget_exceeded, "low_level_replan_budget");
++    }
++
++    ++result._pimpl->metrics.low_level_replans;
++    auto plan = agent.planner->plan(agent.starts, agent.goal);
++    if (!plan)
++    {
++      result._pimpl->blockers.insert(
++        plan.blockers().begin(), plan.blockers().end());
++      if (plan.interrupted())
++        return finish(Status::interrupted, "low_level_interrupted");
++
++      return finish(Status::infeasible, "independent_plan_failed");
++    }
++
++    independent.emplace(agent.id, *std::move(plan));
++  }
++
++  if (agents.size() == 1)
++  {
++    const auto& plan = independent.begin()->second;
++    const auto finish_time = plan.get_waypoints().back().time();
++    const double arrival = std::chrono::duration<double>(
++      finish_time - epoch).count();
++    result._pimpl->metrics.makespan_seconds = arrival;
++    result._pimpl->metrics.total_arrival_seconds = arrival;
++    result._pimpl->proposal = std::move(independent);
++    return finish(Status::no_conflict, "independent_plans_compatible");
++  }
++
++  return finish(Status::unsupported, "joint_search_not_implemented");
++}
++
++} // namespace agv
++} // namespace rmf_traffic
+diff --git a/rmf_traffic/test/unit/agv/test_LocalConflictResolver.cpp b/rmf_traffic/test/unit/agv/test_LocalConflictResolver.cpp
+new file mode 100644
+index 0000000..e47ea82
+--- /dev/null
++++ b/rmf_traffic/test/unit/agv/test_LocalConflictResolver.cpp
+@@ -0,0 +1,154 @@
++#include <rmf_traffic/agv/LocalConflictResolver.hpp>
++#include <rmf_traffic/geometry/Circle.hpp>
++#include <rmf_traffic/schedule/Database.hpp>
++
++#include <rmf_utils/catch.hpp>
++
++#include <chrono>
++
++namespace {
++
++struct Fixture
++{
++  std::shared_ptr<rmf_traffic::schedule::Database> database;
++  std::shared_ptr<rmf_traffic::agv::Planner> planner;
++  rmf_traffic::Time now;
++};
++
++Fixture make_fixture()
++{
++  rmf_traffic::agv::Graph graph;
++  const auto start = graph.add_waypoint("test", {0.0, 0.0}).index();
++  const auto finish = graph.add_waypoint("test", {2.0, 0.0}).index();
++  graph.add_lane(start, finish);
++  graph.add_lane(finish, start);
++
++  const rmf_traffic::Profile profile{
++    rmf_traffic::geometry::make_final_convex<
++      rmf_traffic::geometry::Circle>(0.3)};
++  const rmf_traffic::agv::VehicleTraits traits{
++    {1.0, 0.5}, {1.0, 0.5}, profile};
++
++  auto database = std::make_shared<rmf_traffic::schedule::Database>();
++  auto planner = std::make_shared<rmf_traffic::agv::Planner>(
++    rmf_traffic::agv::Planner::Configuration{graph, traits},
++    rmf_traffic::agv::Planner::Options{nullptr});
++
++  return {std::move(database), std::move(planner),
++    std::chrono::steady_clock::now()};
++}
++
++} // anonymous namespace
++
++SCENARIO("Local conflict resolver budgets are configurable", "[agv][local_mapf]")
++{
++  using Resolver = rmf_traffic::agv::LocalConflictResolver;
++
++  Resolver::Options options;
++  options.max_agents = 4;
++  options.max_high_level_nodes = 64;
++  options.max_low_level_replans = 96;
++  options.max_solve_time = std::chrono::seconds(2);
++
++  CHECK(options.max_agents == 4);
++  CHECK(options.max_high_level_nodes == 64);
++  CHECK(options.max_low_level_replans == 96);
++  CHECK(options.max_solve_time == std::chrono::seconds(2));
++}
++
++SCENARIO("Local conflict resolver status is explicit", "[agv][local_mapf]")
++{
++  using Status = rmf_traffic::agv::LocalConflictResolver::Status;
++
++  CHECK(Status::success != Status::no_conflict);
++  CHECK(Status::unsupported != Status::infeasible);
++  CHECK(Status::budget_exceeded != Status::interrupted);
++}
++
++SCENARIO("Local conflict resolver rejects unsupported inputs", "[agv][local_mapf]")
++{
++  using Resolver = rmf_traffic::agv::LocalConflictResolver;
++  using Agent = Resolver::Agent;
++  using Plan = rmf_traffic::agv::Plan;
++
++  const auto now = std::chrono::steady_clock::now();
++  const auto make_agent = [&](std::size_t id)
++    {
++      return Agent{id, {Plan::Start{now, 0, 0.0}}, Plan::Goal{1}, nullptr};
++    };
++
++  SECTION("empty conflict set")
++  {
++    const auto result = Resolver(nullptr).solve({});
++    CHECK_FALSE(result.proposal());
++    CHECK(result.metrics().status == Resolver::Status::unsupported);
++    CHECK(result.metrics().termination_reason == "empty_conflict_set");
++  }
++
++  SECTION("hard agent limit")
++  {
++    Resolver::Options options;
++    options.max_agents = Resolver::hard_maximum_agents + 1;
++    const auto result = Resolver(nullptr, options).solve({make_agent(0)});
++    CHECK_FALSE(result.proposal());
++    CHECK(result.metrics().status == Resolver::Status::unsupported);
++    CHECK(result.metrics().termination_reason == "invalid_max_agents");
++  }
++
++  SECTION("configured agent limit")
++  {
++    Resolver::Options options;
++    options.max_agents = 1;
++    const auto result = Resolver(nullptr, options).solve(
++      {make_agent(0), make_agent(1)});
++    CHECK_FALSE(result.proposal());
++    CHECK(result.metrics().status == Resolver::Status::unsupported);
++    CHECK(result.metrics().termination_reason == "too_many_agents");
++  }
++
++  SECTION("duplicate IDs")
++  {
++    const auto result = Resolver(nullptr).solve(
++      {make_agent(7), make_agent(7)});
++    CHECK_FALSE(result.proposal());
++    CHECK(result.metrics().status == Resolver::Status::unsupported);
++    CHECK(result.metrics().termination_reason == "duplicate_participant");
++  }
++
++  SECTION("null planner")
++  {
++    const auto result = Resolver(nullptr).solve({make_agent(0)});
++    CHECK_FALSE(result.proposal());
++    CHECK(result.metrics().status == Resolver::Status::unsupported);
++    CHECK(result.metrics().termination_reason == "null_planner");
++  }
++
++  SECTION("zero budgets")
++  {
++    Resolver::Options options;
++    options.max_high_level_nodes = 0;
++    const auto result = Resolver(nullptr, options).solve({make_agent(0)});
++    CHECK_FALSE(result.proposal());
++    CHECK(result.metrics().status == Resolver::Status::unsupported);
++    CHECK(result.metrics().termination_reason == "invalid_budget");
++  }
++}
++
++SCENARIO("Local conflict resolver plans one agent", "[agv][local_mapf]")
++{
++  using Resolver = rmf_traffic::agv::LocalConflictResolver;
++  using Plan = rmf_traffic::agv::Plan;
++  const auto fixture = make_fixture();
++  const Resolver::Agent agent{
++    42, {Plan::Start{fixture.now, 0, 0.0}}, Plan::Goal{1}, fixture.planner};
++
++  const auto result = Resolver(fixture.database).solve({agent});
++
++  REQUIRE(result.proposal());
++  REQUIRE(result.proposal()->count(agent.id) == 1);
++  CHECK(result.metrics().status == Resolver::Status::no_conflict);
++  CHECK(result.metrics().termination_reason == "independent_plans_compatible");
++  CHECK(result.metrics().low_level_replans == 1);
++  CHECK(result.proposal()->at(agent.id).get_waypoints().back().graph_index()
++    == agent.goal.waypoint());
++}

@@ -1,0 +1,391 @@
+From 8eb7284a6d8c9fbc0e31719b3c80527a9d4e4780 Mon Sep 17 00:00:00 2001
+From: han30230 <han30230@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 22:32:56 +0900
+Subject: [PATCH 3/9] Add staged group plan application
+
+---
+ rmf_fleet_adapter/CMakeLists.txt              |   1 +
+ .../rmf_fleet_adapter/events/ExecutePlan.cpp  |   6 +-
+ .../rmf_fleet_adapter/events/ExecutePlan.hpp  |   9 +-
+ .../local_traffic/GroupPlanApplication.cpp    |  77 +++++++++
+ .../local_traffic/GroupPlanApplication.hpp    |  67 ++++++++
+ .../test_GroupPlanApplication.cpp             | 146 ++++++++++++++++++
+ 6 files changed, 303 insertions(+), 3 deletions(-)
+ create mode 100644 rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/GroupPlanApplication.cpp
+ create mode 100644 rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/GroupPlanApplication.hpp
+ create mode 100644 rmf_fleet_adapter/test/local_traffic/test_GroupPlanApplication.cpp
+
+diff --git a/rmf_fleet_adapter/CMakeLists.txt b/rmf_fleet_adapter/CMakeLists.txt
+index f010492..1970c75 100644
+--- a/rmf_fleet_adapter/CMakeLists.txt
++++ b/rmf_fleet_adapter/CMakeLists.txt
+@@ -141,6 +141,7 @@ if (BUILD_TESTING)
+       test/tasks/test_Loop.cpp
+       test/test_Task.cpp
+       test/local_traffic/test_RobotObservation.cpp
++      test/local_traffic/test_GroupPlanApplication.cpp
+     TIMEOUT 300
+   )
+   ament_target_dependencies(test_rmf_fleet_adapter
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/events/ExecutePlan.cpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/events/ExecutePlan.cpp
+index 62e024a..a4ba4ea 100644
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/events/ExecutePlan.cpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/events/ExecutePlan.cpp
+@@ -662,7 +662,8 @@ std::optional<ExecutePlan> ExecutePlan::make(
+   rmf_task::events::SimpleEventStatePtr state,
+   std::function<void()> update,
+   std::function<void()> finished,
+-  std::optional<rmf_traffic::Duration> tail_period)
++  std::optional<rmf_traffic::Duration> tail_period,
++  const SchedulePolicy schedule_policy)
+ {
+   if (plan.get_waypoints().empty())
+     return std::nullopt;
+@@ -1248,7 +1249,8 @@ std::optional<ExecutePlan> ExecutePlan::make(
+   }
+ 
+   std::size_t attempts = 0;
+-  if (!initial_itinerary->empty())
++  if (schedule_policy == SchedulePolicy::register_itinerary
++    && !initial_itinerary->empty())
+   {
+     while (!context->itinerary().set(*plan_id, *initial_itinerary))
+     {
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/events/ExecutePlan.hpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/events/ExecutePlan.hpp
+index 703349d..d4be4dc 100644
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/events/ExecutePlan.hpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/events/ExecutePlan.hpp
+@@ -30,6 +30,12 @@ namespace events {
+ //==============================================================================
+ struct ExecutePlan
+ {
++  enum class SchedulePolicy
++  {
++    register_itinerary,
++    already_registered
++  };
++
+   static std::optional<ExecutePlan> make(
+     agv::RobotContextPtr context,
+     rmf_traffic::PlanId plan_id,
+@@ -40,7 +46,8 @@ struct ExecutePlan
+     rmf_task::events::SimpleEventStatePtr state,
+     std::function<void()> update,
+     std::function<void()> finished,
+-    std::optional<rmf_traffic::Duration> tail_period);
++    std::optional<rmf_traffic::Duration> tail_period,
++    SchedulePolicy schedule_policy = SchedulePolicy::register_itinerary);
+ 
+   rmf_traffic::agv::Plan plan;
+   PlanIdPtr plan_id;
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/GroupPlanApplication.cpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/GroupPlanApplication.cpp
+new file mode 100644
+index 0000000..65b80d9
+--- /dev/null
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/GroupPlanApplication.cpp
+@@ -0,0 +1,77 @@
++/*
++ * Copyright (C) 2026 Open Source Robotics Foundation
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++#include "GroupPlanApplication.hpp"
++
++#include <stdexcept>
++
++namespace rmf_fleet_adapter {
++namespace local_traffic {
++
++rmf_traffic::schedule::Itinerary make_stationary_itinerary(
++  std::string map,
++  Eigen::Vector3d pose,
++  const rmf_traffic::Time start,
++  const rmf_traffic::Time finish)
++{
++  if (finish <= start)
++    throw std::invalid_argument("Stationary occupancy must have a duration");
++
++  rmf_traffic::Trajectory trajectory;
++  trajectory.insert(start, pose, Eigen::Vector3d::Zero());
++  trajectory.insert(finish, pose, Eigen::Vector3d::Zero());
++
++  rmf_traffic::schedule::Itinerary itinerary;
++  itinerary.emplace_back(std::move(map), std::move(trajectory));
++  return itinerary;
++}
++
++GroupPlanApplication::Result GroupPlanApplication::apply(
++  const std::vector<Participant>& participants,
++  std::function<void()> recover_after_quiescence)
++{
++  Result result{Status::success, {}, {}};
++  result.registered.reserve(participants.size());
++  result.started.reserve(participants.size());
++
++  for (const auto& participant : participants)
++  {
++    if (!participant.register_itinerary())
++    {
++      result.status = Status::registration_failed;
++      for (const auto& member : participants)
++        member.restore_stationary_occupancy();
++
++      return result;
++    }
++
++    result.registered.push_back(participant.id);
++  }
++
++  for (const auto& participant : participants)
++  {
++    if (!participant.start_execution())
++    {
++      result.status = Status::execution_failed;
++      for (const auto& member : participants)
++        member.request_stop();
++
++      recover_after_quiescence();
++      return result;
++    }
++
++    result.started.push_back(participant.id);
++  }
++
++  return result;
++}
++
++} // namespace local_traffic
++} // namespace rmf_fleet_adapter
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/GroupPlanApplication.hpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/GroupPlanApplication.hpp
+new file mode 100644
+index 0000000..84081be
+--- /dev/null
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/GroupPlanApplication.hpp
+@@ -0,0 +1,67 @@
++/*
++ * Copyright (C) 2026 Open Source Robotics Foundation
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++#ifndef RMF_FLEET_ADAPTER__LOCAL_TRAFFIC__GROUPPLANAPPLICATION_HPP
++#define RMF_FLEET_ADAPTER__LOCAL_TRAFFIC__GROUPPLANAPPLICATION_HPP
++
++#include <rmf_traffic/schedule/Itinerary.hpp>
++
++#include <Eigen/Core>
++
++#include <functional>
++#include <vector>
++
++namespace rmf_fleet_adapter {
++namespace local_traffic {
++
++rmf_traffic::schedule::Itinerary make_stationary_itinerary(
++  std::string map,
++  Eigen::Vector3d pose,
++  rmf_traffic::Time start,
++  rmf_traffic::Time finish);
++
++/// Performs the two non-atomic application stages while robots are stopped.
++/// Physical quiescence before application and after a partial start failure is
++/// the responsibility of the owning coordinator.
++class GroupPlanApplication
++{
++public:
++  enum class Status
++  {
++    success,
++    registration_failed,
++    execution_failed
++  };
++
++  struct Participant
++  {
++    rmf_traffic::ParticipantId id;
++    std::function<bool()> register_itinerary;
++    std::function<bool()> start_execution;
++    std::function<void()> request_stop;
++    std::function<void()> restore_stationary_occupancy;
++  };
++
++  struct Result
++  {
++    Status status;
++    std::vector<rmf_traffic::ParticipantId> registered;
++    std::vector<rmf_traffic::ParticipantId> started;
++  };
++
++  static Result apply(
++    const std::vector<Participant>& participants,
++    std::function<void()> recover_after_quiescence);
++};
++
++} // namespace local_traffic
++} // namespace rmf_fleet_adapter
++
++#endif // RMF_FLEET_ADAPTER__LOCAL_TRAFFIC__GROUPPLANAPPLICATION_HPP
+diff --git a/rmf_fleet_adapter/test/local_traffic/test_GroupPlanApplication.cpp b/rmf_fleet_adapter/test/local_traffic/test_GroupPlanApplication.cpp
+new file mode 100644
+index 0000000..06ffd96
+--- /dev/null
++++ b/rmf_fleet_adapter/test/local_traffic/test_GroupPlanApplication.cpp
+@@ -0,0 +1,146 @@
++/*
++ * Copyright (C) 2026 Open Source Robotics Foundation
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++#include <local_traffic/GroupPlanApplication.hpp>
++
++#include <catch2/catch_test_macros.hpp>
++
++using namespace std::chrono_literals;
++using rmf_fleet_adapter::local_traffic::GroupPlanApplication;
++
++namespace {
++
++rmf_traffic::Time time_at(const std::chrono::seconds offset)
++{
++  return rmf_traffic::Time(rmf_traffic::Duration(offset));
++}
++
++} // anonymous namespace
++
++TEST_CASE("Stationary occupancy retains the physical pose")
++{
++  const Eigen::Vector3d pose{1.0, 2.0, 0.4};
++  const auto itinerary =
++    rmf_fleet_adapter::local_traffic::make_stationary_itinerary(
++    "test_map", pose, time_at(1s), time_at(11s));
++
++  REQUIRE(itinerary.size() == 1);
++  const auto& trajectory = itinerary.front().trajectory();
++  REQUIRE(trajectory.size() == 2);
++  CHECK(trajectory.front().time() == time_at(1s));
++  CHECK(trajectory.back().time() == time_at(11s));
++  CHECK(trajectory.front().position().isApprox(pose));
++  CHECK(trajectory.back().position().isApprox(pose));
++}
++
++TEST_CASE("Schedule registration failure starts no commands and restores holds")
++{
++  std::vector<std::size_t> registered;
++  std::vector<std::size_t> started;
++  std::vector<std::size_t> restored;
++  std::vector<std::size_t> stopped;
++  std::size_t recoveries = 0;
++
++  auto participant = [&](const std::size_t id)
++    {
++      return GroupPlanApplication::Participant{
++        id,
++        [&, id]()
++        {
++          registered.push_back(id);
++          return id != 2;
++        },
++        [&, id]()
++        {
++          started.push_back(id);
++          return true;
++        },
++        [&, id]() { stopped.push_back(id); },
++        [&, id]() { restored.push_back(id); }};
++    };
++
++  const auto result = GroupPlanApplication::apply(
++    {participant(1), participant(2), participant(3)},
++    [&]() { ++recoveries; });
++
++  CHECK(result.status == GroupPlanApplication::Status::registration_failed);
++  CHECK(registered == std::vector<std::size_t>{1, 2});
++  CHECK(started.empty());
++  CHECK(stopped.empty());
++  CHECK(restored == std::vector<std::size_t>{1, 2, 3});
++  CHECK(recoveries == 0);
++}
++
++TEST_CASE("Execution start failure stops the whole group before recovery")
++{
++  std::vector<std::size_t> registered;
++  std::vector<std::size_t> started;
++  std::vector<std::size_t> stopped;
++  std::vector<std::size_t> restored;
++  std::size_t recoveries = 0;
++
++  auto participant = [&](const std::size_t id)
++    {
++      return GroupPlanApplication::Participant{
++        id,
++        [&, id]()
++        {
++          registered.push_back(id);
++          return true;
++        },
++        [&, id]()
++        {
++          started.push_back(id);
++          return id != 2;
++        },
++        [&, id]() { stopped.push_back(id); },
++        [&, id]() { restored.push_back(id); }};
++    };
++
++  const auto result = GroupPlanApplication::apply(
++    {participant(1), participant(2), participant(3)},
++    [&]() { ++recoveries; });
++
++  CHECK(result.status == GroupPlanApplication::Status::execution_failed);
++  CHECK(registered == std::vector<std::size_t>{1, 2, 3});
++  CHECK(started == std::vector<std::size_t>{1, 2});
++  CHECK(stopped == std::vector<std::size_t>{1, 2, 3});
++  CHECK(restored.empty());
++  CHECK(recoveries == 1);
++}
++
++TEST_CASE("Successful group application registers everyone before starting")
++{
++  std::vector<std::string> calls;
++  auto participant = [&](const std::size_t id)
++    {
++      return GroupPlanApplication::Participant{
++        id,
++        [&, id]()
++        {
++          calls.push_back("register_" + std::to_string(id));
++          return true;
++        },
++        [&, id]()
++        {
++          calls.push_back("start_" + std::to_string(id));
++          return true;
++        },
++        []() {},
++        []() {}};
++    };
++
++  const auto result = GroupPlanApplication::apply(
++    {participant(1), participant(2)}, []() {});
++
++  CHECK(result.status == GroupPlanApplication::Status::success);
++  CHECK(calls == std::vector<std::string>{
++      "register_1", "register_2", "start_1", "start_2"});
++}
+-- 
+2.43.0
+

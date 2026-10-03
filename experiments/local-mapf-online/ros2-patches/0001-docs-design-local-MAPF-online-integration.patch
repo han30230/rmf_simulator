@@ -1,0 +1,311 @@
+From 43a9c25d499d3ee8eba4861183ae56aa1ad6e65b Mon Sep 17 00:00:00 2001
+From: han30230 <han30230@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 21:55:12 +0900
+Subject: [PATCH 1/9] docs: design local MAPF online integration
+
+---
+ ...026-10-03-local-mapf-online-integration.md | 154 ++++++++++++++++++
+ ...03-local-mapf-online-integration-design.md | 130 +++++++++++++++
+ 2 files changed, 284 insertions(+)
+ create mode 100644 docs/superpowers/plans/2026-10-03-local-mapf-online-integration.md
+ create mode 100644 docs/superpowers/specs/2026-10-03-local-mapf-online-integration-design.md
+
+diff --git a/docs/superpowers/plans/2026-10-03-local-mapf-online-integration.md b/docs/superpowers/plans/2026-10-03-local-mapf-online-integration.md
+new file mode 100644
+index 0000000..c884b38
+--- /dev/null
++++ b/docs/superpowers/plans/2026-10-03-local-mapf-online-integration.md
+@@ -0,0 +1,154 @@
++# Local MAPF Online Integration Implementation Plan
++
++> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
++
++**Goal:** Integrate the bounded four-agent LocalConflictResolver into active Fleet Adapter GoToPlace planning as an opt-in PoC and validate it with failure-injected unit tests and Docker/MQTT simulation.
++
++**Architecture:** A fleet-owned coordinator serializes ownership on the fleet worker, asynchronously confirms physical quiescence, preserves stationary schedule occupancy, solves on a separate worker, and performs schedule-first non-atomic group application with explicit recovery. Legacy planning and negotiation remain the fallback.
++
++**Tech Stack:** C++17, RMF Traffic/Fleet Adapter, RxCpp workers, Catch2, ROS 2, Docker Compose, Python MQTT/simulator instrumentation.
++
++**Spec:** `docs/superpowers/specs/2026-10-03-local-mapf-online-integration-design.md`
++
++## Global Constraints
++
++- Feature default is off; no VDA5050 command gate, external arbiter, corridor state machine, or real robot deployment.
++- Preserve `rmf_traffic` baseline `ccdb765`, LocalConflictResolver commit `e569de3`, and all existing user files/worktrees.
++- Maximum local group size is the code-level hard limit of four; runtime configuration may only lower it.
++- Never report fallback as a safety or deadlock-resolution guarantee.
++- Holding/bay arrival is not task completion; every accepted plan retains the original active task goal.
++- Do not call group application atomic; test schedule and execution failure stages independently.
++
++## Review Focus
++
++- Telemetry that repeats an identical pose with a fresh timestamp must establish freshness without creating a false movement revision; Task 1 tests it.
++- Stop acknowledgement without a fresh stationary report must time out without local application; Task 1 tests it.
++- A result whose plan start is in the past must re-snapshot/re-solve rather than time-shift; Task 3 tests it.
++- Negotiation arriving during partial execution start must own cleanup before issuing its command; Task 4 tests it.
++- Recovery after any partial failure must publish stationary occupancy before legacy replan; Tasks 2 and 4 test it.
++
++---
++
++### Task 1: Observation and quiescence state machine
++
++**Files:**
++- Create: `rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/RobotObservation.hpp`
++- Create: `rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/RobotObservation.cpp`
++- Create: `rmf_fleet_adapter/test/local_traffic/test_RobotObservation.cpp`
++- Modify: `rmf_fleet_adapter/CMakeLists.txt`
++
++**Interfaces:**
++- Produces: `RobotObservationTracker::update(Report)`, `request_stop(Time)`, and `evaluate(Time, QuiescenceOptions) -> QuiescenceStatus`; semantic pose/start signatures and movement revision.
++- Consumes: Robot state report time, pose, optional driving/speed, and `Plan::StartSet`.
++
++- [ ] Write Catch2 tests for fresh identical reports, material movement, stale reports, missing driving evidence, invalid starts, settle interval, and stop timeout.
++- [ ] Build/run the focused test and verify it fails because the tracker does not exist.
++- [ ] Implement the minimal tracker with configurable tolerances and no blocking waits.
++- [ ] Run the focused tests and verify all cases pass.
++- [ ] Commit the task.
++
++### Task 2: Stationary occupancy and non-atomic apply transaction
++
++**Files:**
++- Create: `rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/GroupPlanApplication.hpp`
++- Create: `rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/GroupPlanApplication.cpp`
++- Create: `rmf_fleet_adapter/test/local_traffic/test_GroupPlanApplication.cpp`
++- Modify: `rmf_fleet_adapter/src/rmf_fleet_adapter/events/ExecutePlan.hpp`
++- Modify: `rmf_fleet_adapter/src/rmf_fleet_adapter/events/ExecutePlan.cpp`
++- Modify: `rmf_fleet_adapter/CMakeLists.txt`
++
++**Interfaces:**
++- Produces: stationary hold itinerary builder; `ExecutePlan::make(..., SchedulePolicy)`; group registration/start state machine with injectable registration/start functions and recovery callback.
++- Consumes: Task 1 stable observations, participant schedule handles, projected full itineraries, and prepared plans.
++
++- [ ] Write tests proving stationary occupancy replaces obsolete motion and survives cleanup, schedule failure prevents all command starts, kth start failure stops started members and restores all holds, and schedule/dependencies/completion callbacks execute exactly once.
++- [ ] Run focused tests and verify expected failures against current coupled `ExecutePlan::make()`.
++- [ ] Split schedule registration from execution creation with a policy that preserves the legacy default.
++- [ ] Implement schedule-first group application and explicit recovery without claiming atomicity.
++- [ ] Run focused and existing Fleet Adapter tests; commit.
++
++### Task 3: Fleet-owned LocalJointPlanningCoordinator
++
++**Files:**
++- Create: `rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.hpp`
++- Create: `rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.cpp`
++- Create: `rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningOptions.hpp`
++- Create: `rmf_fleet_adapter/test/local_traffic/test_LocalJointPlanningCoordinator.cpp`
++- Modify: `rmf_fleet_adapter/src/rmf_fleet_adapter/agv/internal_FleetUpdateHandle.hpp`
++- Modify: `rmf_fleet_adapter/src/rmf_fleet_adapter/agv/FleetUpdateHandle.cpp`
++- Modify: `rmf_fleet_adapter/CMakeLists.txt`
++
++**Interfaces:**
++- Produces: register/update/unregister active intent, cancel for negotiation, request local planning, metrics, and default-off configuration.
++- Consumes: Tasks 1-2 APIs, `LocalConflictResolver`, fleet worker, solver worker, schedule mirror, and callbacks supplied by active GoToPlace events.
++
++- [ ] Write tests for two-to-four agents, hard/config limits, external participants, unsupported/budget fallback, asynchronous worker behavior, stale goal/generation/cancel/pose rejection, stale-start re-solve, current-snapshot conflict revalidation, and repeated negotiation preemption.
++- [ ] Run tests and verify they fail before implementation.
++- [ ] Implement bounded ownership/snapshot/solve/apply/fallback state machine and metrics.
++- [ ] Run focused tests and commit.
++
++### Task 4: GoToPlace and negotiation integration
++
++**Files:**
++- Modify: `rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.hpp`
++- Modify: `rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.cpp`
++- Modify: `rmf_fleet_adapter/src/rmf_fleet_adapter/agv/RobotContext.hpp`
++- Modify: `rmf_fleet_adapter/src/rmf_fleet_adapter/agv/RobotContext.cpp`
++- Create: `rmf_fleet_adapter/test/local_traffic/test_GoToPlaceLocalJointPlanning.cpp`
++- Modify: `rmf_fleet_adapter/CMakeLists.txt`
++
++**Interfaces:**
++- Produces: current-active-intent lifecycle at initial planning/replan/cancel/finish and ordered negotiation takeover.
++- Consumes: Task 3 coordinator and Task 2 schedule-free ExecutePlan creation.
++
++- [ ] Write lifecycle tests proving queued goals are excluded, original goals survive holding, initial/replan registration works, cancel/goal change invalidates strictly, and `_respond` cannot overlap local stop/solve/apply command ownership.
++- [ ] Run tests and verify expected failures.
++- [ ] Wire coordinator into RobotContext/FleetUpdateHandle and GoToPlace boundaries with the legacy path unchanged when disabled/fallback occurs.
++- [ ] Run focused and full Fleet Adapter tests; commit.
++
++### Task 5: Reproducibility artifacts and topology comparison
++
++**Files:**
++- Create in simulator experiment branch: `experiments/local-mapf-online/README.md`
++- Create in simulator experiment branch: `experiments/local-mapf-online/topology-comparison.csv`
++- Preserve: `experiments/local-mapf-online/core-patches/*.patch`
++- Create: `experiments/local-mapf-online/rmf-ros2.patch`
++
++**Interfaces:**
++- Produces: exact baseline/feature commits, build commands, patch application order, old-failure/new-PASS topology matrix, and explicit tested/untested claims.
++- Consumes: completed core and ROS changes.
++
++- [ ] Record start/goal/holding/terminal occupancy differences and separate baseline-success performance from legacy-failure resolution.
++- [ ] Export the complete rmf_ros2 patch without mixing repository histories or changing upstream remotes.
++- [ ] Verify patches apply to recorded baselines and commit artifacts.
++
++### Task 6: Core and ROS regression/build verification
++
++**Files:**
++- Create in simulator experiment branch: `experiments/local-mapf-online/results/core-tests.log`
++- Create in simulator experiment branch: `experiments/local-mapf-online/results/ros-build-tests.log`
++
++**Interfaces:**
++- Produces: fresh build/test evidence for core `e569de3`, holding preservation, Fleet Adapter focused tests, and full available regressions.
++- Consumes: Tasks 1-5 code and documented environments.
++
++- [ ] Build/test rmf_traffic with LocalConflictResolver and holding regression.
++- [ ] Build rmf_ros2 against that core and run focused/full Fleet Adapter tests.
++- [ ] Record exact commands, exit codes, counts, and unsupported environmental gaps; commit logs.
++
++### Task 7: Docker/MQTT online simulation and reporting
++
++**Files:**
++- Create/modify only experiment harness files under: `experiments/local-mapf-online/simulation/`
++- Create results under: `experiments/local-mapf-online/results/simulation/`
++- Modify: `experiments/local-mapf-online/README.md`
++
++**Interfaces:**
++- Produces: repeatable launch/injection/measurement scripts and timestamped JSON/CSV/log results.
++- Consumes: built core/ROS image, existing VDA5050 simulator and adapter without command gating or external arbiter.
++
++- [ ] Add measurement-first scripts for real simulator poses, report freshness/driving/speed, minimum separation, waits, task status, negotiation/replan/local metrics, stale reasons, and plan/order ID mapping.
++- [ ] Run single-robot replan regression and A/B+C+D at varied injection times.
++- [ ] Run replans during approach, bay occupancy, opponent pass, and between-waypoint movement; speed/report delay/pause; cancel/goal change; idle/terminal occupancy; schedule/start failure injection.
++- [ ] Repeat key dynamic scenarios, classify every failure/unsupported item, and never substitute graph checkpoint calculations for pose-based evidence.
++- [ ] Commit code/results and non-force push the simulator experimental branch.
+diff --git a/docs/superpowers/specs/2026-10-03-local-mapf-online-integration-design.md b/docs/superpowers/specs/2026-10-03-local-mapf-online-integration-design.md
+new file mode 100644
+index 0000000..d1a8070
+--- /dev/null
++++ b/docs/superpowers/specs/2026-10-03-local-mapf-online-integration-design.md
+@@ -0,0 +1,130 @@
++# Local MAPF Online Integration Design
++
++## Scope
++
++This experimental, opt-in integration evaluates whether the bounded
++`rmf_traffic::agv::LocalConflictResolver` at commit `e569de3` can coordinate
++two to four active `GoToPlace` events in one Fleet Adapter process. It does not
++change the VDA5050 adapter, add an external arbiter, deploy to real robots, or
++claim that fallback to legacy RMF resolves legacy deadlocks.
++
++The hard solver limit is four agents. Runtime configuration may select a lower
++limit but cannot raise it. More than four eligible local intents, unsupported
++inputs, external-fleet conflicts, repeated stale results, or exhausted budgets
++return control to the existing RMF planning and negotiation paths while
++preserving each physical robot's stationary schedule occupancy.
++
++## Ownership and active intents
++
++`FleetUpdateHandle::Implementation` owns one `LocalJointPlanningCoordinator`
++for its process and fleet. Only the currently active `GoToPlace` event may
++register an intent. An intent contains participant ID, current `StartSet`, the
++chosen original task goal, planner, request generation, location observation,
++and weak callbacks for result application and fallback. Pending future tasks
++are never registered.
++
++Each participant has one navigation owner: ordinary planning, local quiescing,
++local solving, local applying, or negotiation. Ownership transitions run on
++the fleet worker. A negotiation response invalidates a local generation,
++cancels its solver, and waits for local cleanup before the legacy responder is
++allowed to start a command. Repeated negotiation preemption is metered and
++eventually suppresses local retries for that active generation.
++
++## Quiescence and observations
++
++Calling `RobotCommandHandle::stop()` requests quiescence but does not prove it.
++The coordinator asynchronously waits for all of the following:
++
++- a state report newer than the stop request and within a configurable
++  freshness window;
++- non-driving/velocity-below-threshold evidence when the command integration
++  supplies it;
++- pose displacement and yaw below configurable tolerances for a configurable
++  settling period;
++- a valid, non-empty `StartSet` consistent with the stable pose.
++
++The fleet worker is never blocked while waiting. Timeout, stale telemetry,
++disconnect, or invalid starts aborts local application and invokes legacy
++fallback. Identical repeated reports refresh telemetry but do not count as
++movement. Material translation, rotation, lane/waypoint change, goal change,
++cancel, or generation change invalidates a solve.
++
++## Stationary schedule occupancy
++
++After physical quiescence, each participant receives a stationary itinerary at
++its reported pose. It begins at the observation time and extends beyond the
++local solve/apply deadline. This replaces the obsolete moving itinerary, so a
++stopped robot neither appears to keep moving nor disappears. Cleanup and
++fallback replace the hold with a new plan or extend it; they never clear the
++physical occupancy without a replacement.
++
++External participants remain in the schedule snapshot and are treated as
++obstacles by `LocalConflictResolver`. They are never included in the local
++commit group.
++
++## Solving and stale validation
++
++The coordinator captures all starts, goals, planner pointers, participant IDs,
++generations, semantic location signatures, and one schedule snapshot on the
++fleet worker. `LocalConflictResolver::solve()` runs on a separate worker. Its
++result returns to the fleet worker.
++
++Before applying, every participant is revalidated for generation, active goal,
++cancel state, ownership, report freshness, stable pose tolerance, and valid
++starts. Plan start times that are already in the past are not shifted blindly:
++the group is re-snapshotted and re-solved within a bounded retry count. The
++final projected itineraries are checked for pairwise conflicts and conflicts
++with the current external schedule snapshot immediately before registration.
++
++## Schedule-first, non-atomic application
++
++Application has two explicitly non-atomic stages:
++
++1. Allocate plan IDs, project each full itinerary, and register every schedule
++   itinerary while all robots remain stopped.
++2. Create and start each `ExecutePlan` without performing duplicate schedule
++   registration.
++
++Both stages expose test-only failure injection. If schedule registration fails,
++all participants remain stopped, stationary occupancy is restored, and legacy
++replanning is requested. If execution creation/start fails after some robots
++have begun, all affected robots are stopped again, physical quiescence is
++confirmed asynchronously, stationary occupancy is restored, and legacy
++replanning resumes. The guarantee is therefore “no command starts before every
++schedule registration succeeds”, not transactional or atomic application.
++
++`ExecutePlan` preparation must preserve existing dependency, completion,
++cancel, and task-event semantics exactly once. Local plans terminate at the
++original task goal. Holding/bay waypoints are intermediate motion and never
++complete the task.
++
++## Integration boundaries
++
++`GoToPlace::_find_plan()` registers or refreshes the current active intent
++before ordinary initial planning and replanning. If a local group is accepted,
++individual planning is suspended for that generation. Otherwise the existing
++`FindPath` path proceeds unchanged.
++
++`GoToPlace::_respond()` requests negotiation ownership. It invalidates and
++cleans up any local cycle before calling the existing `services::Negotiate`
++path. The PoC does not attempt a multi-participant submission across separate
++negotiation tables.
++
++Cancel, kill, interrupt, goal reselection, and completed task unregister their
++intent and invalidate callbacks. The feature is disabled by default.
++
++## Verification
++
++Unit tests cover semantic pose revisions, freshness and stop settling,
++stationary occupancy, stale result rejection, past-start retry, collision
++revalidation, both failure injection stages, negotiation ownership, repeated
++preemption, greater-than-four fallback, external participants, and original
++goal completion.
++
++Docker/MQTT experiments separately record simulator poses, minimum separation,
++task completion, maximum wait, negotiation/replan/local-solve counts, stale
++discard reasons, plan IDs, VDA5050 order IDs, and unsupported cases. Required
++experiments include A/B with dynamic C and D, replans at multiple motion
++phases, report delay, speed variation, pause, cancellation, goal change, idle
++occupancy, terminal occupancy, and injected partial application failures.
++
+-- 
+2.43.0
+

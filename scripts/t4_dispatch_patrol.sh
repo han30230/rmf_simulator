@@ -10,7 +10,7 @@ docker exec -i \
   -e DESTINATION="$DESTINATION" \
   -e FLEET_NAME="$FLEET_NAME" \
   rmf_task_dispatcher \
-  bash -lc 'source /opt/ros/jazzy/setup.bash && python3 -' <<'PY'
+  bash -lc 'source /rmf_demos_ws/install/setup.bash && python3 -' <<'PY'
 import json
 import os
 import time
@@ -18,10 +18,14 @@ import uuid
 
 import rclpy
 from rmf_task_msgs.msg import ApiRequest
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 
 rclpy.init()
 node = rclpy.create_node('reconstructed_t4_dispatch')
-publisher = node.create_publisher(ApiRequest, '/task_api_requests', 10)
+qos = QoSProfile(depth=10)
+qos.reliability = ReliabilityPolicy.RELIABLE
+qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+publisher = node.create_publisher(ApiRequest, '/task_api_requests', qos)
 
 request = ApiRequest()
 request.request_id = f'reconstructed-{uuid.uuid4()}'

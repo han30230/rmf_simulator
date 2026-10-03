@@ -1,0 +1,270 @@
+From de1b6a155c8f68ad74678441ca42060dd9919eeb Mon Sep 17 00:00:00 2001
+From: han30230 <han30230@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 19:45:58 +0900
+Subject: [PATCH 1/5] Document local MAPF negotiation design
+
+---
+ .../2026-10-03-local-mapf-negotiation.md      | 121 +++++++++++++++++
+ ...026-10-03-local-mapf-negotiation-design.md | 125 ++++++++++++++++++
+ 2 files changed, 246 insertions(+)
+ create mode 100644 docs/superpowers/plans/2026-10-03-local-mapf-negotiation.md
+ create mode 100644 docs/superpowers/specs/2026-10-03-local-mapf-negotiation-design.md
+
+diff --git a/docs/superpowers/plans/2026-10-03-local-mapf-negotiation.md b/docs/superpowers/plans/2026-10-03-local-mapf-negotiation.md
+new file mode 100644
+index 0000000..ea8511b
+--- /dev/null
++++ b/docs/superpowers/plans/2026-10-03-local-mapf-negotiation.md
+@@ -0,0 +1,121 @@
++# Local MAPF Negotiation Implementation Plan
++
++> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
++
++**Goal:** Implement and measure an opt-in, bounded local joint planner for at most four RMF Traffic participants with safe fallback to existing negotiation.
++
++**Architecture:** A standalone `LocalConflictResolver` reuses each participant's RMF `Planner` in a bounded best-first search over priority orderings. `CentralizedNegotiation` calls it only when opted in and preserves its current table/rollout algorithm as fallback.
++
++**Tech Stack:** C++17, rmf_traffic Planner/schedule/conflict APIs, Catch2, CMake/colcon
++
++**Spec:** `docs/superpowers/specs/2026-10-03-local-mapf-negotiation-design.md`
++
++## Global Constraints
++
++- Preserve baseline `ccdb765` and all holding-point alternative ranking behavior.
++- Modify only `rmf_traffic`; do not modify Fleet Adapter, `rmf_ros2`, external arbiters, or corridor managers/state machines.
++- Hard maximum of four agents; node, replan, and wall-time budgets are configurable.
++- No hardcoded map, corridor, waypoint, robot name, compass direction, or robot count.
++- Successful output is `std::unordered_map<schedule::ParticipantId, Plan>`; every local failure falls back to existing negotiation.
++- This is opt-in core feasibility, not a claimed production insertion point or complete MAPF implementation.
++
++## Review Focus
++
++- Local participant itineraries already in the schedule must be ignored without ignoring external traffic; Task 2 tests both.
++- Initial and terminal stationary occupancy must participate in conflict checks; Task 2 adds persistent-occupancy tests.
++- Synthetic reservations must not produce invalid schedule dependencies; Task 2 asserts returned plans contain no synthetic dependency.
++- Duplicate participant IDs, null planners, zero budgets, and more than four agents must fail deterministically; Task 1 tests validation.
++- Interruption or any budget exhaustion must preserve baseline fallback behavior; Task 3 tests each termination path.
++
++---
++
++### Task 1: Public resolver contract and budget validation
++
++**Files:**
++- Create: `rmf_traffic/include/rmf_traffic/agv/LocalConflictResolver.hpp`
++- Create: `rmf_traffic/src/rmf_traffic/agv/LocalConflictResolver.cpp`
++- Create: `rmf_traffic/test/unit/agv/test_LocalConflictResolver.cpp`
++
++**Interfaces:**
++- Produces: `LocalConflictResolver::{Agent,Options,Metrics,Result,Proposal}` and `solve(const std::vector<Agent>&)`.
++- Consumes: `Planner`, `Plan`, `schedule::Viewer`, participant IDs.
++
++- [ ] Write API/validation tests for empty input, duplicate IDs, null planner, `max_agents > 4`, input exceeding configured maximum, and zero node/replan/time budgets.
++- [ ] Run the focused test and verify compile/test failure because the API is absent.
++- [ ] Add the pimpl-based public API and deterministic status/termination values: `success`, `no_conflict`, `unsupported`, `infeasible`, `budget_exceeded`, `interrupted`.
++- [ ] Implement only input validation and independent single-agent planning with Planner call accounting.
++- [ ] Run focused tests and verify validation and one-agent planning pass.
++- [ ] Commit the public contract and validation.
++
++### Task 2: Bounded prioritized joint search
++
++**Files:**
++- Modify: `rmf_traffic/src/rmf_traffic/agv/LocalConflictResolver.cpp`
++- Modify: `rmf_traffic/test/unit/agv/test_LocalConflictResolver.cpp`
++
++**Interfaces:**
++- Consumes: Task 1 resolver API.
++- Produces: bounded best-first priority-prefix search, external/local route validator, final joint-plan validation, and populated metrics.
++
++- [ ] Add failing 1-vs-1 tests that require one plan to yield via graph holding metadata and assert collision-free completion, holding use, ordinary `Plan` output, and no synthetic dependency.
++- [ ] Add failing tests for external-schedule avoidance plus ignored stale itineraries belonging to the local set.
++- [ ] Add failing tests for persistent initial/goal occupancy and a topology with no feasible priority ordering.
++- [ ] Implement the validator that checks external schedule traffic and committed prefix plans while excluding local participant IDs.
++- [ ] Implement best-first ordering-prefix expansion with configurable node/replan/deadline checks and deterministic tie-breaking by participant ID.
++- [ ] Implement score and metrics for makespan, total arrival, baseline delay, plan cost, conflicts, and holding metadata use.
++- [ ] Add final pairwise validation including persistent terminal occupancy; reject invalid complete nodes.
++- [ ] Run focused tests and verify all Task 2 cases pass.
++- [ ] Commit the local search engine.
++
++### Task 3: Opt-in CentralizedNegotiation integration and fallback
++
++**Files:**
++- Modify: `rmf_traffic/include/rmf_traffic/agv/CentralizedNegotiation.hpp`
++- Modify: `rmf_traffic/src/rmf_traffic/agv/CentralizedNegotiation.cpp`
++- Modify: `rmf_traffic/include/rmf_traffic/agv/SearchDiagnostics.hpp`
++- Modify: `rmf_traffic/test/unit/agv/test_LocalConflictResolver.cpp`
++
++**Interfaces:**
++- Consumes: `LocalConflictResolver::Options`, `Result`, and `Proposal`.
++- Produces: `CentralizedNegotiation::local_conflict_resolution(std::optional<Options>)`; diagnostics for attempted/success/fallback/status and local metrics.
++
++- [ ] Add failing tests proving default-disabled behavior uses tables, opt-in success uses zero negotiation tables, and unsupported/budget/infeasible/interrupted paths invoke baseline fallback.
++- [ ] Add the opt-in option and diagnostics fields without changing default behavior.
++- [ ] Refactor `solve()` only enough to attempt local resolution first and then execute the existing negotiation body unchanged on non-success.
++- [ ] Map a successful local proposal into the existing `Result::proposal()` and preserve blockers/log semantics.
++- [ ] Run focused integration tests and existing `test_Negotiator` cases.
++- [ ] Commit opt-in integration.
++
++### Task 4: Generic six-scenario A/B regression and result artifact
++
++**Files:**
++- Modify: `rmf_traffic/test/unit/agv/test_GenericSingleLane.cpp`
++- Create: `rmf_traffic/test/results/2026-10-03-local-mapf-negotiation/README.md`
++- Create: `rmf_traffic/test/results/2026-10-03-local-mapf-negotiation/metrics.csv`
++
++**Interfaces:**
++- Consumes: opt-in centralized integration and diagnostics.
++- Produces: reproducible baseline/local measurements for six generic scenarios.
++
++- [ ] Extend the fixture with a baseline/local mode and assertions/records for solve time, timeout, Planner calls/replans, table count, rollout alternatives, local nodes, completion, collision/deadlock, holding, makespan, and total delay.
++- [ ] Add the six scenario cases, representing dynamic injection by progressed starts and current schedule state instead of fixed corridor state.
++- [ ] Run baseline with bounded external timeout and capture all metrics, including the expected historical dynamic-opposite and 2-vs-2 timeout behavior.
++- [ ] Run local mode and require collision-free eventual completion for all feasible scenarios, with dynamic-opposite and 2-vs-2 as release-gating cases.
++- [ ] Generate `metrics.csv` and document exact reproduction commands and honest PASS/FAIL conclusions in `README.md`.
++- [ ] Commit A/B tests and results.
++
++### Task 5: Regression, call-graph reassessment, and final evidence
++
++**Files:**
++- Modify: `rmf_traffic/test/results/2026-10-03-local-mapf-negotiation/README.md`
++
++**Interfaces:**
++- Consumes: all prior tasks.
++- Produces: regression evidence and production-boundary analysis grounded in actual call sites.
++
++- [ ] Run the rollout/holding diagnostics and verify the `ccdb765` preservation tests remain green.
++- [ ] Run the complete `rmf_traffic` test suite and record case/assertion totals and elapsed time.
++- [ ] Trace current production negotiation call sites across available repositories without modifying them; document where starts/goals/planners are available and what API/caller changes would be required.
++- [ ] Compare baseline/local three- and four-agent metrics and state whether feasibility and meaningful improvement were demonstrated.
++- [ ] Verify `git diff --check`, inspect the final diff for scope violations, and record the exact commit/worktree status.
++- [ ] Commit final evidence and production call-graph assessment.
+diff --git a/docs/superpowers/specs/2026-10-03-local-mapf-negotiation-design.md b/docs/superpowers/specs/2026-10-03-local-mapf-negotiation-design.md
+new file mode 100644
+index 0000000..c834ac7
+--- /dev/null
++++ b/docs/superpowers/specs/2026-10-03-local-mapf-negotiation-design.md
+@@ -0,0 +1,125 @@
++# Local MAPF Negotiation Core Design
++
++## Purpose
++
++This branch evaluates whether a bounded, core-only joint planner for at most
++four participants can avoid the combinatorial growth observed in RMF's current
++table/proposal/rollout negotiation. It is a feasibility experiment, not a
++production activation point. `CentralizedNegotiation::solve()` is used only as
++an opt-in A/B harness and fallback boundary.
++
++The existing holding-point alternative preservation at baseline `ccdb765`
++remains intact. No fleet adapter, `rmf_ros2`, external arbiter, corridor
++manager, corridor state machine, or robot deployment is in scope.
++
++## Existing Behavior and Failure Mode
++
++`CentralizedNegotiation` currently creates one `SimpleNegotiator` per agent and
++drives the same distributed negotiation protocol in process. A submission
++creates response tables for the remaining participants, so complete table
++orders grow factorially. Rejections add rollout alternative sets; a responder
++then explores combinations across rejecters. A per-rollout alternative cap does
++not bound aggregate table and Cartesian-product growth. This explains why the
++generic dynamic opposite-direction three-agent and 2-vs-2 cases can time out
++even when useful holding alternatives are present.
++
++`CentralizedNegotiation` already owns every required low-level input (start,
++goal, participant ID, planner, schedule viewer), while `schedule::Negotiation`
++does not own participant planners or goals. Therefore the former is the least
++invasive feasibility integration point. The production call boundary will be
++re-evaluated after the PoC against the real call graph; this design does not
++assume that production must integrate there or that adapter changes are
++inevitable.
++
++## Public Core Component
++
++Add independent `rmf_traffic::agv::LocalConflictResolver` API with:
++
++- `Agent`: participant ID, starts, goal, and shared `Planner`.
++- `Options`: configurable maximum agents (hard upper bound four), high-level
++  node budget, low-level replan budget, and wall-clock budget.
++- `Metrics`: status/termination reason, solve time, expanded high-level nodes,
++  low-level replans, conflicts examined/resolved, holding-point use, makespan,
++  total arrival time, and total delay.
++- `Result`: optional `unordered_map<ParticipantId, Plan>`, blocker IDs, and
++  metrics.
++
++The successful proposal uses ordinary RMF `Plan` objects. The API contains no
++map-specific waypoint, corridor identifier, robot name, compass direction, or
++fixed participant-count logic.
++
++## Bounded Prioritized Joint Search
++
++This first implementation is deliberately incomplete MAPF:
++
++1. Plan every participant independently with the existing RMF `Planner` to
++   establish feasibility, shortest-plan cost, and an initial conflict graph.
++2. If the independent plans are already mutually compatible, return them after
++   validating against the external schedule.
++3. Otherwise perform best-first search over priority-order prefixes. Extending
++   a node chooses one unplanned participant and replans only that participant
++   against external schedule traffic plus the already committed prefix plans.
++4. Validate each complete proposal pairwise, including initial and persistent
++   terminal occupancy, before accepting it.
++5. Rank complete/partial states by feasibility, makespan lower bound, total
++   arrival time, total delay from independent plans, and aggregate plan cost.
++   Waiting and detours are therefore penalized without favoring any particular
++   holding waypoint.
++
++Holding/yield routes are discovered by the existing Planner and graph metadata;
++the resolver does not manufacture a corridor resource. If all bounded priority
++orders fail, or any node/replan/time/participant budget is exceeded, the result
++is non-success and the caller falls back immediately to existing negotiation.
++
++## Route Validation and Schedule Semantics
++
++The local low-level validator ignores stale schedule itineraries for all
++participants inside the local conflict set, continues to validate against every
++external participant in the schedule snapshot, and additionally validates
++against prefix plans committed by the high-level search.
++
++Prefix reservations model trajectory conflicts plus stationary initial and
++terminal occupancy. Synthetic local reservations must not leak invalid schedule
++dependencies into returned plans; local planning disables dependency generation
++for those reservations. Final proposals are independently conflict-checked.
++External blockers remain reported to the caller.
++
++## CentralizedNegotiation Integration
++
++Add an opt-in `local_conflict_resolution(Options)` setting. When enabled,
++`solve()` invokes `LocalConflictResolver` before creating negotiation tables:
++
++- success: return the local proposal in the existing `Result::proposal()` type;
++- unsupported, infeasible, interrupted, or budget exceeded: run the original
++  negotiation implementation unchanged;
++- disabled (default): preserve baseline behavior exactly.
++
++Local metrics and whether fallback occurred are exposed for A/B diagnostics.
++This integration point is explicitly limited to core feasibility testing.
++
++## Verification
++
++Use the generic, topology-generated single-lane fixture without fixed IDs or
++robot names. Test 1-vs-1, dynamic same-direction third participant, dynamic
++opposite-direction third participant, 2-vs-1, 1-vs-2, and 2-vs-2. Dynamic cases
++are represented by replanning from the participants' actual progressed starts
++and the schedule state at injection time.
++
++For baseline and local modes record solve time, timeout, Planner calls or local
++replans, negotiation table count, rollout alternatives, local expanded nodes,
++completion, collision/deadlock, holding use, makespan, and total delay. The key
++target is to complete the previously 30-second-timeout dynamic-opposite and
++2-vs-2 cases collision-free and without face-to-face deadlock.
++
++Run focused resolver tests, the generic A/B suite, existing holding/rollout
++diagnostics, and the complete `rmf_traffic` regression suite. Store machine-
++readable and human-readable A/B results under the repository test results
++directory.
++
++## Non-goals and Limits
++
++Prioritized planning is not complete MAPF: a valid solution may exist outside
++the explored orderings or require explicit space-time constraints that the
++current Planner interface cannot express. Such cases must fall back rather than
++be reported as impossible. The PoC does not provide production distributed
++state gathering, task ownership, cancellation, or adapter-side execution.

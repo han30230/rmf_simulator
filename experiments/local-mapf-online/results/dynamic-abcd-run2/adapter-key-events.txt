@@ -1,0 +1,25 @@
+Run: 2026-10-03, default 2 s local solve budget, 180 s MQTT observation
+Tasks: A1->2108, B1->2101, then B2->2101, then A2->2108
+
+cycle 2: success, holding_order_found, solve=0.004 s, nodes=1,
+  low_level_replans=5, conflicts=1/1, holding_used=1, started=2
+cycle 3: time_budget, solve=2.000 s, nodes=7, replans=23,
+  conflicts_resolved/detected=0/3, holding_used=0
+cycle 4: time_budget, solve=2.000 s, nodes=3, replans=14,
+  conflicts_resolved/detected=0/6, holding_used=0; stale=location_changed
+cycles 5..9: repeated 2.000 s time_budget before retry suppression patch;
+  maximum observed nodes=54 and replans=93
+
+Totals within the 180 s monitor window:
+  queued tasks=4
+  local solve completions=8 (1 success, 7 budget failures)
+  legacy failed-negotiation log records=152
+  replan requests=33
+  original task completions=0/4
+  process terminations=0
+  minimum simulator center distance=1.4938 m (A1/B1)
+  holding point 6137 visits=0
+
+Final classification: FAIL. All four tasks remained incomplete. All robots stopped on
+the main line and the simulator reported obstacle blocking. Legacy fallback returned
+control safely but did not resolve the deadlock.

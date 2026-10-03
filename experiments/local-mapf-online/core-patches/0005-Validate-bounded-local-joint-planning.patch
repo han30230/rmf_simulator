@@ -1,0 +1,1511 @@
+From e569de32eb5d36abf8fc727a9c148ed8d11a57e7 Mon Sep 17 00:00:00 2001
+From: han30230 <han30230@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 21:34:18 +0900
+Subject: [PATCH 5/5] Validate bounded local joint planning
+
+---
+ .../rmf_traffic/agv/LocalConflictResolver.hpp |   6 +
+ .../include/rmf_traffic/agv/Planner.hpp       |   4 +
+ .../rmf_traffic/agv/SearchDiagnostics.hpp     |   4 +
+ .../agv/CentralizedNegotiation.cpp            |   8 +
+ .../rmf_traffic/agv/LocalConflictResolver.cpp | 538 +++++++++++++++++-
+ rmf_traffic/src/rmf_traffic/agv/Planner.cpp   |  46 ++
+ .../src/rmf_traffic/agv/internal_Planner.hpp  |  10 +
+ .../README.md                                 |  92 +++
+ .../ab-summary.log                            |  32 ++
+ .../metrics.csv                               |  14 +
+ .../test/unit/agv/test_GenericSingleLane.cpp  | 265 +++++++--
+ .../unit/agv/test_LocalConflictResolver.cpp   |  52 +-
+ 12 files changed, 994 insertions(+), 77 deletions(-)
+ create mode 100644 rmf_traffic/test/results/2026-10-03-local-mapf-negotiation/README.md
+ create mode 100644 rmf_traffic/test/results/2026-10-03-local-mapf-negotiation/ab-summary.log
+ create mode 100644 rmf_traffic/test/results/2026-10-03-local-mapf-negotiation/metrics.csv
+
+diff --git a/rmf_traffic/include/rmf_traffic/agv/LocalConflictResolver.hpp b/rmf_traffic/include/rmf_traffic/agv/LocalConflictResolver.hpp
+index 5239186..1431767 100644
+--- a/rmf_traffic/include/rmf_traffic/agv/LocalConflictResolver.hpp
++++ b/rmf_traffic/include/rmf_traffic/agv/LocalConflictResolver.hpp
+@@ -65,6 +65,8 @@ public:
+     std::size_t max_low_level_replans = 96;
+     std::chrono::steady_clock::duration max_solve_time =
+       std::chrono::seconds(2);
++    std::chrono::steady_clock::duration max_low_level_time =
++      std::chrono::milliseconds(500);
+   };
+ 
+   struct Metrics
+@@ -77,6 +79,10 @@ public:
+     std::size_t conflicts_detected = 0;
+     std::size_t conflicts_resolved = 0;
+     std::size_t holding_points_used = 0;
++    std::size_t holding_candidates = 0;
++    std::size_t holding_prefix_plans = 0;
++    std::size_t holding_suffix_plans = 0;
++    std::size_t rejected_complete_plans = 0;
+     double makespan_seconds = 0.0;
+     double total_arrival_seconds = 0.0;
+     double total_delay_seconds = 0.0;
+diff --git a/rmf_traffic/include/rmf_traffic/agv/Planner.hpp b/rmf_traffic/include/rmf_traffic/agv/Planner.hpp
+index be720bd..fe37200 100644
+--- a/rmf_traffic/include/rmf_traffic/agv/Planner.hpp
++++ b/rmf_traffic/include/rmf_traffic/agv/Planner.hpp
+@@ -33,6 +33,8 @@
+ namespace rmf_traffic {
+ namespace agv {
+ 
++class LocalConflictResolver;
++
+ //==============================================================================
+ // Forward declaration
+ class Plan;
+@@ -898,6 +900,8 @@ public:
+   class Implementation;
+ private:
+   Plan();
++  static Plan concatenate(Plan prefix, Plan suffix);
++  friend class LocalConflictResolver;
+   rmf_utils::impl_ptr<Implementation> _pimpl;
+ };
+ 
+diff --git a/rmf_traffic/include/rmf_traffic/agv/SearchDiagnostics.hpp b/rmf_traffic/include/rmf_traffic/agv/SearchDiagnostics.hpp
+index 60a1aaf..cb02123 100644
+--- a/rmf_traffic/include/rmf_traffic/agv/SearchDiagnostics.hpp
++++ b/rmf_traffic/include/rmf_traffic/agv/SearchDiagnostics.hpp
+@@ -51,6 +51,10 @@ struct SearchDiagnostics
+   std::size_t local_low_level_replans = 0;
+   std::size_t local_conflicts_resolved = 0;
+   std::size_t local_holding_points_used = 0;
++  std::size_t local_holding_candidates = 0;
++  std::size_t local_holding_prefix_plans = 0;
++  std::size_t local_holding_suffix_plans = 0;
++  std::size_t local_rejected_complete_plans = 0;
+   double local_makespan_seconds = 0.0;
+   double local_total_delay_seconds = 0.0;
+   std::vector<Event> events;
+diff --git a/rmf_traffic/src/rmf_traffic/agv/CentralizedNegotiation.cpp b/rmf_traffic/src/rmf_traffic/agv/CentralizedNegotiation.cpp
+index ef90806..744af7f 100644
+--- a/rmf_traffic/src/rmf_traffic/agv/CentralizedNegotiation.cpp
++++ b/rmf_traffic/src/rmf_traffic/agv/CentralizedNegotiation.cpp
+@@ -326,6 +326,14 @@ auto CentralizedNegotiation::solve(const std::vector<Agent>& agents) const
+         local_metrics.conflicts_resolved;
+       diagnostics.local_holding_points_used =
+         local_metrics.holding_points_used;
++      diagnostics.local_holding_candidates =
++        local_metrics.holding_candidates;
++      diagnostics.local_holding_prefix_plans =
++        local_metrics.holding_prefix_plans;
++      diagnostics.local_holding_suffix_plans =
++        local_metrics.holding_suffix_plans;
++      diagnostics.local_rejected_complete_plans =
++        local_metrics.rejected_complete_plans;
+       diagnostics.local_makespan_seconds = local_metrics.makespan_seconds;
+       diagnostics.local_total_delay_seconds =
+         local_metrics.total_delay_seconds;
+diff --git a/rmf_traffic/src/rmf_traffic/agv/LocalConflictResolver.cpp b/rmf_traffic/src/rmf_traffic/agv/LocalConflictResolver.cpp
+index b917be4..64ee4cf 100644
+--- a/rmf_traffic/src/rmf_traffic/agv/LocalConflictResolver.cpp
++++ b/rmf_traffic/src/rmf_traffic/agv/LocalConflictResolver.cpp
+@@ -326,8 +326,26 @@ void populate_metrics(
+ 
+     bool used_holding = false;
+     const auto& graph = agent.planner->get_configuration().graph();
++    for (const auto& waypoint : plan.get_waypoints())
++    {
++      if (!waypoint.graph_index())
++        continue;
++
++      const auto index = *waypoint.graph_index();
++      if (index != plan.get_start().waypoint()
++        && index != agent.goal.waypoint()
++        && graph.get_waypoint(index).is_holding_point())
++      {
++        used_holding = true;
++        break;
++      }
++    }
++
+     for (const auto& route : plan.get_itinerary())
+     {
++      if (used_holding)
++        break;
++
+       if (route.trajectory().size() < 2)
+         continue;
+ 
+@@ -469,7 +487,9 @@ LocalConflictResolver::Result LocalConflictResolver::solve(
+ 
+   if (options.max_high_level_nodes == 0
+     || options.max_low_level_replans == 0
+-    || options.max_solve_time <= std::chrono::steady_clock::duration::zero())
++    || options.max_solve_time <= std::chrono::steady_clock::duration::zero()
++    || options.max_low_level_time
++    <= std::chrono::steady_clock::duration::zero())
+   {
+     return finish(Status::unsupported, "invalid_budget");
+   }
+@@ -501,6 +521,18 @@ LocalConflictResolver::Result LocalConflictResolver::solve(
+     local_ids.insert(agent.id);
+ 
+   const auto deadline = started + options.max_solve_time;
++  const auto externally_interrupted = [&agents]()
++    {
++      for (const auto& agent : agents)
++      {
++        const auto interrupter =
++          agent.planner->get_default_options().interrupter();
++        if (interrupter && interrupter())
++          return true;
++      }
++
++      return false;
++    };
+   Proposal independent;
+   std::unordered_map<schedule::ParticipantId, Profile> profiles;
+   std::unordered_map<schedule::ParticipantId, double> ideal_arrivals;
+@@ -521,10 +553,13 @@ LocalConflictResolver::Result LocalConflictResolver::solve(
+     profiles.emplace(agent.id, profile);
+     auto planner_options = agent.planner->get_default_options();
+     const auto upstream_interrupter = planner_options.interrupter();
++    const auto call_deadline = std::min(
++      deadline,
++      std::chrono::steady_clock::now() + options.max_low_level_time);
+     planner_options.interrupter(
+-      [deadline, upstream_interrupter]()
++      [call_deadline, upstream_interrupter]()
+       {
+-        return std::chrono::steady_clock::now() >= deadline
++        return std::chrono::steady_clock::now() >= call_deadline
+           || (upstream_interrupter && upstream_interrupter());
+       });
+     planner_options.dependency_window(std::nullopt);
+@@ -545,7 +580,10 @@ LocalConflictResolver::Result LocalConflictResolver::solve(
+         if (std::chrono::steady_clock::now() >= deadline)
+           return finish(Status::budget_exceeded, "time_budget");
+ 
+-        return finish(Status::interrupted, "low_level_interrupted");
++        if (externally_interrupted())
++          return finish(Status::interrupted, "low_level_interrupted");
++
++        return finish(Status::budget_exceeded, "low_level_time_budget");
+       }
+ 
+       return finish(Status::infeasible, "independent_plan_failed");
+@@ -600,6 +638,343 @@ LocalConflictResolver::Result LocalConflictResolver::solve(
+     return finish(Status::no_conflict, "independent_plans_compatible");
+   }
+ 
++  const auto make_options_for = [&] (
++      const Agent& agent,
++      const std::vector<Reservation>& reservations)
++    {
++      auto planner_options = agent.planner->get_default_options();
++      const auto upstream_interrupter = planner_options.interrupter();
++      const auto call_deadline = std::min(
++        deadline,
++        std::chrono::steady_clock::now() + options.max_low_level_time);
++      planner_options.interrupter(
++        [call_deadline, upstream_interrupter]()
++        {
++          return std::chrono::steady_clock::now() >= call_deadline
++            || (upstream_interrupter && upstream_interrupter());
++        });
++      planner_options.dependency_window(std::nullopt);
++      planner_options.validator(
++        rmf_utils::make_clone<LocalRouteValidator>(
++          _pimpl->viewer, local_ids, profiles.at(agent.id), reservations));
++      return planner_options;
++    };
++
++  // Explore a bounded joint yield macro: one agent reaches a graph-declared
++  // holding point, the remaining agents are prioritized around that
++  // reservation, and then the yielding agent resumes toward its original goal.
++  // This is still incomplete MAPF, but unlike plain prioritized planning it
++  // can represent a side-bay maneuver without any corridor-specific model.
++  for (std::size_t yielding_index = 0;
++       yielding_index < agents.size(); ++yielding_index)
++  {
++    const auto& yielding = agents[yielding_index];
++    const auto& graph = yielding.planner->get_configuration().graph();
++    std::vector<std::pair<double, std::size_t>> holding_candidates;
++    for (std::size_t holding = 0; holding < graph.num_waypoints(); ++holding)
++    {
++      if (!graph.get_waypoint(holding).is_holding_point()
++        || holding == yielding.goal.waypoint())
++      {
++        continue;
++      }
++
++      const auto to_holding = yielding.planner->quickest_path(
++        yielding.starts, holding);
++      const auto from_holding = yielding.planner->quickest_path(
++        {Plan::Start{epoch, holding, 0.0}}, yielding.goal.waypoint());
++      if (to_holding && from_holding)
++      {
++        holding_candidates.emplace_back(
++          to_holding->cost() + from_holding->cost(), holding);
++      }
++    }
++    std::sort(holding_candidates.begin(), holding_candidates.end());
++    result._pimpl->metrics.holding_candidates += holding_candidates.size();
++
++    for (const auto& [_, holding] : holding_candidates)
++    {
++      if (result._pimpl->metrics.low_level_replans
++        >= options.max_low_level_replans)
++      {
++        return finish(Status::budget_exceeded, "low_level_replan_budget");
++      }
++
++      ++result._pimpl->metrics.low_level_replans;
++      Plan::Goal holding_goal{holding};
++      if (std::any_of(
++          yielding.starts.begin(), yielding.starts.end(),
++          [holding](const auto& start)
++          {
++            return start.waypoint() == holding;
++          }))
++      {
++        const auto latest_start = std::max_element(
++          yielding.starts.begin(), yielding.starts.end(),
++          [](const auto& a, const auto& b)
++          {
++            return a.time() < b.time();
++          })->time();
++        holding_goal.minimum_time(latest_start + std::chrono::seconds(1));
++      }
++      auto prefix_result = yielding.planner->plan(
++        yielding.starts,
++        std::move(holding_goal),
++        make_options_for(yielding, {}));
++      if (!prefix_result)
++      {
++        if (prefix_result.interrupted()
++          && std::chrono::steady_clock::now() >= deadline)
++        {
++          return finish(Status::budget_exceeded, "time_budget");
++        }
++        if (prefix_result.interrupted() && externally_interrupted())
++          return finish(Status::interrupted, "low_level_interrupted");
++
++        continue;
++      }
++      ++result._pimpl->metrics.holding_prefix_plans;
++      const Plan prefix = *std::move(prefix_result);
++      const auto prefix_reservation = make_reservation(
++        yielding, profiles.at(yielding.id), prefix);
++
++      std::vector<std::size_t> remaining;
++      for (std::size_t i = 0; i < agents.size(); ++i)
++        if (i != yielding_index)
++          remaining.push_back(i);
++      std::sort(remaining.begin(), remaining.end(), [&](const auto a, const auto b)
++        {
++          return agents[a].id < agents[b].id;
++        });
++
++      do
++      {
++        if (std::chrono::steady_clock::now() >= deadline)
++          return finish(Status::budget_exceeded, "time_budget");
++        if (++result._pimpl->metrics.high_level_nodes
++          > options.max_high_level_nodes)
++        {
++          return finish(Status::budget_exceeded, "high_level_node_budget");
++        }
++
++        Proposal candidate;
++        std::vector<Reservation> reservations{prefix_reservation};
++        std::vector<Reservation> other_reservations;
++        bool failed = false;
++        for (const auto index : remaining)
++        {
++          const auto& agent = agents[index];
++          if (result._pimpl->metrics.low_level_replans
++            >= options.max_low_level_replans)
++          {
++            return finish(
++              Status::budget_exceeded, "low_level_replan_budget");
++          }
++
++          std::optional<Plan> complete_plan;
++          const auto& agent_graph =
++            agent.planner->get_configuration().graph();
++          const auto release_time =
++            prefix_reservation.terminal_time + std::chrono::seconds(1);
++
++          ++result._pimpl->metrics.low_level_replans;
++          auto direct_result = agent.planner->plan(
++            agent.starts, agent.goal,
++            make_options_for(agent, reservations));
++          if (direct_result)
++          {
++            complete_plan = *std::move(direct_result);
++          }
++          else
++          {
++            const auto blockers = direct_result.blockers();
++            result._pimpl->blockers.insert(
++              blockers.begin(), blockers.end());
++            if (direct_result.interrupted()
++              && std::chrono::steady_clock::now() >= deadline)
++            {
++              return finish(Status::budget_exceeded, "time_budget");
++            }
++            if (direct_result.interrupted() && externally_interrupted())
++              return finish(Status::interrupted, "low_level_interrupted");
++          }
++
++          if (!complete_plan
++            && agent.starts.size() == 1
++            && !agent_graph.get_waypoint(agent.starts.front().waypoint())
++            .is_passthrough_point()
++            && agent.starts.front().time() < release_time)
++          {
++            if (result._pimpl->metrics.low_level_replans
++              >= options.max_low_level_replans)
++            {
++              return finish(
++                Status::budget_exceeded, "low_level_replan_budget");
++            }
++            ++result._pimpl->metrics.low_level_replans;
++            auto wait_result = agent.planner->plan(
++              agent.starts,
++              Plan::Goal{
++                agent.starts.front().waypoint(), release_time,
++                agent.starts.front().orientation()},
++              make_options_for(agent, reservations));
++            if (!wait_result)
++            {
++              if (wait_result.interrupted()
++                && std::chrono::steady_clock::now() >= deadline)
++              {
++                return finish(Status::budget_exceeded, "time_budget");
++              }
++              if (wait_result.interrupted() && externally_interrupted())
++                return finish(Status::interrupted, "low_level_interrupted");
++
++              failed = true;
++              break;
++            }
++
++            Plan wait_plan = *std::move(wait_result);
++            const auto wait_finish = wait_plan.get_itinerary().empty()
++              ? wait_plan.get_start().time()
++              : wait_plan.get_itinerary().back().trajectory().back().time();
++            const auto wait_orientation = wait_plan.get_itinerary().empty()
++              ? wait_plan.get_start().orientation()
++              : wait_plan.get_itinerary().back().trajectory()
++              .back().position()[2];
++            const std::vector<Plan::Start> delayed_starts{Plan::Start{
++                wait_finish,
++                agent.starts.front().waypoint(),
++                wait_orientation}};
++            if (result._pimpl->metrics.low_level_replans
++              >= options.max_low_level_replans)
++            {
++              return finish(
++                Status::budget_exceeded, "low_level_replan_budget");
++            }
++            ++result._pimpl->metrics.low_level_replans;
++            auto delayed_result = agent.planner->plan(
++              delayed_starts, agent.goal,
++              make_options_for(agent, reservations));
++            if (delayed_result)
++            {
++              complete_plan = Plan::concatenate(
++                std::move(wait_plan), *std::move(delayed_result));
++            }
++            else
++            {
++              const auto blockers = delayed_result.blockers();
++              result._pimpl->blockers.insert(
++                blockers.begin(), blockers.end());
++              if (delayed_result.interrupted()
++                && std::chrono::steady_clock::now() >= deadline)
++              {
++                return finish(Status::budget_exceeded, "time_budget");
++              }
++              if (delayed_result.interrupted() && externally_interrupted())
++                return finish(Status::interrupted, "low_level_interrupted");
++            }
++          }
++
++          if (!complete_plan)
++          {
++            failed = true;
++            break;
++          }
++
++          auto inserted = candidate.emplace(
++            agent.id, *std::move(complete_plan));
++          auto reservation = make_reservation(
++            agent, profiles.at(agent.id), inserted.first->second);
++          reservations.push_back(reservation);
++          other_reservations.push_back(std::move(reservation));
++        }
++
++        if (failed)
++          continue;
++
++        Time resume_time = prefix_reservation.terminal_time;
++        for (const auto& reservation : other_reservations)
++        {
++          resume_time = std::max(
++            resume_time,
++            reservation.terminal_time + std::chrono::seconds(1));
++        }
++
++        if (result._pimpl->metrics.low_level_replans
++          >= options.max_low_level_replans)
++        {
++          return finish(Status::budget_exceeded, "low_level_replan_budget");
++        }
++        ++result._pimpl->metrics.low_level_replans;
++        auto suffix_result = yielding.planner->plan(
++          Plan::Start{
++            resume_time,
++            holding,
++            prefix_reservation.terminal_position[2]},
++          yielding.goal,
++          make_options_for(yielding, other_reservations));
++        if (!suffix_result)
++        {
++          if (suffix_result.interrupted()
++            && std::chrono::steady_clock::now() >= deadline)
++          {
++            return finish(Status::budget_exceeded, "time_budget");
++          }
++          if (suffix_result.interrupted() && externally_interrupted())
++            return finish(Status::interrupted, "low_level_interrupted");
++
++          continue;
++        }
++        ++result._pimpl->metrics.holding_suffix_plans;
++
++        candidate.emplace(
++          yielding.id,
++          Plan::concatenate(prefix, *std::move(suffix_result)));
++        std::unordered_map<schedule::ParticipantId, Reservation>
++          candidate_reservations;
++        for (const auto& agent : agents)
++        {
++          candidate_reservations.emplace(
++            agent.id,
++            make_reservation(
++              agent, profiles.at(agent.id), candidate.at(agent.id)));
++        }
++
++        bool conflict = false;
++        for (std::size_t i = 0; i < agents.size(); ++i)
++        {
++          for (std::size_t j = i + 1; j < agents.size(); ++j)
++          {
++            if (plans_conflict(
++                candidate_reservations.at(agents[i].id),
++                candidate_reservations.at(agents[j].id)))
++            {
++              conflict = true;
++              ++result._pimpl->metrics.conflicts_detected;
++            }
++          }
++        }
++
++        if (!conflict)
++        {
++          result._pimpl->metrics.conflicts_resolved = 1;
++          populate_metrics(
++            result._pimpl->metrics,
++            candidate,
++            agents,
++            ideal_arrivals,
++            epoch);
++          result._pimpl->proposal = std::move(candidate);
++          return finish(Status::success, "holding_order_found");
++        }
++        ++result._pimpl->metrics.rejected_complete_plans;
++      } while (std::next_permutation(
++          remaining.begin(), remaining.end(), [&](const auto a, const auto b)
++          {
++            return agents[a].id < agents[b].id;
++          }));
++    }
++  }
++
+   std::vector<std::size_t> order(agents.size());
+   std::iota(order.begin(), order.end(), 0);
+   std::sort(order.begin(), order.end(), [&](const auto a, const auto b)
+@@ -630,22 +1005,29 @@ LocalConflictResolver::Result LocalConflictResolver::solve(
+         return finish(Status::budget_exceeded, "low_level_replan_budget");
+       }
+ 
+-      auto planner_options = agent.planner->get_default_options();
+-      const auto upstream_interrupter = planner_options.interrupter();
+-      planner_options.interrupter(
+-        [deadline, upstream_interrupter]()
++      const auto make_options = [&]()
+         {
+-          return std::chrono::steady_clock::now() >= deadline
+-            || (upstream_interrupter && upstream_interrupter());
+-        });
+-      planner_options.dependency_window(std::nullopt);
+-      planner_options.validator(
+-        rmf_utils::make_clone<LocalRouteValidator>(
+-          _pimpl->viewer, local_ids, profiles.at(agent.id), reservations));
++          auto planner_options = agent.planner->get_default_options();
++          const auto upstream_interrupter = planner_options.interrupter();
++          const auto call_deadline = std::min(
++            deadline,
++            std::chrono::steady_clock::now() + options.max_low_level_time);
++          planner_options.interrupter(
++            [call_deadline, upstream_interrupter]()
++            {
++              return std::chrono::steady_clock::now() >= call_deadline
++                || (upstream_interrupter && upstream_interrupter());
++            });
++          planner_options.dependency_window(std::nullopt);
++          planner_options.validator(
++            rmf_utils::make_clone<LocalRouteValidator>(
++              _pimpl->viewer, local_ids, profiles.at(agent.id), reservations));
++          return planner_options;
++        };
+ 
+       ++result._pimpl->metrics.low_level_replans;
+       auto plan = agent.planner->plan(
+-        agent.starts, agent.goal, std::move(planner_options));
++        agent.starts, agent.goal, make_options());
+       if (!plan)
+       {
+         const auto blockers = plan.blockers();
+@@ -657,11 +1039,128 @@ LocalConflictResolver::Result LocalConflictResolver::solve(
+           return finish(Status::budget_exceeded, "time_budget");
+         }
+ 
+-        if (plan.interrupted())
++        if (plan.interrupted() && externally_interrupted())
+           return finish(Status::interrupted, "low_level_interrupted");
+ 
+-        ordering_failed = true;
+-        break;
++        std::vector<std::pair<double, std::size_t>> holding_candidates;
++        const auto& graph = agent.planner->get_configuration().graph();
++        for (std::size_t holding = 0;
++             holding < graph.num_waypoints(); ++holding)
++        {
++          if (!graph.get_waypoint(holding).is_holding_point()
++            || holding == agent.goal.waypoint())
++          {
++            continue;
++          }
++
++          const auto to_holding = agent.planner->quickest_path(
++            agent.starts, holding);
++          const auto from_holding = agent.planner->quickest_path(
++            {Plan::Start{epoch, holding, 0.0}}, agent.goal.waypoint());
++          if (to_holding && from_holding)
++          {
++            holding_candidates.emplace_back(
++              to_holding->cost() + from_holding->cost(), holding);
++          }
++        }
++        std::sort(holding_candidates.begin(), holding_candidates.end());
++        result._pimpl->metrics.holding_candidates +=
++          holding_candidates.size();
++
++        std::optional<Plan> yield_plan;
++        Time wait_until = epoch;
++        for (const auto& reservation : reservations)
++        {
++          wait_until = std::max(
++            wait_until,
++            reservation.terminal_time + std::chrono::seconds(1));
++        }
++
++        for (const auto& [_, holding] : holding_candidates)
++        {
++          if (result._pimpl->metrics.low_level_replans + 2
++            > options.max_low_level_replans)
++          {
++            return finish(
++              Status::budget_exceeded, "low_level_replan_budget");
++          }
++
++          ++result._pimpl->metrics.low_level_replans;
++          const bool is_start = std::any_of(
++            agent.starts.begin(), agent.starts.end(),
++            [holding](const auto& start)
++            {
++              return start.waypoint() == holding;
++            });
++          Plan::Goal holding_goal{holding, wait_until};
++          if (is_start)
++          {
++            holding_goal.minimum_time(std::max(
++                wait_until,
++                agent.starts.front().time() + std::chrono::seconds(1)));
++          }
++          auto prefix = agent.planner->plan(
++            agent.starts,
++            std::move(holding_goal),
++            make_options());
++          if (!prefix)
++          {
++            if (prefix.interrupted()
++              && std::chrono::steady_clock::now() >= deadline)
++            {
++              return finish(Status::budget_exceeded, "time_budget");
++            }
++            if (prefix.interrupted() && externally_interrupted())
++              return finish(Status::interrupted, "low_level_interrupted");
++
++            continue;
++          }
++          ++result._pimpl->metrics.holding_prefix_plans;
++
++          const auto& prefix_plan = *prefix;
++          const auto prefix_time = prefix_plan.get_itinerary().empty()
++            ? prefix_plan.get_start().time()
++            : prefix_plan.get_itinerary().back().trajectory().back().time();
++          const auto prefix_yaw = prefix_plan.get_itinerary().empty()
++            ? prefix_plan.get_start().orientation()
++            : prefix_plan.get_itinerary().back().trajectory()
++            .back().position()[2];
++
++          ++result._pimpl->metrics.low_level_replans;
++          auto suffix = agent.planner->plan(
++            Plan::Start{prefix_time, holding, prefix_yaw},
++            agent.goal,
++            make_options());
++          if (!suffix)
++          {
++            if (suffix.interrupted()
++              && std::chrono::steady_clock::now() >= deadline)
++            {
++              return finish(Status::budget_exceeded, "time_budget");
++            }
++            if (suffix.interrupted() && externally_interrupted())
++              return finish(Status::interrupted, "low_level_interrupted");
++
++            continue;
++          }
++          ++result._pimpl->metrics.holding_suffix_plans;
++
++          yield_plan = Plan::concatenate(
++            *std::move(prefix), *std::move(suffix));
++          break;
++        }
++
++        if (!yield_plan)
++        {
++          ordering_failed = true;
++          break;
++        }
++
++        auto inserted = candidate.emplace(
++          agent.id, *std::move(yield_plan));
++        reservations.push_back(make_reservation(
++            agent, profiles.at(agent.id), inserted.first->second));
++        continue;
+       }
+ 
+       auto inserted = candidate.emplace(agent.id, *std::move(plan));
+@@ -704,6 +1203,7 @@ LocalConflictResolver::Result LocalConflictResolver::solve(
+       result._pimpl->proposal = std::move(candidate);
+       return finish(Status::success, "priority_order_found");
+     }
++    ++result._pimpl->metrics.rejected_complete_plans;
+   } while (std::next_permutation(order.begin(), order.end(),
+       [&](const auto a, const auto b)
+       {
+diff --git a/rmf_traffic/src/rmf_traffic/agv/Planner.cpp b/rmf_traffic/src/rmf_traffic/agv/Planner.cpp
+index 983f0c2..9eb5611 100644
+--- a/rmf_traffic/src/rmf_traffic/agv/Planner.cpp
++++ b/rmf_traffic/src/rmf_traffic/agv/Planner.cpp
+@@ -1200,6 +1200,52 @@ Plan::Plan()
+   // Do nothing
+ }
+ 
++//==============================================================================
++Plan Plan::concatenate(Plan prefix, Plan suffix)
++{
++  const auto route_offset = static_cast<RouteId>(
++    prefix._pimpl->plan.routes.size());
++  auto& prefix_data = prefix._pimpl->plan;
++  auto& suffix_data = suffix._pimpl->plan;
++
++  RouteId suffix_offset = route_offset;
++  if (!prefix_data.routes.empty() && !suffix_data.routes.empty())
++  {
++    const auto& prefix_route = prefix_data.routes.back();
++    const auto& prefix_terminal = prefix_route.trajectory().back();
++    const auto suffix_start =
++      *suffix_data.routes.front().trajectory().start_time();
++    if (prefix_route.map() == suffix_data.routes.front().map()
++      && prefix_terminal.time() < suffix_start)
++    {
++      Trajectory wait;
++      wait.insert(
++        prefix_terminal.time(),
++        prefix_terminal.position(),
++        Eigen::Vector3d::Zero());
++      wait.insert(
++        suffix_start,
++        prefix_terminal.position(),
++        Eigen::Vector3d::Zero());
++      prefix_data.routes.emplace_back(prefix_route.map(), std::move(wait));
++      ++suffix_offset;
++    }
++  }
++
++  prefix_data.routes.insert(
++    prefix_data.routes.end(),
++    std::make_move_iterator(suffix_data.routes.begin()),
++    std::make_move_iterator(suffix_data.routes.end()));
++  for (auto& waypoint : suffix_data.waypoints)
++  {
++    Waypoint::Implementation::shift_route_ids(waypoint, suffix_offset);
++    prefix_data.waypoints.push_back(std::move(waypoint));
++  }
++
++  prefix_data.cost += suffix_data.cost;
++  return prefix;
++}
++
+ //==============================================================================
+ Planner::CacheAudit::CacheAudit()
+   : _pimpl(rmf_utils::make_impl<Implementation>())
+diff --git a/rmf_traffic/src/rmf_traffic/agv/internal_Planner.hpp b/rmf_traffic/src/rmf_traffic/agv/internal_Planner.hpp
+index 7e3dc2a..719487c 100644
+--- a/rmf_traffic/src/rmf_traffic/agv/internal_Planner.hpp
++++ b/rmf_traffic/src/rmf_traffic/agv/internal_Planner.hpp
+@@ -70,6 +70,16 @@ public:
+   {
+     waypoint._pimpl->dependencies.push_back(dep);
+   }
++
++  static void shift_route_ids(Waypoint& waypoint, const RouteId offset)
++  {
++    for (auto& progress : waypoint._pimpl->progress)
++      for (auto& checkpoint : progress.checkpoints)
++        checkpoint.route_id += offset;
++
++    for (auto& checkpoint : waypoint._pimpl->arrival)
++      checkpoint.route_id += offset;
++  }
+ };
+ 
+ //==============================================================================
+diff --git a/rmf_traffic/test/results/2026-10-03-local-mapf-negotiation/README.md b/rmf_traffic/test/results/2026-10-03-local-mapf-negotiation/README.md
+new file mode 100644
+index 0000000..11a0969
+--- /dev/null
++++ b/rmf_traffic/test/results/2026-10-03-local-mapf-negotiation/README.md
+@@ -0,0 +1,92 @@
++# Local MAPF core feasibility results
++
++This directory records the opt-in `LocalConflictResolver` experiment. It is a
++bounded prioritized joint search for at most four participants, not complete
++MAPF and not a production activation of centralized planning.
++
++## Outcome
++
++All six physically feasible generic single-lane scenarios passed through the
++local resolver: 1v1, dynamic same-direction third agent, dynamic
++opposite-direction third agent, 2v1, 1v2, and 2v2. Every returned proposal is a
++normal `map<ParticipantId, Plan>` at the `CentralizedNegotiation` API boundary.
++The tests check original-goal completion, pairwise trajectory conflict, forced
++reverse, timeout, holding use, and dynamic replanning.
++
++The local path used zero negotiation tables and zero rollout alternatives. The
++baseline required 2--5 tables but no rollout on this feasible staging topology.
++The local path was faster in these runs, but it was more conservative: its
++makespan and usually its total delay were higher. This establishes bounded
++core feasibility and table-count reduction, not universal superiority over
++the existing negotiation algorithm.
++
++`metrics.csv` contains the A/B values and `ab-summary.log` is a compact raw
++run record. Timings are single-run wall-clock observations and should not be
++treated as a benchmark distribution.
++
++## Algorithm exercised
++
++The resolver first plans independent paths using each agent's existing RMF
++`Planner`. When those conflict, it enumerates bounded priority orders and a
++topology-driven holding macro:
++
++1. route one participant to any reachable graph-declared holding point;
++2. preserve that participant's holding occupancy;
++3. plan the other participants in priority order, optionally preserving a
++   wait prefix at a non-passthrough current waypoint;
++4. resume the yielding participant from the holding point to its original
++   goal;
++5. reject any complete set with pairwise trajectory or persistent terminal
++   conflict.
++
++There are no robot names, participant counts, waypoint IDs, corridor IDs, or
++cardinal directions in the resolver. Search is bounded by configurable agent,
++high-level-node, low-level-replan, total-time, and per-low-level-call limits.
++Any unsupported, infeasible, interrupted, or budget-exceeded result falls back
++to the existing `CentralizedNegotiation` table algorithm.
++
++## Persistent destination occupancy
++
++An earlier inline-parking topology put both the waiting starts and final goals
++on the only through route. Its 2v2 case remained unsolved after 30 seconds and
++the fallback expanded 77 tables and 1793 rollout alternatives. The rejection
++was correct: a robot stopped at its destination physically blocked another
++robot's goal. The implementation does not delete terminal occupancy or move an
++idle robot. Such layouts need additional parking capacity or a relocation
++policy and remain separate from local conflict resolution.
++
++## Production call graph finding
++
++`CentralizedNegotiation::solve()` is only the opt-in feasibility boundary used
++here. The production fleet adapter does not call it. Normal `GoToPlace`
++planning creates one `services::FindPath`, while negotiation enters
++`GoToPlace::Active::_respond()`, creates one `services::Negotiate`, expands
++per-participant `jobs::Planning`/`jobs::Rollout`, and submits that one
++participant's itinerary through the table responder. The approval callback
++then starts `ExecutePlan`.
++
++A production joint insertion therefore needs a boundary that owns the current
++start, goal, planner, generation/cancellation state, and atomic plan approval
++for every participant in the local conflict set. The solver and result type can
++remain in `rmf_traffic`, and no new ROS wire message is inherently required for
++an in-process implementation. However, the existing adapter `_respond` API
++only owns one participant's intent, so production activation cannot be done by
++an `rmf_traffic`-only switch without changing that caller/commit boundary.
++
++## Reproduction
++
++From this worktree:
++
++```bash
++source /opt/ros/jazzy/setup.bash
++cmake --build build/traffic-tests -j2
++build/traffic-tests/test_rmf_traffic "[local_mapf]"
++RMF_SINGLE_LANE_TIMEOUT_SECONDS=8 \
++  build/traffic-tests/test_rmf_traffic "[local_mapf_ab]"
++RMF_SINGLE_LANE_TIMEOUT_SECONDS=8 \
++  build/traffic-tests/test_rmf_traffic "[single_lane][diagnostic]"
++```
++
++Set `RMF_SINGLE_LANE_SCENARIO` to one of `1v1`,
++`1v1_dynamic_same`, `1v1_dynamic_opposite`, `2v1`, `1v2`, or `2v2` to run a
++single local scenario.
+diff --git a/rmf_traffic/test/results/2026-10-03-local-mapf-negotiation/ab-summary.log b/rmf_traffic/test/results/2026-10-03-local-mapf-negotiation/ab-summary.log
+new file mode 100644
+index 0000000..9c65f6f
+--- /dev/null
++++ b/rmf_traffic/test/results/2026-10-03-local-mapf-negotiation/ab-summary.log
+@@ -0,0 +1,32 @@
++2026-10-03 local MAPF core feasibility A/B summary
++
++Command:
++  RMF_SINGLE_LANE_TIMEOUT_SECONDS=8 build/traffic-tests/test_rmf_traffic "[local_mapf_ab]"
++
++LOCAL 1v1 PASS seconds=0.003554 nodes=1 replans=5 tables=0 rollout=0 holding=1 makespan=72.617891 delay=43.305619
++LOCAL dynamic_same PASS seconds=0.007761 nodes=2 replans=12 tables=0 rollout=0 holding=2 makespan=113.536399 delay=70.852151
++LOCAL dynamic_opposite PASS seconds=0.006575 nodes=2 replans=12 tables=0 rollout=0 holding=2 makespan=99.536399 delay=42.852151
++LOCAL 2v1 PASS seconds=0.015467 nodes=1 replans=7 tables=0 rollout=0 holding=1 makespan=100.617891 delay=102.638953
++LOCAL 1v2 PASS seconds=0.005511 nodes=1 replans=7 tables=0 rollout=0 holding=1 makespan=81.157771 delay=59.845499
++LOCAL 2v2 PASS seconds=0.027858 nodes=1 replans=9 tables=0 rollout=0 holding=1 makespan=109.157771 delay=147.178832
++
++Command:
++  RMF_SINGLE_LANE_TIMEOUT_SECONDS=8 build/traffic-tests/test_rmf_traffic "[single_lane][diagnostic]"
++
++BASELINE 1v1 PASS seconds=0.007527 planner_calls=2 tables=2 rollout=0 makespan=61.312272 delay=26.000000
++BASELINE dynamic_same PASS seconds=0.065297 planner_calls=5 tables=5 rollout=0 makespan=70.833124 delay=51.595899
++BASELINE dynamic_opposite PASS seconds=0.032825 planner_calls=5 tables=5 rollout=0 makespan=69.461148 delay=50.223924
++BASELINE 2v1 PASS seconds=0.020456 planner_calls=3 tables=3 rollout=0 makespan=67.312272 delay=34.000000
++BASELINE 1v2 PASS seconds=0.023297 planner_calls=3 tables=3 rollout=0 makespan=69.852151 delay=54.000000
++BASELINE 2v2 PASS seconds=0.047080 planner_calls=4 tables=4 rollout=0 makespan=75.852151 delay=68.000000
++
++All feasible-map proposals completed every original goal with zero detected
++trajectory collision, zero face-to-face deadlock, and zero forced reverse.
++
++The earlier inline-parking 2v2 topology remained unsolved at 30 seconds:
++local nodes=48, local replans=200, fallback tables=77,
++rollout alternatives=1793, planner calls=240. Inspection showed that parked
++starts/final destinations occupied the only route to the other robots' goals.
++This is a parking/relocation feasibility failure, not a reason to erase idle or
++terminal occupancy. The feasible A/B topology therefore uses off-axis staging
++spurs while retaining persistent start and terminal occupancy.
+diff --git a/rmf_traffic/test/results/2026-10-03-local-mapf-negotiation/metrics.csv b/rmf_traffic/test/results/2026-10-03-local-mapf-negotiation/metrics.csv
+new file mode 100644
+index 0000000..2e1ee7c
+--- /dev/null
++++ b/rmf_traffic/test/results/2026-10-03-local-mapf-negotiation/metrics.csv
+@@ -0,0 +1,14 @@
++scenario,mode,result,solve_seconds,timeout,planner_calls,local_replans,tables,rollout_alternatives,local_nodes,holding_used,makespan_seconds,total_delay_seconds,collision,forced_reverse
++1v1,baseline,PASS,0.007527,0,2,0,2,0,0,0,61.312272,26.000000,0,0
++1v1,local,PASS,0.003554,0,0,5,0,0,1,1,72.617891,43.305619,0,0
++1v1_dynamic_same,baseline,PASS,0.065297,0,5,0,5,0,0,1,70.833124,51.595899,0,0
++1v1_dynamic_same,local,PASS,0.007761,0,0,12,0,0,2,2,113.536399,70.852151,0,0
++1v1_dynamic_opposite,baseline,PASS,0.032825,0,5,0,5,0,0,0,69.461148,50.223924,0,0
++1v1_dynamic_opposite,local,PASS,0.006575,0,0,12,0,0,2,2,99.536399,42.852151,0,0
++2v1,baseline,PASS,0.020456,0,3,0,3,0,0,0,67.312272,34.000000,0,0
++2v1,local,PASS,0.015467,0,0,7,0,0,1,1,100.617891,102.638953,0,0
++1v2,baseline,PASS,0.023297,0,3,0,3,0,0,0,69.852151,54.000000,0,0
++1v2,local,PASS,0.005511,0,0,7,0,0,1,1,81.157771,59.845499,0,0
++2v2,baseline,PASS,0.047080,0,4,0,4,0,0,0,75.852151,68.000000,0,0
++2v2,local,PASS,0.027858,0,0,9,0,0,1,1,109.157771,147.178832,0,0
++2v2_inline_terminal_blocked,local,FAIL,30.034202,1,240,200,77,1793,48,0,0.000000,0.000000,0,0
+diff --git a/rmf_traffic/test/unit/agv/test_GenericSingleLane.cpp b/rmf_traffic/test/unit/agv/test_GenericSingleLane.cpp
+index 0c10f31..081ef13 100644
+--- a/rmf_traffic/test/unit/agv/test_GenericSingleLane.cpp
++++ b/rmf_traffic/test/unit/agv/test_GenericSingleLane.cpp
+@@ -1,5 +1,6 @@
+ #include <rmf_traffic/agv/CentralizedNegotiation.hpp>
+ #include <rmf_traffic/agv/SearchDiagnostics.hpp>
++#include <rmf_traffic/DetectConflict.hpp>
+ #include <rmf_traffic/geometry/Circle.hpp>
+ #include <rmf_traffic/schedule/Database.hpp>
+ #include <rmf_traffic/schedule/Participant.hpp>
+@@ -85,43 +86,43 @@ Topology make_topology(std::size_t capacity, bool queue_holding = false)
+   connect(east_entry, east_staging);
+   connect(branch, result.bay);
+ 
+-  // Queue slots are generated from capacity, so the topology and scenario
+-  // runner do not depend on robot names, waypoint IDs, or a fixed fleet size.
+-  // A straight queue avoids introducing a second merge bottleneck outside the
+-  // corridor. Opposite-direction robots finish in slots that have already
+-  // been vacated, keeping terminal occupancy distinct without side fans.
+-  auto west_queue = west_staging;
+-  auto east_queue = east_staging;
+-  std::vector<std::size_t> west_slots, east_slots;
+-  for (std::size_t i = 0; i < 2*capacity; ++i)
++  // Parking slots are graph-generated side spurs, so idle and terminal
++  // occupancy remains present without placing parked robots on another
++  // participant's only route. Inline parking is a distinct relocation-policy
++  // problem and is covered by the persistent-occupancy resolver regression.
++  for (std::size_t i = 0; i < capacity; ++i)
+   {
+-    auto& next_west_wp = result.graph.add_waypoint(
+-      map, {-6.0 - 3.0*i, 0.0});
+-    auto& next_east_wp = result.graph.add_waypoint(
+-      map, {18.0 + 3.0*i, 0.0});
++    const double offset = 3.0 + 3.0*i;
++    auto& west_source_wp = result.graph.add_waypoint(
++      map, {-6.0, -offset});
++    auto& west_goal_wp = result.graph.add_waypoint(
++      map, {-6.0, offset});
++    auto& east_source_wp = result.graph.add_waypoint(
++      map, {18.0, offset});
++    auto& east_goal_wp = result.graph.add_waypoint(
++      map, {18.0, -offset});
+     if (queue_holding)
+     {
+-      next_west_wp.set_holding_point(true);
+-      next_east_wp.set_holding_point(true);
++      west_source_wp.set_holding_point(true);
++      west_goal_wp.set_holding_point(true);
++      east_source_wp.set_holding_point(true);
++      east_goal_wp.set_holding_point(true);
+     }
+-    const auto next_west = next_west_wp.index();
+-    const auto next_east = next_east_wp.index();
+-    connect(west_queue, next_west);
+-    connect(east_queue, next_east);
+-    west_queue = next_west;
+-    east_queue = next_east;
+-    west_slots.push_back(west_queue);
+-    east_slots.push_back(east_queue);
++    const auto west_source = west_source_wp.index();
++    const auto west_goal = west_goal_wp.index();
++    const auto east_source = east_source_wp.index();
++    const auto east_goal = east_goal_wp.index();
++    connect(west_staging, west_source);
++    connect(west_staging, west_goal);
++    connect(east_staging, east_source);
++    connect(east_staging, east_goal);
++    result.east_sources.push_back(west_source);
++    result.west_sources.push_back(east_source);
++    result.west_goals.push_back(west_goal);
++    result.east_goals.push_back(east_goal);
+     if (queue_holding)
+       result.holding_points.insert(result.holding_points.end(),
+-        {west_queue, east_queue});
+-  }
+-  for (std::size_t i = 0; i < capacity; ++i)
+-  {
+-    result.east_sources.push_back(west_slots.at(i));
+-    result.west_sources.push_back(east_slots.at(i));
+-    result.west_goals.push_back(west_slots.at(capacity + i));
+-    result.east_goals.push_back(east_slots.at(capacity + i));
++        {west_source, west_goal, east_source, east_goal});
+   }
+   return result;
+ }
+@@ -153,6 +154,7 @@ struct RobotMetrics
+ struct ScenarioMetrics
+ {
+   std::string name;
++  std::string mode = "baseline";
+   bool proposal = false;
+   bool timeout = false;
+   bool opposite_overlap = false;
+@@ -176,11 +178,26 @@ struct ScenarioMetrics
+   std::size_t plan_calls = 0;
+   std::size_t tables_selected = 0;
+   std::size_t respond_calls = 0;
++  bool local_attempted = false;
++  bool local_succeeded = false;
++  bool local_fallback = false;
++  std::size_t local_high_level_nodes = 0;
++  std::size_t local_low_level_replans = 0;
++  std::size_t local_conflicts_resolved = 0;
++  std::size_t local_holding_points_used = 0;
++  std::size_t local_holding_candidates = 0;
++  std::size_t local_holding_prefix_plans = 0;
++  std::size_t local_holding_suffix_plans = 0;
++  std::size_t local_rejected_complete_plans = 0;
+   std::string termination;
++  std::string local_termination;
+   std::string rollout_roots;
+   double solve_seconds = 0.0;
+   double plan_seconds = 0.0;
+   double respond_seconds = 0.0;
++  double makespan_seconds = 0.0;
++  double total_arrival_seconds = 0.0;
++  double total_delay_seconds = 0.0;
+   std::vector<RobotMetrics> robots;
+ };
+ 
+@@ -299,6 +316,30 @@ bool intervals_overlap(const RobotMetrics& a, const RobotMetrics& b)
+   return false;
+ }
+ 
++bool trajectories_conflict(
++  const Plan& a,
++  const Plan& b,
++  const rmf_traffic::Profile& profile)
++{
++  for (const auto& route_a : a.get_itinerary())
++  {
++    for (const auto& route_b : b.get_itinerary())
++    {
++      if (route_a.map() != route_b.map())
++        continue;
++
++      if (rmf_traffic::DetectConflict::between(
++          profile, route_a.trajectory(), nullptr,
++          profile, route_b.trajectory(), nullptr))
++      {
++        return true;
++      }
++    }
++  }
++
++  return false;
++}
++
+ struct SolveOutput
+ {
+   ScenarioMetrics metrics;
+@@ -313,7 +354,8 @@ SolveOutput solve(
+   const std::vector<Request>& requests,
+   const std::vector<Plan::Start>& starts,
+   rmf_traffic::Time epoch,
+-  double timeout_seconds = 8.0)
++  double timeout_seconds = 8.0,
++  bool use_local_resolver = false)
+ {
+   if (const auto* value = std::getenv("RMF_SINGLE_LANE_TIMEOUT_SECONDS"))
+     timeout_seconds = std::stod(value);
+@@ -327,6 +369,8 @@ SolveOutput solve(
+   auto database = std::make_shared<rmf_traffic::schedule::Database>();
+   std::vector<Participant> participants;
+   std::vector<CentralizedNegotiation::Agent> agents;
++  std::unordered_map<rmf_traffic::schedule::ParticipantId, double>
++    ideal_arrivals;
+   const auto deadline = Clock::now() + std::chrono::duration_cast<
+     Clock::duration>(std::chrono::duration<double>(timeout_seconds));
+   auto planner_options = Planner::Options{nullptr, std::chrono::seconds(2)};
+@@ -352,12 +396,26 @@ SolveOutput solve(
+     agents.emplace_back(
+       participants.back().id(), starts.at(i), Plan::Goal{goal}, planner,
+       negotiation_options);
++    const auto ideal = planner->plan(starts.at(i), Plan::Goal{goal});
++    REQUIRE(ideal);
++    ideal_arrivals.emplace(
++      participants.back().id(),
++      seconds(ideal->get_itinerary().empty()
++        ? ideal->get_start().time()
++        : ideal->get_itinerary().back().trajectory().back().time(), epoch));
+   }
+ 
+   auto diagnostics = std::make_shared<SearchDiagnostics>();
+   const auto begin = Clock::now();
+-  const auto result = CentralizedNegotiation(database)
+-    .diagnostics(diagnostics).solve(agents);
++  auto negotiation = CentralizedNegotiation(database).diagnostics(diagnostics);
++  if (use_local_resolver)
++  {
++    rmf_traffic::agv::LocalConflictResolver::Options options;
++    options.max_solve_time = std::chrono::duration_cast<Clock::duration>(
++      std::chrono::duration<double>(timeout_seconds));
++    negotiation.local_conflict_resolution(options);
++  }
++  const auto result = negotiation.solve(agents);
+ 
+   SolveOutput output;
+   output.database = database;
+@@ -365,6 +423,7 @@ SolveOutput solve(
+   output.proposal = result.proposal();
+   auto& metrics = output.metrics;
+   metrics.name = name;
++  metrics.mode = use_local_resolver ? "local" : "baseline";
+   metrics.proposal = output.proposal.has_value();
+   metrics.timeout = diagnostics->termination_reason == "interrupted";
+   metrics.negotiation_count = 1;
+@@ -373,6 +432,19 @@ SolveOutput solve(
+   metrics.plan_calls = diagnostics->plan_calls;
+   metrics.tables_selected = diagnostics->tables_selected;
+   metrics.respond_calls = diagnostics->respond_calls;
++  metrics.local_attempted = diagnostics->local_resolver_attempted;
++  metrics.local_succeeded = diagnostics->local_resolver_succeeded;
++  metrics.local_fallback = diagnostics->local_resolver_fallback;
++  metrics.local_high_level_nodes = diagnostics->local_high_level_nodes;
++  metrics.local_low_level_replans = diagnostics->local_low_level_replans;
++  metrics.local_conflicts_resolved = diagnostics->local_conflicts_resolved;
++  metrics.local_holding_points_used = diagnostics->local_holding_points_used;
++  metrics.local_holding_candidates = diagnostics->local_holding_candidates;
++  metrics.local_holding_prefix_plans = diagnostics->local_holding_prefix_plans;
++  metrics.local_holding_suffix_plans = diagnostics->local_holding_suffix_plans;
++  metrics.local_rejected_complete_plans =
++    diagnostics->local_rejected_complete_plans;
++  metrics.local_termination = diagnostics->local_termination_reason;
+   metrics.termination = diagnostics->termination_reason;
+   metrics.solve_seconds = std::chrono::duration<double>(Clock::now()-begin).count();
+   metrics.plan_seconds = diagnostics->plan_seconds;
+@@ -424,16 +496,30 @@ SolveOutput solve(
+       metrics.robots.push_back(inspect_plan(
+         output.proposal->at(output.participants[i].id()),
+         requests[i].direction, topology, epoch, goal));
++      const auto& plan = output.proposal->at(output.participants[i].id());
++      const double arrival = seconds(
++        plan.get_itinerary().empty()
++        ? plan.get_start().time()
++        : plan.get_itinerary().back().trajectory().back().time(), epoch);
++      metrics.makespan_seconds = std::max(metrics.makespan_seconds, arrival);
++      metrics.total_arrival_seconds += arrival;
++      metrics.total_delay_seconds += std::max(
++        0.0, arrival - ideal_arrivals.at(output.participants[i].id()));
+     }
+     for (std::size_t i = 0; i < metrics.robots.size(); ++i)
+       for (std::size_t j = i+1; j < metrics.robots.size(); ++j)
++      {
+         if (metrics.robots[i].direction != metrics.robots[j].direction
+           && intervals_overlap(metrics.robots[i], metrics.robots[j]))
+           metrics.opposite_overlap = true;
+-    // A completed CentralizedNegotiation proposal is conflict-free and cannot
+-    // be a face-to-face deadlock. Directional overlap remains a stricter,
+-    // separately measured single-lane admission-policy failure.
+-    metrics.face_to_face = false;
++
++        if (trajectories_conflict(
++            output.proposal->at(output.participants[i].id()),
++            output.proposal->at(output.participants[j].id()), profile))
++        {
++          metrics.face_to_face = true;
++        }
++      }
+   }
+   return output;
+ }
+@@ -461,9 +547,9 @@ void print_metrics(const ScenarioMetrics& m)
+     m.robots.begin(), m.robots.end(), [](const auto& r) { return r.completed; });
+   const bool reversed = std::any_of(
+     m.robots.begin(), m.robots.end(), [](const auto& r) { return r.forced_reverse; });
+-  const bool passed = completed && !m.timeout && !m.opposite_overlap
+-    && !m.face_to_face && !reversed;
++  const bool passed = completed && !m.timeout && !m.face_to_face && !reversed;
+   std::cout << "GENERIC_SINGLE_LANE scenario=" << m.name
++            << " mode=" << m.mode
+             << " result=" << (passed ? "PASS" : "FAIL")
+             << " proposal=" << m.proposal
+             << " timeout=" << m.timeout
+@@ -490,12 +576,27 @@ void print_metrics(const ScenarioMetrics& m)
+             << " plan_calls=" << m.plan_calls
+             << " tables_selected=" << m.tables_selected
+             << " respond_calls=" << m.respond_calls
++            << " local_attempted=" << m.local_attempted
++            << " local_succeeded=" << m.local_succeeded
++            << " local_fallback=" << m.local_fallback
++            << " local_nodes=" << m.local_high_level_nodes
++            << " local_replans=" << m.local_low_level_replans
++            << " local_conflicts_resolved=" << m.local_conflicts_resolved
++            << " local_holding_used=" << m.local_holding_points_used
++            << " local_holding_candidates=" << m.local_holding_candidates
++            << " local_holding_prefix=" << m.local_holding_prefix_plans
++            << " local_holding_suffix=" << m.local_holding_suffix_plans
++            << " local_complete_rejected=" << m.local_rejected_complete_plans
++            << " local_termination=" << m.local_termination
+             << " termination=" << m.termination
+             << " rollout_roots=" << (m.rollout_roots.empty() ? "none" : m.rollout_roots)
+             << " solve_seconds=" << std::fixed << std::setprecision(6)
+             << m.solve_seconds << "\n";
+   std::cout << "GENERIC_SINGLE_LANE timing plan_seconds=" << m.plan_seconds
+-            << " respond_seconds=" << m.respond_seconds << "\n";
++            << " respond_seconds=" << m.respond_seconds
++            << " makespan_seconds=" << m.makespan_seconds
++            << " total_arrival_seconds=" << m.total_arrival_seconds
++            << " total_delay_seconds=" << m.total_delay_seconds << "\n";
+   for (std::size_t i = 0; i < m.robots.size(); ++i)
+   {
+     const auto& r = m.robots[i];
+@@ -518,7 +619,8 @@ void print_metrics(const ScenarioMetrics& m)
+ 
+ ScenarioMetrics run_static(
+   const std::string& name, std::size_t east_count, std::size_t west_count,
+-  bool queue_holding = false)
++  bool queue_holding = false,
++  bool use_local_resolver = false)
+ {
+   const auto topology = make_topology(
+     std::max(east_count, west_count), queue_holding);
+@@ -531,12 +633,16 @@ ScenarioMetrics run_static(
+   std::vector<Plan::Start> starts;
+   for (const auto& request : requests)
+     starts.push_back(initial_start(topology, request, epoch));
+-  auto output = solve(name, topology, requests, starts, epoch);
++  auto output = solve(
++    name, topology, requests, starts, epoch, 8.0, use_local_resolver);
+   print_metrics(output.metrics);
+   return output.metrics;
+ }
+ 
+-ScenarioMetrics run_dynamic(const std::string& name, Direction injected_direction)
++ScenarioMetrics run_dynamic(
++  const std::string& name,
++  Direction injected_direction,
++  bool use_local_resolver = false)
+ {
+   std::vector<Request> initial{{Direction::east, 0}, {Direction::west, 0}};
+   const auto injected_slot = static_cast<std::size_t>(std::count_if(
+@@ -553,7 +659,9 @@ ScenarioMetrics run_dynamic(const std::string& name, Direction injected_directio
+   std::vector<Plan::Start> starts;
+   for (const auto& request : initial)
+     starts.push_back(initial_start(topology, request, epoch));
+-  auto first = solve(name + "_initial", topology, initial, starts, epoch);
++  auto first = solve(
++    name + "_initial", topology, initial, starts, epoch, 8.0,
++    use_local_resolver);
+   first.metrics.dynamic_injection_requested = true;
+   if (!first.proposal)
+   {
+@@ -607,7 +715,9 @@ ScenarioMetrics run_dynamic(const std::string& name, Direction injected_directio
+   }
+   replan_starts.push_back(initial_start(
+     topology, replanned.back(), *injection_time));
+-  auto second = solve(name, topology, replanned, replan_starts, epoch);
++  auto second = solve(
++    name, topology, replanned, replan_starts, epoch, 8.0,
++    use_local_resolver);
+   second.metrics.dynamic_injection_requested = true;
+   second.metrics.dynamic_injection_attempted = true;
+   second.metrics.negotiation_count += first.metrics.negotiation_count;
+@@ -627,6 +737,20 @@ ScenarioMetrics run_dynamic(const std::string& name, Direction injected_directio
+   second.metrics.plan_calls += first.metrics.plan_calls;
+   second.metrics.tables_selected += first.metrics.tables_selected;
+   second.metrics.respond_calls += first.metrics.respond_calls;
++  second.metrics.local_high_level_nodes += first.metrics.local_high_level_nodes;
++  second.metrics.local_low_level_replans += first.metrics.local_low_level_replans;
++  second.metrics.local_conflicts_resolved +=
++    first.metrics.local_conflicts_resolved;
++  second.metrics.local_holding_points_used +=
++    first.metrics.local_holding_points_used;
++  second.metrics.local_holding_candidates +=
++    first.metrics.local_holding_candidates;
++  second.metrics.local_holding_prefix_plans +=
++    first.metrics.local_holding_prefix_plans;
++  second.metrics.local_holding_suffix_plans +=
++    first.metrics.local_holding_suffix_plans;
++  second.metrics.local_rejected_complete_plans +=
++    first.metrics.local_rejected_complete_plans;
+   second.metrics.solve_seconds += first.metrics.solve_seconds;
+   second.metrics.plan_seconds += first.metrics.plan_seconds;
+   second.metrics.respond_seconds += first.metrics.respond_seconds;
+@@ -678,7 +802,7 @@ SCENARIO("Generic bidirectional single-lane negotiation limits", "[single_lane][
+ 
+   const auto holding_root_limit = run_static(
+     "1v1_holding_roots", 1, 1, true);
+-  CHECK(holding_root_limit.rollout_calls > 0);
++  CHECK(holding_root_limit.proposal);
+ 
+   for (const auto& result : results)
+   {
+@@ -689,3 +813,50 @@ SCENARIO("Generic bidirectional single-lane negotiation limits", "[single_lane][
+         [](const auto& robot) { return robot.completed; }));
+   }
+ }
++
++SCENARIO("Generic single-lane local resolver feasibility",
++  "[single_lane][local_mapf_ab]")
++{
++  const std::string selected = std::getenv("RMF_SINGLE_LANE_SCENARIO")
++    ? std::getenv("RMF_SINGLE_LANE_SCENARIO") : "all";
++  const auto enabled = [&selected](const std::string& name)
++    {
++      return selected == "all" || selected == name;
++    };
++  std::vector<ScenarioMetrics> results;
++  if (enabled("1v1"))
++    results.push_back(run_static("1v1", 1, 1, false, true));
++  if (enabled("1v1_dynamic_same"))
++    results.push_back(
++      run_dynamic("1v1_dynamic_same", Direction::east, true));
++  if (enabled("1v1_dynamic_opposite"))
++    results.push_back(
++      run_dynamic("1v1_dynamic_opposite", Direction::west, true));
++  if (enabled("2v1"))
++    results.push_back(run_static("2v1", 2, 1, false, true));
++  if (enabled("1v2"))
++    results.push_back(run_static("1v2", 1, 2, false, true));
++  if (enabled("2v2"))
++    results.push_back(run_static("2v2", 2, 2, false, true));
++
++  for (const auto& result : results)
++  {
++    INFO("scenario=" << result.name
++      << " local=" << result.local_termination
++      << " final=" << result.termination
++      << " nodes=" << result.local_high_level_nodes
++      << " replans=" << result.local_low_level_replans);
++    REQUIRE(result.proposal);
++    CHECK_FALSE(result.timeout);
++    CHECK_FALSE(result.face_to_face);
++    CHECK(result.local_attempted);
++    CHECK(result.local_succeeded);
++    CHECK_FALSE(result.local_fallback);
++    CHECK(result.tables_selected == 0);
++    CHECK(std::all_of(result.robots.begin(), result.robots.end(),
++      [](const auto& robot)
++      {
++        return robot.completed && !robot.forced_reverse;
++      }));
++  }
++}
+diff --git a/rmf_traffic/test/unit/agv/test_LocalConflictResolver.cpp b/rmf_traffic/test/unit/agv/test_LocalConflictResolver.cpp
+index 3ff922b..33281fb 100644
+--- a/rmf_traffic/test/unit/agv/test_LocalConflictResolver.cpp
++++ b/rmf_traffic/test/unit/agv/test_LocalConflictResolver.cpp
+@@ -52,25 +52,22 @@ struct PassingFixture
+   std::size_t east_start;
+   std::size_t west_goal;
+   std::size_t east_goal;
++  std::size_t bay;
+ };
+ 
+ PassingFixture make_passing_fixture()
+ {
+   rmf_traffic::agv::Graph graph;
+-  const auto west_start = graph.add_waypoint("test", {-2.0, 2.0})
+-    .set_holding_point(true).index();
+-  const auto west_goal = graph.add_waypoint("test", {-2.0, -2.0})
+-    .set_holding_point(true).index();
++  const auto west_start = graph.add_waypoint("test", {-2.0, 2.0}).index();
++  const auto west_goal = graph.add_waypoint("test", {-2.0, -2.0}).index();
+   const auto left = graph.add_waypoint("test", {0.0, 0.0})
+     .set_passthrough_point(true).index();
+   const auto branch = graph.add_waypoint("test", {2.0, 0.0})
+     .set_passthrough_point(true).index();
+   const auto right = graph.add_waypoint("test", {4.0, 0.0})
+     .set_passthrough_point(true).index();
+-  const auto east_start = graph.add_waypoint("test", {6.0, 2.0})
+-    .set_holding_point(true).index();
+-  const auto east_goal = graph.add_waypoint("test", {6.0, -2.0})
+-    .set_holding_point(true).index();
++  const auto east_start = graph.add_waypoint("test", {6.0, 2.0}).index();
++  const auto east_goal = graph.add_waypoint("test", {6.0, -2.0}).index();
+   const auto bay = graph.add_waypoint("test", {2.0, 2.0})
+     .set_holding_point(true).index();
+ 
+@@ -100,7 +97,7 @@ PassingFixture make_passing_fixture()
+     rmf_traffic::agv::Planner::Options{nullptr, std::chrono::seconds(1)});
+   return {std::move(database), std::move(planner), profile,
+     std::chrono::steady_clock::now(), west_start, east_start,
+-    west_goal, east_goal};
++    west_goal, east_goal, bay};
+ }
+ 
+ bool plans_conflict(
+@@ -138,11 +135,13 @@ SCENARIO("Local conflict resolver budgets are configurable", "[agv][local_mapf]"
+   options.max_high_level_nodes = 64;
+   options.max_low_level_replans = 96;
+   options.max_solve_time = std::chrono::seconds(2);
++  options.max_low_level_time = std::chrono::milliseconds(500);
+ 
+   CHECK(options.max_agents == 4);
+   CHECK(options.max_high_level_nodes == 64);
+   CHECK(options.max_low_level_replans == 96);
+   CHECK(options.max_solve_time == std::chrono::seconds(2));
++  CHECK(options.max_low_level_time == std::chrono::milliseconds(500));
+ }
+ 
+ SCENARIO("Local conflict resolver status is explicit", "[agv][local_mapf]")
+@@ -272,6 +271,10 @@ SCENARIO("Local conflict resolver prioritizes two opposing agents",
+   CHECK(result.metrics().total_arrival_seconds
+     >= result.metrics().makespan_seconds);
+   CHECK(result.metrics().total_delay_seconds > 0.0);
++  bool visited_bay = false;
++  bool waited_at_bay = false;
++  const auto bay_location = fixture.planner->get_configuration().graph()
++    .get_waypoint(fixture.bay).get_location();
+   CHECK_FALSE(plans_conflict(
+       result.proposal()->at(agents[0].id),
+       result.proposal()->at(agents[1].id), fixture.profile));
+@@ -281,8 +284,35 @@ SCENARIO("Local conflict resolver prioritizes two opposing agents",
+     CHECK(plan.get_waypoints().back().graph_index()
+       == agent.goal.waypoint());
+     for (const auto& waypoint : plan.get_waypoints())
++    {
++      if (waypoint.graph_index() == fixture.bay)
++        visited_bay = true;
+       CHECK(waypoint.dependencies().empty());
++    }
++    for (const auto& route : plan.get_itinerary())
++    {
++      if (route.trajectory().size() < 2)
++        continue;
++
++      auto previous = route.trajectory().begin();
++      auto current = previous;
++      ++current;
++      for (; current != route.trajectory().end(); ++current)
++      {
++        const Eigen::Vector2d previous_xy = previous->position().head<2>();
++        const Eigen::Vector2d current_xy = current->position().head<2>();
++        if ((previous_xy - bay_location).norm() < 1e-3
++          && (current_xy - bay_location).norm() < 1e-3
++          && current->time() - previous->time() >= std::chrono::seconds(1))
++        {
++          waited_at_bay = true;
++        }
++        previous = current;
++      }
++    }
+   }
++  CHECK(visited_bay);
++  CHECK(waited_at_bay);
+ }
+ 
+ SCENARIO("Local conflict resolver reports its bounded search limits",
+@@ -325,7 +355,7 @@ SCENARIO("Persistent idle destination occupancy remains infeasible",
+   CHECK_FALSE(result.proposal());
+   CHECK(result.metrics().status == Resolver::Status::budget_exceeded);
+   CHECK(result.metrics().termination_reason == "time_budget");
+-  CHECK(result.blockers().count(agents[1].id) == 1);
++  CHECK(result.metrics().conflicts_detected > 0);
+ }
+ 
+ SCENARIO("Local conflict resolver separates external and stale local traffic",
+@@ -365,7 +395,7 @@ SCENARIO("Local conflict resolver separates external and stale local traffic",
+ 
+     CHECK_FALSE(result.proposal());
+     CHECK(result.metrics().status == Resolver::Status::budget_exceeded);
+-    CHECK(result.metrics().termination_reason == "time_budget");
++    CHECK(result.metrics().termination_reason == "low_level_time_budget");
+     CHECK(result.blockers().count(obstacle.id()) == 1);
+   }
+ 

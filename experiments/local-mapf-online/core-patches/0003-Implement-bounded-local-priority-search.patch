@@ -1,0 +1,863 @@
+From a311a9ab98b3e0f40ea4313f6b82c40f4f1bc74e Mon Sep 17 00:00:00 2001
+From: han30230 <han30230@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 20:39:04 +0900
+Subject: [PATCH 3/5] Implement bounded local priority search
+
+---
+ .../rmf_traffic/agv/LocalConflictResolver.cpp | 544 +++++++++++++++++-
+ .../unit/agv/test_LocalConflictResolver.cpp   | 236 ++++++++
+ 2 files changed, 771 insertions(+), 9 deletions(-)
+
+diff --git a/rmf_traffic/src/rmf_traffic/agv/LocalConflictResolver.cpp b/rmf_traffic/src/rmf_traffic/agv/LocalConflictResolver.cpp
+index 3b33a1b..b917be4 100644
+--- a/rmf_traffic/src/rmf_traffic/agv/LocalConflictResolver.cpp
++++ b/rmf_traffic/src/rmf_traffic/agv/LocalConflictResolver.cpp
+@@ -15,12 +15,364 @@
+  */
+ 
+ #include <rmf_traffic/agv/LocalConflictResolver.hpp>
++#include <rmf_traffic/agv/RouteValidator.hpp>
++#include <rmf_traffic/DetectConflict.hpp>
+ 
++#include <algorithm>
+ #include <chrono>
++#include <limits>
++#include <numeric>
+ 
+ namespace rmf_traffic {
+ namespace agv {
+ 
++namespace {
++
++struct Reservation
++{
++  schedule::ParticipantId participant;
++  Profile profile;
++  Plan plan;
++  std::string initial_map;
++  Time initial_time;
++  Eigen::Vector3d initial_position;
++  std::string terminal_map;
++  Time terminal_time;
++  Eigen::Vector3d terminal_position;
++};
++
++Reservation make_reservation(
++  const LocalConflictResolver::Agent& agent,
++  const Profile& profile,
++  Plan plan)
++{
++  const auto& graph = agent.planner->get_configuration().graph();
++  const auto& start = plan.get_start();
++  const auto& start_waypoint = graph.get_waypoint(start.waypoint());
++  const auto location = start.location().value_or(
++    start_waypoint.get_location());
++  const Eigen::Vector3d initial_position{
++    location.x(), location.y(), start.orientation()};
++
++  std::string terminal_map = start_waypoint.get_map_name();
++  Time terminal_time = start.time();
++  Eigen::Vector3d terminal_position = initial_position;
++  if (!plan.get_itinerary().empty())
++  {
++    const auto& terminal_route = plan.get_itinerary().back();
++    const auto& terminal = terminal_route.trajectory().back();
++    terminal_map = terminal_route.map();
++    terminal_time = terminal.time();
++    terminal_position = terminal.position();
++  }
++
++  return Reservation{
++    agent.id,
++    profile,
++    std::move(plan),
++    start_waypoint.get_map_name(),
++    start.time(),
++    initial_position,
++    std::move(terminal_map),
++    terminal_time,
++    terminal_position};
++}
++
++class LocalRouteValidator : public RouteValidator
++{
++public:
++  LocalRouteValidator(
++    std::shared_ptr<const schedule::Viewer> viewer,
++    std::unordered_set<schedule::ParticipantId> local_participants,
++    Profile profile,
++    std::vector<Reservation> reservations)
++  : _viewer(std::move(viewer)),
++    _local_participants(std::move(local_participants)),
++    _profile(std::move(profile)),
++    _reservations(std::move(reservations))
++  {
++    // Do nothing
++  }
++
++  std::optional<Conflict> find_conflict(const Route& route) const final
++  {
++    if (_viewer)
++    {
++      schedule::Query::Spacetime spacetime;
++      spacetime.query_timespan()
++      .all_maps(false)
++      .add_map(route.map())
++      .set_lower_time_bound(*route.trajectory().start_time())
++      .set_upper_time_bound(*route.trajectory().finish_time());
++
++      const auto view = _viewer->query(
++        spacetime, schedule::Query::Participants::make_all());
++      for (const auto& item : view)
++      {
++        if (_local_participants.count(item.participant) > 0)
++          continue;
++
++        const auto conflict = DetectConflict::between(
++          _profile, route.trajectory(),
++          route.check_dependencies(
++            item.participant, item.plan_id, item.route_id),
++          item.description.profile(), item.route->trajectory(), nullptr);
++        if (conflict)
++        {
++          return Conflict{
++            Dependency{
++              item.participant,
++              item.plan_id,
++              item.route_id,
++              item.route->trajectory().index_after(conflict->time)},
++            conflict->time,
++            item.route};
++        }
++      }
++
++      schedule::Query::Spacetime all_time;
++      all_time.query_timespan()
++      .all_maps(false)
++      .add_map(route.map());
++      const auto all_routes = _viewer->query(
++        all_time, schedule::Query::Participants::make_all());
++      std::unordered_map<schedule::ParticipantId,
++        const schedule::Viewer::View::Element*> terminal_routes;
++      for (const auto& item : all_routes)
++      {
++        if (_local_participants.count(item.participant) > 0)
++          continue;
++
++        const auto existing = terminal_routes.find(item.participant);
++        if (existing == terminal_routes.end()
++          || existing->second->route_id < item.route_id)
++        {
++          terminal_routes.insert_or_assign(item.participant, &item);
++        }
++      }
++
++      for (const auto& [participant, item_ptr] : terminal_routes)
++      {
++        const auto& item = *item_ptr;
++        const auto& endpoint = item.route->trajectory().back();
++        if (endpoint.time() >= *route.trajectory().finish_time())
++          continue;
++
++        Trajectory stationary;
++        stationary.insert(
++          endpoint.time(), endpoint.position(), Eigen::Vector3d::Zero());
++        stationary.insert(
++          *route.trajectory().finish_time() + std::chrono::seconds(1),
++          endpoint.position(), Eigen::Vector3d::Zero());
++        const auto conflict = DetectConflict::between(
++          _profile, route.trajectory(), nullptr,
++          item.description.profile(), stationary, nullptr);
++        if (conflict)
++        {
++          return Conflict{
++            Dependency{
++              participant,
++              item.plan_id,
++              item.route_id,
++              item.route->trajectory().size() - 1},
++            conflict->time,
++            std::make_shared<Route>(route.map(), std::move(stationary))};
++        }
++      }
++    }
++
++    for (const auto& reservation : _reservations)
++    {
++      RouteId route_id = 0;
++      for (const auto& other : reservation.plan.get_itinerary())
++      {
++        if (route.map() == other.map())
++        {
++          const auto conflict = DetectConflict::between(
++            _profile, route.trajectory(), nullptr,
++            reservation.profile, other.trajectory(), nullptr);
++          if (conflict)
++          {
++            return Conflict{
++              Dependency{
++                reservation.participant, 0, route_id,
++                other.trajectory().index_after(conflict->time)},
++              conflict->time,
++              std::make_shared<Route>(other)};
++          }
++        }
++
++        ++route_id;
++      }
++
++      const auto& itinerary = reservation.plan.get_itinerary();
++      if (reservation.terminal_map != route.map())
++        continue;
++
++      if (reservation.terminal_time >= *route.trajectory().finish_time())
++        continue;
++
++      Trajectory stationary;
++      stationary.insert(
++        reservation.terminal_time,
++        reservation.terminal_position,
++        Eigen::Vector3d::Zero());
++      stationary.insert(
++        *route.trajectory().finish_time() + std::chrono::seconds(1),
++        reservation.terminal_position,
++        Eigen::Vector3d::Zero());
++      const auto conflict = DetectConflict::between(
++        _profile, route.trajectory(), nullptr,
++        reservation.profile, stationary, nullptr);
++      if (conflict)
++      {
++        return Conflict{
++          Dependency{reservation.participant, 0,
++            itinerary.empty()
++            ? 0 : static_cast<RouteId>(itinerary.size() - 1), 0},
++          conflict->time,
++          std::make_shared<Route>(route.map(), std::move(stationary))};
++      }
++    }
++
++    return std::nullopt;
++  }
++
++  std::unique_ptr<RouteValidator> clone() const final
++  {
++    return std::make_unique<LocalRouteValidator>(*this);
++  }
++
++private:
++  std::shared_ptr<const schedule::Viewer> _viewer;
++  std::unordered_set<schedule::ParticipantId> _local_participants;
++  Profile _profile;
++  std::vector<Reservation> _reservations;
++};
++
++bool plans_conflict(const Reservation& a, const Reservation& b)
++{
++  for (const auto& route_a : a.plan.get_itinerary())
++  {
++    for (const auto& route_b : b.plan.get_itinerary())
++    {
++      if (route_a.map() != route_b.map())
++        continue;
++
++      if (DetectConflict::between(
++          a.profile, route_a.trajectory(), nullptr,
++          b.profile, route_b.trajectory(), nullptr))
++      {
++        return true;
++      }
++    }
++  }
++
++  const auto check_terminal = [](
++      const Reservation& stationary_plan,
++      const Reservation& moving_plan)
++    {
++      const auto horizon = moving_plan.terminal_time;
++      if (stationary_plan.terminal_time >= horizon)
++        return false;
++
++      Trajectory stationary;
++      stationary.insert(
++        stationary_plan.terminal_time,
++        stationary_plan.terminal_position,
++        Eigen::Vector3d::Zero());
++      stationary.insert(
++        horizon + std::chrono::seconds(1),
++        stationary_plan.terminal_position,
++        Eigen::Vector3d::Zero());
++      for (const auto& moving_route : moving_plan.plan.get_itinerary())
++      {
++        if (moving_route.map() != stationary_plan.terminal_map)
++          continue;
++
++        if (DetectConflict::between(
++            stationary_plan.profile, stationary, nullptr,
++            moving_plan.profile, moving_route.trajectory(), nullptr))
++        {
++          return true;
++        }
++      }
++
++      return false;
++    };
++
++  return check_terminal(a, b) || check_terminal(b, a);
++}
++
++void populate_metrics(
++  LocalConflictResolver::Metrics& metrics,
++  const LocalConflictResolver::Proposal& proposal,
++  const std::vector<LocalConflictResolver::Agent>& agents,
++  const std::unordered_map<schedule::ParticipantId, double>& ideal_arrivals,
++  const Time epoch)
++{
++  for (const auto& agent : agents)
++  {
++    const auto& plan = proposal.at(agent.id);
++    const auto finish_time = plan.get_itinerary().empty()
++      ? plan.get_start().time()
++      : plan.get_itinerary().back().trajectory().back().time();
++    const double arrival = std::chrono::duration<double>(
++      finish_time - epoch).count();
++    metrics.makespan_seconds = std::max(metrics.makespan_seconds, arrival);
++    metrics.total_arrival_seconds += arrival;
++    metrics.total_delay_seconds += std::max(
++      0.0, arrival - ideal_arrivals.at(agent.id));
++
++    bool used_holding = false;
++    const auto& graph = agent.planner->get_configuration().graph();
++    for (const auto& route : plan.get_itinerary())
++    {
++      if (route.trajectory().size() < 2)
++        continue;
++
++      auto previous = route.trajectory().begin();
++      auto current = previous;
++      ++current;
++      for (; current != route.trajectory().end(); ++current)
++      {
++        const auto stationary_seconds = std::chrono::duration<double>(
++          current->time() - previous->time()).count();
++        if ((current->position().block<2, 1>(0, 0)
++          - previous->position().block<2, 1>(0, 0)).norm() < 1e-3
++          && stationary_seconds >= 1.0)
++        {
++          for (std::size_t i = 0; i < graph.num_waypoints(); ++i)
++          {
++            const auto& waypoint = graph.get_waypoint(i);
++            if (waypoint.is_holding_point()
++              && waypoint.get_map_name() == route.map()
++              && (waypoint.get_location()
++              - current->position().block<2, 1>(0, 0)).norm() < 1e-3)
++            {
++              used_holding = true;
++              break;
++            }
++          }
++        }
++
++        if (used_holding)
++          break;
++
++        previous = current;
++      }
++
++      if (used_holding)
++        break;
++    }
++
++    if (used_holding)
++      ++metrics.holding_points_used;
++  }
++}
++
++} // anonymous namespace
++
+ //==============================================================================
+ class LocalConflictResolver::Result::Implementation
+ {
+@@ -144,7 +496,14 @@ LocalConflictResolver::Result LocalConflictResolver::solve(
+       return finish(Status::unsupported, "empty_starts");
+   }
+ 
++  std::unordered_set<schedule::ParticipantId> local_ids;
++  for (const auto& agent : agents)
++    local_ids.insert(agent.id);
++
++  const auto deadline = started + options.max_solve_time;
+   Proposal independent;
++  std::unordered_map<schedule::ParticipantId, Profile> profiles;
++  std::unordered_map<schedule::ParticipantId, double> ideal_arrivals;
+   Time epoch = agents.front().starts.front().time();
+   for (const auto& agent : agents)
+   {
+@@ -157,34 +516,201 @@ LocalConflictResolver::Result LocalConflictResolver::solve(
+       return finish(Status::budget_exceeded, "low_level_replan_budget");
+     }
+ 
++    const auto profile =
++      agent.planner->get_configuration().vehicle_traits().profile();
++    profiles.emplace(agent.id, profile);
++    auto planner_options = agent.planner->get_default_options();
++    const auto upstream_interrupter = planner_options.interrupter();
++    planner_options.interrupter(
++      [deadline, upstream_interrupter]()
++      {
++        return std::chrono::steady_clock::now() >= deadline
++          || (upstream_interrupter && upstream_interrupter());
++      });
++    planner_options.dependency_window(std::nullopt);
++    planner_options.validator(
++      rmf_utils::make_clone<LocalRouteValidator>(
++        _pimpl->viewer, local_ids, profile, std::vector<Reservation>{}));
++
+     ++result._pimpl->metrics.low_level_replans;
+-    auto plan = agent.planner->plan(agent.starts, agent.goal);
++    auto plan = agent.planner->plan(
++      agent.starts, agent.goal, std::move(planner_options));
+     if (!plan)
+     {
++      const auto blockers = plan.blockers();
+       result._pimpl->blockers.insert(
+-        plan.blockers().begin(), plan.blockers().end());
++        blockers.begin(), blockers.end());
+       if (plan.interrupted())
++      {
++        if (std::chrono::steady_clock::now() >= deadline)
++          return finish(Status::budget_exceeded, "time_budget");
++
+         return finish(Status::interrupted, "low_level_interrupted");
++      }
+ 
+       return finish(Status::infeasible, "independent_plan_failed");
+     }
+ 
+     independent.emplace(agent.id, *std::move(plan));
++    const auto& independent_plan = independent.at(agent.id);
++    const auto independent_finish = independent_plan.get_itinerary().empty()
++      ? independent_plan.get_start().time()
++      : independent_plan.get_itinerary().back().trajectory().back().time();
++    ideal_arrivals.emplace(agent.id, std::chrono::duration<double>(
++        independent_finish - epoch).count());
+   }
+ 
+   if (agents.size() == 1)
+   {
+-    const auto& plan = independent.begin()->second;
+-    const auto finish_time = plan.get_waypoints().back().time();
+-    const double arrival = std::chrono::duration<double>(
+-      finish_time - epoch).count();
+-    result._pimpl->metrics.makespan_seconds = arrival;
+-    result._pimpl->metrics.total_arrival_seconds = arrival;
++    populate_metrics(
++      result._pimpl->metrics, independent, agents, ideal_arrivals, epoch);
+     result._pimpl->proposal = std::move(independent);
+     return finish(Status::no_conflict, "independent_plans_compatible");
+   }
+ 
+-  return finish(Status::unsupported, "joint_search_not_implemented");
++  bool independent_conflict = false;
++  std::unordered_map<schedule::ParticipantId, Reservation>
++    independent_reservations;
++  for (const auto& agent : agents)
++  {
++    independent_reservations.emplace(
++      agent.id,
++      make_reservation(
++        agent, profiles.at(agent.id), independent.at(agent.id)));
++  }
++  for (std::size_t i = 0; i < agents.size(); ++i)
++  {
++    for (std::size_t j = i + 1; j < agents.size(); ++j)
++    {
++      if (plans_conflict(
++          independent_reservations.at(agents[i].id),
++          independent_reservations.at(agents[j].id)))
++      {
++        independent_conflict = true;
++        ++result._pimpl->metrics.conflicts_detected;
++      }
++    }
++  }
++
++  if (!independent_conflict)
++  {
++    populate_metrics(
++      result._pimpl->metrics, independent, agents, ideal_arrivals, epoch);
++    result._pimpl->proposal = std::move(independent);
++    return finish(Status::no_conflict, "independent_plans_compatible");
++  }
++
++  std::vector<std::size_t> order(agents.size());
++  std::iota(order.begin(), order.end(), 0);
++  std::sort(order.begin(), order.end(), [&](const auto a, const auto b)
++    {
++      return agents[a].id < agents[b].id;
++    });
++
++  do
++  {
++    if (std::chrono::steady_clock::now() >= deadline)
++      return finish(Status::budget_exceeded, "time_budget");
++
++    if (++result._pimpl->metrics.high_level_nodes
++      > options.max_high_level_nodes)
++    {
++      return finish(Status::budget_exceeded, "high_level_node_budget");
++    }
++
++    Proposal candidate;
++    std::vector<Reservation> reservations;
++    bool ordering_failed = false;
++    for (const auto index : order)
++    {
++      const auto& agent = agents[index];
++      if (result._pimpl->metrics.low_level_replans
++        >= options.max_low_level_replans)
++      {
++        return finish(Status::budget_exceeded, "low_level_replan_budget");
++      }
++
++      auto planner_options = agent.planner->get_default_options();
++      const auto upstream_interrupter = planner_options.interrupter();
++      planner_options.interrupter(
++        [deadline, upstream_interrupter]()
++        {
++          return std::chrono::steady_clock::now() >= deadline
++            || (upstream_interrupter && upstream_interrupter());
++        });
++      planner_options.dependency_window(std::nullopt);
++      planner_options.validator(
++        rmf_utils::make_clone<LocalRouteValidator>(
++          _pimpl->viewer, local_ids, profiles.at(agent.id), reservations));
++
++      ++result._pimpl->metrics.low_level_replans;
++      auto plan = agent.planner->plan(
++        agent.starts, agent.goal, std::move(planner_options));
++      if (!plan)
++      {
++        const auto blockers = plan.blockers();
++        result._pimpl->blockers.insert(
++          blockers.begin(), blockers.end());
++        if (plan.interrupted()
++          && std::chrono::steady_clock::now() >= deadline)
++        {
++          return finish(Status::budget_exceeded, "time_budget");
++        }
++
++        if (plan.interrupted())
++          return finish(Status::interrupted, "low_level_interrupted");
++
++        ordering_failed = true;
++        break;
++      }
++
++      auto inserted = candidate.emplace(agent.id, *std::move(plan));
++      reservations.push_back(make_reservation(
++          agent, profiles.at(agent.id), inserted.first->second));
++    }
++
++    if (ordering_failed)
++      continue;
++
++    bool candidate_conflict = false;
++    std::unordered_map<schedule::ParticipantId, Reservation>
++      candidate_reservations;
++    for (const auto& agent : agents)
++    {
++      candidate_reservations.emplace(
++        agent.id,
++        make_reservation(
++          agent, profiles.at(agent.id), candidate.at(agent.id)));
++    }
++    for (std::size_t i = 0; i < agents.size(); ++i)
++    {
++      for (std::size_t j = i + 1; j < agents.size(); ++j)
++      {
++        if (plans_conflict(
++            candidate_reservations.at(agents[i].id),
++            candidate_reservations.at(agents[j].id)))
++        {
++          candidate_conflict = true;
++          ++result._pimpl->metrics.conflicts_detected;
++        }
++      }
++    }
++
++    if (!candidate_conflict)
++    {
++      result._pimpl->metrics.conflicts_resolved = 1;
++      populate_metrics(
++        result._pimpl->metrics, candidate, agents, ideal_arrivals, epoch);
++      result._pimpl->proposal = std::move(candidate);
++      return finish(Status::success, "priority_order_found");
++    }
++  } while (std::next_permutation(order.begin(), order.end(),
++      [&](const auto a, const auto b)
++      {
++        return agents[a].id < agents[b].id;
++      }));
++
++  return finish(Status::infeasible, "priority_orders_exhausted");
+ }
+ 
+ } // namespace agv
+diff --git a/rmf_traffic/test/unit/agv/test_LocalConflictResolver.cpp b/rmf_traffic/test/unit/agv/test_LocalConflictResolver.cpp
+index e47ea82..09c8fff 100644
+--- a/rmf_traffic/test/unit/agv/test_LocalConflictResolver.cpp
++++ b/rmf_traffic/test/unit/agv/test_LocalConflictResolver.cpp
+@@ -1,6 +1,8 @@
+ #include <rmf_traffic/agv/LocalConflictResolver.hpp>
++#include <rmf_traffic/DetectConflict.hpp>
+ #include <rmf_traffic/geometry/Circle.hpp>
+ #include <rmf_traffic/schedule/Database.hpp>
++#include <rmf_traffic/schedule/Participant.hpp>
+ 
+ #include <rmf_utils/catch.hpp>
+ 
+@@ -38,6 +40,91 @@ Fixture make_fixture()
+     std::chrono::steady_clock::now()};
+ }
+ 
++struct PassingFixture
++{
++  std::shared_ptr<rmf_traffic::schedule::Database> database;
++  std::shared_ptr<rmf_traffic::agv::Planner> planner;
++  rmf_traffic::Profile profile;
++  rmf_traffic::Time now;
++  std::size_t west_start;
++  std::size_t east_start;
++  std::size_t west_goal;
++  std::size_t east_goal;
++};
++
++PassingFixture make_passing_fixture()
++{
++  rmf_traffic::agv::Graph graph;
++  const auto west_start = graph.add_waypoint("test", {-2.0, 2.0})
++    .set_holding_point(true).index();
++  const auto west_goal = graph.add_waypoint("test", {-2.0, -2.0})
++    .set_holding_point(true).index();
++  const auto left = graph.add_waypoint("test", {0.0, 0.0})
++    .set_passthrough_point(true).index();
++  const auto branch = graph.add_waypoint("test", {2.0, 0.0})
++    .set_passthrough_point(true).index();
++  const auto right = graph.add_waypoint("test", {4.0, 0.0})
++    .set_passthrough_point(true).index();
++  const auto east_start = graph.add_waypoint("test", {6.0, 2.0})
++    .set_holding_point(true).index();
++  const auto east_goal = graph.add_waypoint("test", {6.0, -2.0})
++    .set_holding_point(true).index();
++  const auto bay = graph.add_waypoint("test", {2.0, 2.0})
++    .set_holding_point(true).index();
++
++  const auto connect = [&](std::size_t a, std::size_t b)
++    {
++      graph.add_lane(a, b);
++      graph.add_lane(b, a);
++    };
++  connect(west_start, left);
++  connect(west_goal, left);
++  connect(left, branch);
++  connect(branch, right);
++  connect(right, east_start);
++  connect(right, east_goal);
++  connect(branch, bay);
++
++  const rmf_traffic::Profile profile{
++    rmf_traffic::geometry::make_final_convex<
++      rmf_traffic::geometry::Circle>(0.45)};
++  const rmf_traffic::agv::VehicleTraits traits{
++    {1.0, 0.75}, {0.8, 1.0}, profile,
++    rmf_traffic::agv::VehicleTraits::Differential{
++      Eigen::Vector2d::UnitX(), false}};
++  auto database = std::make_shared<rmf_traffic::schedule::Database>();
++  auto planner = std::make_shared<rmf_traffic::agv::Planner>(
++    rmf_traffic::agv::Planner::Configuration{graph, traits},
++    rmf_traffic::agv::Planner::Options{nullptr, std::chrono::seconds(1)});
++  return {std::move(database), std::move(planner), profile,
++    std::chrono::steady_clock::now(), west_start, east_start,
++    west_goal, east_goal};
++}
++
++bool plans_conflict(
++  const rmf_traffic::agv::Plan& a,
++  const rmf_traffic::agv::Plan& b,
++  const rmf_traffic::Profile& profile)
++{
++  for (const auto& route_a : a.get_itinerary())
++  {
++    for (const auto& route_b : b.get_itinerary())
++    {
++      if (route_a.map() != route_b.map())
++        continue;
++
++      if (rmf_traffic::DetectConflict::between(
++          profile, route_a.trajectory(), nullptr,
++          profile, route_b.trajectory(), nullptr))
++      {
++        return true;
++      }
++    }
++  }
++
++  return false;
++}
++
+ } // anonymous namespace
+ 
+ SCENARIO("Local conflict resolver budgets are configurable", "[agv][local_mapf]")
+@@ -152,3 +239,152 @@ SCENARIO("Local conflict resolver plans one agent", "[agv][local_mapf]")
+   CHECK(result.proposal()->at(agent.id).get_waypoints().back().graph_index()
+     == agent.goal.waypoint());
+ }
++
++SCENARIO("Local conflict resolver prioritizes two opposing agents",
++  "[agv][local_mapf]")
++{
++  using Resolver = rmf_traffic::agv::LocalConflictResolver;
++  using Plan = rmf_traffic::agv::Plan;
++  const auto fixture = make_passing_fixture();
++  const std::vector<Resolver::Agent> agents{
++    {10, {Plan::Start{fixture.now, fixture.west_start, 0.0}},
++      Plan::Goal{fixture.east_goal}, fixture.planner},
++    {20, {Plan::Start{fixture.now, fixture.east_start, M_PI}},
++      Plan::Goal{fixture.west_goal}, fixture.planner}}
++  ;
++
++  const auto result = Resolver(fixture.database).solve(agents);
++
++  INFO("termination=" << result.metrics().termination_reason
++    << " nodes=" << result.metrics().high_level_nodes
++    << " replans=" << result.metrics().low_level_replans
++    << " conflicts=" << result.metrics().conflicts_detected
++    << " blockers=" << result.blockers().size());
++  REQUIRE(result.proposal());
++  REQUIRE(result.proposal()->size() == agents.size());
++  CHECK(result.metrics().status == Resolver::Status::success);
++  CHECK(result.metrics().high_level_nodes > 0);
++  CHECK(result.metrics().low_level_replans > agents.size());
++  CHECK(result.metrics().holding_points_used > 0);
++  CHECK(result.metrics().makespan_seconds > 0.0);
++  CHECK(result.metrics().total_arrival_seconds
++    >= result.metrics().makespan_seconds);
++  CHECK(result.metrics().total_delay_seconds > 0.0);
++  CHECK_FALSE(plans_conflict(
++      result.proposal()->at(agents[0].id),
++      result.proposal()->at(agents[1].id), fixture.profile));
++  for (const auto& agent : agents)
++  {
++    const auto& plan = result.proposal()->at(agent.id);
++    CHECK(plan.get_waypoints().back().graph_index()
++      == agent.goal.waypoint());
++    for (const auto& waypoint : plan.get_waypoints())
++      CHECK(waypoint.dependencies().empty());
++  }
++}
++
++SCENARIO("Local conflict resolver reports its bounded search limits",
++  "[agv][local_mapf]")
++{
++  using Resolver = rmf_traffic::agv::LocalConflictResolver;
++  using Plan = rmf_traffic::agv::Plan;
++  const auto fixture = make_passing_fixture();
++  const std::vector<Resolver::Agent> agents{
++    {10, {Plan::Start{fixture.now, fixture.west_start, 0.0}},
++      Plan::Goal{fixture.east_goal}, fixture.planner},
++    {20, {Plan::Start{fixture.now, fixture.east_start, M_PI}},
++      Plan::Goal{fixture.west_goal}, fixture.planner}}
++  ;
++  Resolver::Options options;
++  options.max_low_level_replans = agents.size();
++
++  const auto result = Resolver(fixture.database, options).solve(agents);
++
++  CHECK_FALSE(result.proposal());
++  CHECK(result.metrics().status == Resolver::Status::budget_exceeded);
++  CHECK(result.metrics().termination_reason == "low_level_replan_budget");
++}
++
++SCENARIO("Persistent idle destination occupancy remains infeasible",
++  "[agv][local_mapf]")
++{
++  using Resolver = rmf_traffic::agv::LocalConflictResolver;
++  using Plan = rmf_traffic::agv::Plan;
++  const auto fixture = make_passing_fixture();
++  const std::vector<Resolver::Agent> agents{
++    {10, {Plan::Start{fixture.now, fixture.west_start, 0.0}},
++      Plan::Goal{fixture.east_goal}, fixture.planner},
++    {20, {Plan::Start{fixture.now, fixture.east_goal, M_PI}},
++      Plan::Goal{fixture.east_goal}, fixture.planner}}
++  ;
++
++  const auto result = Resolver(fixture.database).solve(agents);
++
++  CHECK_FALSE(result.proposal());
++  CHECK(result.metrics().status == Resolver::Status::budget_exceeded);
++  CHECK(result.metrics().termination_reason == "time_budget");
++  CHECK(result.blockers().count(agents[1].id) == 1);
++}
++
++SCENARIO("Local conflict resolver separates external and stale local traffic",
++  "[agv][local_mapf]")
++{
++  using Resolver = rmf_traffic::agv::LocalConflictResolver;
++  using Plan = rmf_traffic::agv::Plan;
++
++  const auto make_blocking_trajectory = [](rmf_traffic::Time now)
++    {
++      rmf_traffic::Trajectory trajectory;
++      const Eigen::Vector3d position{2.0, 0.0, 0.0};
++      trajectory.insert(now, position, Eigen::Vector3d::Zero());
++      trajectory.insert(
++        now + std::chrono::seconds(30),
++        position,
++        Eigen::Vector3d::Zero());
++      return trajectory;
++    };
++
++  SECTION("external traffic is enforced")
++  {
++    const auto fixture = make_fixture();
++    auto obstacle = rmf_traffic::schedule::make_participant(
++      {"obstacle", "test",
++        rmf_traffic::schedule::ParticipantDescription::Rx::Responsive,
++        fixture.planner->get_configuration().vehicle_traits().profile()},
++      fixture.database);
++    obstacle.set(obstacle.assign_plan_id(),
++      {{"test", make_blocking_trajectory(fixture.now)}});
++    const Resolver::Agent agent{
++      obstacle.id() + 1,
++      {Plan::Start{fixture.now, 0, 0.0}},
++      Plan::Goal{1}, fixture.planner};
++
++    const auto result = Resolver(fixture.database).solve({agent});
++
++    CHECK_FALSE(result.proposal());
++    CHECK(result.metrics().status == Resolver::Status::budget_exceeded);
++    CHECK(result.metrics().termination_reason == "time_budget");
++    CHECK(result.blockers().count(obstacle.id()) == 1);
++  }
++
++  SECTION("stale itinerary for the local participant is ignored")
++  {
++    const auto fixture = make_fixture();
++    auto participant = rmf_traffic::schedule::make_participant(
++      {"local", "test",
++        rmf_traffic::schedule::ParticipantDescription::Rx::Responsive,
++        fixture.planner->get_configuration().vehicle_traits().profile()},
++      fixture.database);
++    participant.set(participant.assign_plan_id(),
++      {{"test", make_blocking_trajectory(fixture.now)}});
++    const Resolver::Agent agent{
++      participant.id(),
++      {Plan::Start{fixture.now, 0, 0.0}},
++      Plan::Goal{1}, fixture.planner};
++
++    const auto result = Resolver(fixture.database).solve({agent});
++
++    REQUIRE(result.proposal());
++    CHECK(result.metrics().status == Resolver::Status::no_conflict);
++  }
++}

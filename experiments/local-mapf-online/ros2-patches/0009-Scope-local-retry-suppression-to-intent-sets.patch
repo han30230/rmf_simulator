@@ -1,0 +1,152 @@
+From 102d89ba56e854b85101e63eececfcf495e01730 Mon Sep 17 00:00:00 2001
+From: han30230 <han30230@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 08:32:03 +0900
+Subject: [PATCH 9/9] Scope local retry suppression to intent sets
+
+---
+ .../LocalJointPlanningCoordinator.cpp         | 29 +++++++++++++++++--
+ .../LocalJointPlanningCoordinator.hpp         |  2 ++
+ .../test_LocalJointPlanningCoordinator.cpp    | 10 +++++--
+ 3 files changed, 37 insertions(+), 4 deletions(-)
+
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.cpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.cpp
+index 252ca3f..6840930 100644
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.cpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.cpp
+@@ -10,6 +10,7 @@
+ 
+ #include <algorithm>
+ #include <cstdlib>
++#include <sstream>
+ 
+ namespace rmf_fleet_adapter {
+ namespace local_traffic {
+@@ -389,6 +390,7 @@ void LocalJointPlanningCoordinator::upsert_intent(Intent intent)
+     || !goals_match(existing->second.goal, intent.goal))
+   {
+     _consecutive_failures = 0;
++    _failed_intent_key.clear();
+   }
+ 
+   _intents.insert_or_assign(id, std::move(intent));
+@@ -421,6 +423,7 @@ void LocalJointPlanningCoordinator::unregister_intent(
+   _intents.erase(it);
+   _owners.erase(participant);
+   _consecutive_failures = 0;
++  _failed_intent_key.clear();
+ }
+ 
+ std::vector<LocalJointPlanningCoordinator::Intent>
+@@ -459,7 +462,19 @@ LocalJointPlanningCoordinator::begin_local_cycle()
+     return std::nullopt;
+   }
+ 
+-  if (_consecutive_failures >= _options.max_consecutive_failures)
++  std::vector<std::pair<rmf_traffic::ParticipantId, std::size_t>> members;
++  members.reserve(_intents.size());
++  for (const auto& [id, intent] : _intents)
++    members.emplace_back(id, intent.goal.waypoint());
++
++  std::sort(members.begin(), members.end());
++  std::ostringstream key_stream;
++  for (const auto& [id, goal] : members)
++    key_stream << id << ':' << goal << ';';
++  const auto intent_key = key_stream.str();
++
++  if (intent_key == _failed_intent_key
++    && _consecutive_failures >= _options.max_consecutive_failures)
+   {
+     ++_runtime_metrics.suppressed_local_retries;
+     return std::nullopt;
+@@ -473,6 +488,7 @@ LocalJointPlanningCoordinator::begin_local_cycle()
+   }
+ 
+   _active_cycle = _next_cycle++;
++  _active_intent_key = intent_key;
+   for (auto& [id, value] : _owners)
+   {
+     (void)id;
+@@ -518,6 +534,7 @@ void LocalJointPlanningCoordinator::finish_local_cycle(
+     return;
+ 
+   _active_cycle = std::nullopt;
++  _active_intent_key.clear();
+   for (auto& [id, value] : _owners)
+   {
+     (void)id;
+@@ -532,6 +549,7 @@ void LocalJointPlanningCoordinator::complete_local_cycle(
+     return;
+ 
+   _consecutive_failures = 0;
++  _failed_intent_key.clear();
+   finish_local_cycle(cycle);
+ }
+ 
+@@ -541,7 +559,13 @@ void LocalJointPlanningCoordinator::fail_local_cycle(
+   if (!cycle_active(cycle))
+     return;
+ 
+-  ++_consecutive_failures;
++  if (_failed_intent_key == _active_intent_key)
++    ++_consecutive_failures;
++  else
++  {
++    _failed_intent_key = _active_intent_key;
++    _consecutive_failures = 1;
++  }
+   ++_runtime_metrics.local_failures;
+   finish_local_cycle(cycle);
+ }
+@@ -556,6 +580,7 @@ LocalJointPlanningCoordinator::request_negotiation(
+     ++_runtime_metrics.negotiation_preemptions;
+ 
+   _active_cycle = std::nullopt;
++  _active_intent_key.clear();
+   for (auto& [id, value] : _owners)
+   {
+     value = id == participant
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.hpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.hpp
+index fd914d9..2a40b45 100644
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.hpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.hpp
+@@ -180,6 +180,8 @@ private:
+   std::optional<std::uint64_t> _active_cycle;
+   std::uint64_t _next_cycle = 1;
+   RuntimeMetrics _runtime_metrics;
++  std::string _active_intent_key;
++  std::string _failed_intent_key;
+   std::size_t _consecutive_failures = 0;
+ };
+ 
+diff --git a/rmf_fleet_adapter/test/local_traffic/test_LocalJointPlanningCoordinator.cpp b/rmf_fleet_adapter/test/local_traffic/test_LocalJointPlanningCoordinator.cpp
+index 08d5122..6cbcce9 100644
+--- a/rmf_fleet_adapter/test/local_traffic/test_LocalJointPlanningCoordinator.cpp
++++ b/rmf_fleet_adapter/test/local_traffic/test_LocalJointPlanningCoordinator.cpp
+@@ -223,16 +223,22 @@ TEST_CASE("A failed intent set is not retried until membership changes")
+ 
+   const auto failed_cycle = coordinator.begin_local_cycle();
+   REQUIRE(failed_cycle.has_value());
++  // A task can arrive while the older set is still quiescing. Its membership
++  // must not inherit the older set's failure suppression.
++  coordinator.upsert_intent(intent(3));
+   coordinator.fail_local_cycle(*failed_cycle);
+-  CHECK_FALSE(coordinator.begin_local_cycle().has_value());
+   CHECK(coordinator.metrics().local_failures == 1);
++  const auto expanded_cycle = coordinator.begin_local_cycle();
++  REQUIRE(expanded_cycle.has_value());
++  coordinator.fail_local_cycle(*expanded_cycle);
++  CHECK_FALSE(coordinator.begin_local_cycle().has_value());
+   CHECK(coordinator.metrics().suppressed_local_retries == 1);
+ 
+   // Mere replanning of an unchanged task must not re-enable an expensive
+   // local solve, but a newly active participant creates a new intent set.
+   coordinator.upsert_intent(intent(1, 2));
+   CHECK_FALSE(coordinator.begin_local_cycle().has_value());
+-  coordinator.upsert_intent(intent(3));
++  coordinator.upsert_intent(intent(4));
+   CHECK(coordinator.begin_local_cycle().has_value());
+ }
+ 
+-- 
+2.43.0
+

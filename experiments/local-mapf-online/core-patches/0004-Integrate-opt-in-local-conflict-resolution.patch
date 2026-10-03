@@ -1,0 +1,252 @@
+From 6980b11c7fce0c7033b7f02a3264d66ef418a47d Mon Sep 17 00:00:00 2001
+From: han30230 <han30230@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 20:42:33 +0900
+Subject: [PATCH 4/5] Integrate opt-in local conflict resolution
+
+---
+ .../agv/CentralizedNegotiation.hpp            |  6 ++
+ .../rmf_traffic/agv/SearchDiagnostics.hpp     | 12 +++
+ .../agv/CentralizedNegotiation.cpp            | 71 ++++++++++++++++-
+ .../unit/agv/test_LocalConflictResolver.cpp   | 77 +++++++++++++++++++
+ 4 files changed, 165 insertions(+), 1 deletion(-)
+
+diff --git a/rmf_traffic/include/rmf_traffic/agv/CentralizedNegotiation.hpp b/rmf_traffic/include/rmf_traffic/agv/CentralizedNegotiation.hpp
+index 2aea232..376001f 100644
+--- a/rmf_traffic/include/rmf_traffic/agv/CentralizedNegotiation.hpp
++++ b/rmf_traffic/include/rmf_traffic/agv/CentralizedNegotiation.hpp
+@@ -19,6 +19,7 @@
+ #define RMF_TRAFFIC__AGV__CENTRALIZEDNEGOTIATION_HPP
+ 
+ #include <rmf_traffic/agv/Planner.hpp>
++#include <rmf_traffic/agv/LocalConflictResolver.hpp>
+ #include <rmf_traffic/agv/SimpleNegotiator.hpp>
+ 
+ namespace rmf_traffic {
+@@ -187,6 +188,11 @@ public:
+   /// Optional per-solve observer; no candidate selection changes.
+   CentralizedNegotiation& diagnostics(std::shared_ptr<SearchDiagnostics> value);
+ 
++  /// Opt into bounded local joint planning before standard negotiation.
++  /// Any local failure or budget exhaustion falls back to negotiation.
++  CentralizedNegotiation& local_conflict_resolution(
++    std::optional<LocalConflictResolver::Options> options);
++
+   /// Solve a centralized negotiation for the given agents.
+   Result solve(const std::vector<Agent>& agents) const;
+ 
+diff --git a/rmf_traffic/include/rmf_traffic/agv/SearchDiagnostics.hpp b/rmf_traffic/include/rmf_traffic/agv/SearchDiagnostics.hpp
+index 44d6ca3..60a1aaf 100644
+--- a/rmf_traffic/include/rmf_traffic/agv/SearchDiagnostics.hpp
++++ b/rmf_traffic/include/rmf_traffic/agv/SearchDiagnostics.hpp
+@@ -41,6 +41,18 @@ struct SearchDiagnostics
+   double solve_seconds = 0;
+   std::string termination_reason = "not_started";
+   bool proposal_found = false;
++
++  bool local_resolver_attempted = false;
++  bool local_resolver_succeeded = false;
++  bool local_resolver_fallback = false;
++  std::string local_termination_reason = "not_attempted";
++  double local_solve_seconds = 0.0;
++  std::size_t local_high_level_nodes = 0;
++  std::size_t local_low_level_replans = 0;
++  std::size_t local_conflicts_resolved = 0;
++  std::size_t local_holding_points_used = 0;
++  double local_makespan_seconds = 0.0;
++  double local_total_delay_seconds = 0.0;
+   std::vector<Event> events;
+ 
+   void record(Event event)
+diff --git a/rmf_traffic/src/rmf_traffic/agv/CentralizedNegotiation.cpp b/rmf_traffic/src/rmf_traffic/agv/CentralizedNegotiation.cpp
+index 0a61118..ef90806 100644
+--- a/rmf_traffic/src/rmf_traffic/agv/CentralizedNegotiation.cpp
++++ b/rmf_traffic/src/rmf_traffic/agv/CentralizedNegotiation.cpp
+@@ -189,6 +189,7 @@ class CentralizedNegotiation::Implementation
+ public:
+   std::shared_ptr<const schedule::Viewer> viewer;
+   std::shared_ptr<SearchDiagnostics> diagnostics;
++  std::optional<LocalConflictResolver::Options> local_options;
+   bool optimal = false;
+   bool log = false;
+   bool print = false;
+@@ -199,7 +200,8 @@ CentralizedNegotiation::CentralizedNegotiation(
+   std::shared_ptr<const schedule::Viewer> viewer)
+ : _pimpl(
+     rmf_utils::make_impl<Implementation>(
+-      Implementation{std::move(viewer), nullptr, false, false, false}))
++      Implementation{
++        std::move(viewer), nullptr, std::nullopt, false, false, false}))
+ {
+   // Do nothing
+ }
+@@ -225,6 +227,14 @@ CentralizedNegotiation& CentralizedNegotiation::diagnostics(std::shared_ptr<Sear
+   return *this;
+ }
+ 
++//==============================================================================
++CentralizedNegotiation& CentralizedNegotiation::local_conflict_resolution(
++  std::optional<LocalConflictResolver::Options> options)
++{
++  _pimpl->local_options = std::move(options);
++  return *this;
++}
++
+ //==============================================================================
+ CentralizedNegotiation& CentralizedNegotiation::optimal(bool on)
+ {
+@@ -283,6 +293,65 @@ auto CentralizedNegotiation::solve(const std::vector<Agent>& agents) const
+   {
+     _pimpl->diagnostics->termination_reason = "running";
+     _pimpl->diagnostics->proposal_found = false;
++    _pimpl->diagnostics->local_resolver_attempted = false;
++    _pimpl->diagnostics->local_resolver_succeeded = false;
++    _pimpl->diagnostics->local_resolver_fallback = false;
++    _pimpl->diagnostics->local_termination_reason = "not_attempted";
++  }
++
++  if (_pimpl->local_options)
++  {
++    std::vector<LocalConflictResolver::Agent> local_agents;
++    local_agents.reserve(agents.size());
++    for (const auto& agent : agents)
++    {
++      local_agents.push_back(
++        LocalConflictResolver::Agent{
++          agent.id(), agent.starts(), agent.goal(), agent.planner()});
++    }
++
++    const auto local_result = LocalConflictResolver(
++      _pimpl->viewer, *_pimpl->local_options).solve(local_agents);
++    const auto& local_metrics = local_result.metrics();
++    if (_pimpl->diagnostics)
++    {
++      auto& diagnostics = *_pimpl->diagnostics;
++      diagnostics.local_resolver_attempted = true;
++      diagnostics.local_termination_reason =
++        local_metrics.termination_reason;
++      diagnostics.local_solve_seconds = local_metrics.solve_seconds;
++      diagnostics.local_high_level_nodes = local_metrics.high_level_nodes;
++      diagnostics.local_low_level_replans = local_metrics.low_level_replans;
++      diagnostics.local_conflicts_resolved =
++        local_metrics.conflicts_resolved;
++      diagnostics.local_holding_points_used =
++        local_metrics.holding_points_used;
++      diagnostics.local_makespan_seconds = local_metrics.makespan_seconds;
++      diagnostics.local_total_delay_seconds =
++        local_metrics.total_delay_seconds;
++    }
++
++    if (local_result.proposal())
++    {
++      auto result = Result::Implementation::make();
++      auto& rimpl = Result::Implementation::get(result);
++      rimpl.proposal = *local_result.proposal();
++      rimpl.blockers = local_result.blockers();
++      if (_pimpl->diagnostics)
++      {
++        auto& diagnostics = *_pimpl->diagnostics;
++        diagnostics.local_resolver_succeeded = true;
++        diagnostics.proposal_found = true;
++        diagnostics.termination_reason = "local_resolver_success";
++        diagnostics.solve_seconds = std::chrono::duration<double>(
++          std::chrono::steady_clock::now() - solve_started).count();
++      }
++
++      return result;
++    }
++
++    if (_pimpl->diagnostics)
++      _pimpl->diagnostics->local_resolver_fallback = true;
+   }
+ 
+   std::deque<schedule::Negotiation::TablePtr> queue;
+diff --git a/rmf_traffic/test/unit/agv/test_LocalConflictResolver.cpp b/rmf_traffic/test/unit/agv/test_LocalConflictResolver.cpp
+index 09c8fff..3ff922b 100644
+--- a/rmf_traffic/test/unit/agv/test_LocalConflictResolver.cpp
++++ b/rmf_traffic/test/unit/agv/test_LocalConflictResolver.cpp
+@@ -1,4 +1,6 @@
+ #include <rmf_traffic/agv/LocalConflictResolver.hpp>
++#include <rmf_traffic/agv/CentralizedNegotiation.hpp>
++#include <rmf_traffic/agv/SearchDiagnostics.hpp>
+ #include <rmf_traffic/DetectConflict.hpp>
+ #include <rmf_traffic/geometry/Circle.hpp>
+ #include <rmf_traffic/schedule/Database.hpp>
+@@ -388,3 +390,78 @@ SCENARIO("Local conflict resolver separates external and stale local traffic",
+     CHECK(result.metrics().status == Resolver::Status::no_conflict);
+   }
+ }
++
++SCENARIO("Centralized negotiation local resolver is opt in with fallback",
++  "[agv][local_mapf][local_integration]")
++{
++  using Centralized = rmf_traffic::agv::CentralizedNegotiation;
++  using Resolver = rmf_traffic::agv::LocalConflictResolver;
++  using Plan = rmf_traffic::agv::Plan;
++  using Diagnostics = rmf_traffic::agv::SearchDiagnostics;
++  const auto fixture = make_passing_fixture();
++  std::vector<rmf_traffic::schedule::Participant> participants;
++  for (std::size_t i = 0; i < 2; ++i)
++  {
++    participants.push_back(rmf_traffic::schedule::make_participant(
++      {"agent_" + std::to_string(i), "test",
++        rmf_traffic::schedule::ParticipantDescription::Rx::Responsive,
++        fixture.profile}, fixture.database));
++  }
++
++  const std::vector<Centralized::Agent> agents{
++    {participants[0].id(),
++      Plan::Start{fixture.now, fixture.west_start, 0.0},
++      Plan::Goal{fixture.east_goal}, fixture.planner},
++    {participants[1].id(),
++      Plan::Start{fixture.now, fixture.east_start, M_PI},
++      Plan::Goal{fixture.west_goal}, fixture.planner}}
++  ;
++
++  SECTION("disabled preserves table negotiation")
++  {
++    auto diagnostics = std::make_shared<Diagnostics>();
++    const auto result = Centralized(fixture.database)
++      .diagnostics(diagnostics)
++      .solve(agents);
++
++    REQUIRE(result.proposal());
++    CHECK_FALSE(diagnostics->local_resolver_attempted);
++    CHECK(diagnostics->tables_selected > 0);
++  }
++
++  SECTION("successful local solve creates no negotiation tables")
++  {
++    auto diagnostics = std::make_shared<Diagnostics>();
++    const auto result = Centralized(fixture.database)
++      .diagnostics(diagnostics)
++      .local_conflict_resolution(Resolver::Options{})
++      .solve(agents);
++
++    REQUIRE(result.proposal());
++    CHECK(diagnostics->local_resolver_attempted);
++    CHECK(diagnostics->local_resolver_succeeded);
++    CHECK_FALSE(diagnostics->local_resolver_fallback);
++    CHECK(diagnostics->tables_selected == 0);
++    CHECK(diagnostics->local_high_level_nodes > 0);
++    CHECK(diagnostics->local_low_level_replans > agents.size());
++  }
++
++  SECTION("budget exhaustion falls back to table negotiation")
++  {
++    Resolver::Options options;
++    options.max_low_level_replans = agents.size();
++    auto diagnostics = std::make_shared<Diagnostics>();
++    const auto result = Centralized(fixture.database)
++      .diagnostics(diagnostics)
++      .local_conflict_resolution(options)
++      .solve(agents);
++
++    REQUIRE(result.proposal());
++    CHECK(diagnostics->local_resolver_attempted);
++    CHECK_FALSE(diagnostics->local_resolver_succeeded);
++    CHECK(diagnostics->local_resolver_fallback);
++    CHECK(diagnostics->local_termination_reason
++      == "low_level_replan_budget");
++    CHECK(diagnostics->tables_selected > 0);
++  }
++}

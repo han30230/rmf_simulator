@@ -1,0 +1,511 @@
+From 9713f8018016af126d6beb7db32445897b2a3f81 Mon Sep 17 00:00:00 2001
+From: han30230 <han30230@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 22:36:47 +0900
+Subject: [PATCH 4/9] Add bounded local joint planning coordinator
+
+---
+ rmf_fleet_adapter/CMakeLists.txt              |   1 +
+ .../LocalJointPlanningCoordinator.cpp         | 231 ++++++++++++++++++
+ .../LocalJointPlanningCoordinator.hpp         | 101 ++++++++
+ .../test_LocalJointPlanningCoordinator.cpp    | 131 ++++++++++
+ 4 files changed, 464 insertions(+)
+ create mode 100644 rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.cpp
+ create mode 100644 rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.hpp
+ create mode 100644 rmf_fleet_adapter/test/local_traffic/test_LocalJointPlanningCoordinator.cpp
+
+diff --git a/rmf_fleet_adapter/CMakeLists.txt b/rmf_fleet_adapter/CMakeLists.txt
+index 1970c75..c110052 100644
+--- a/rmf_fleet_adapter/CMakeLists.txt
++++ b/rmf_fleet_adapter/CMakeLists.txt
+@@ -142,6 +142,7 @@ if (BUILD_TESTING)
+       test/test_Task.cpp
+       test/local_traffic/test_RobotObservation.cpp
+       test/local_traffic/test_GroupPlanApplication.cpp
++      test/local_traffic/test_LocalJointPlanningCoordinator.cpp
+     TIMEOUT 300
+   )
+   ament_target_dependencies(test_rmf_fleet_adapter
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.cpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.cpp
+new file mode 100644
+index 0000000..8ef45e6
+--- /dev/null
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.cpp
+@@ -0,0 +1,231 @@
++/*
++ * Copyright (C) 2026 Open Source Robotics Foundation
++ * Licensed under the Apache License, Version 2.0
++ */
++
++#include "LocalJointPlanningCoordinator.hpp"
++
++#include <algorithm>
++#include <cstdlib>
++
++namespace rmf_fleet_adapter {
++namespace local_traffic {
++
++namespace {
++
++bool truthy(const std::string& value)
++{
++  return value == "1" || value == "true" || value == "TRUE"
++    || value == "on" || value == "ON";
++}
++
++bool goals_match(
++  const rmf_traffic::agv::Plan::Goal& a,
++  const rmf_traffic::agv::Plan::Goal& b)
++{
++  if (a.waypoint() != b.waypoint()
++    || a.minimum_time() != b.minimum_time()
++    || (a.orientation() == nullptr) != (b.orientation() == nullptr))
++  {
++    return false;
++  }
++
++  return a.orientation() == nullptr || *a.orientation() == *b.orientation();
++}
++
++} // anonymous namespace
++
++LocalJointPlanningCoordinator::Options
++LocalJointPlanningCoordinator::Options::load(
++  const std::unordered_map<std::string, std::string>& environment)
++{
++  Options result;
++  const auto value = [&](const std::string& name) -> std::optional<std::string>
++    {
++      const auto it = environment.find(name);
++      if (it != environment.end())
++        return it->second;
++
++      if (!environment.empty())
++        return std::nullopt;
++
++      const auto* raw = std::getenv(name.c_str());
++      if (raw)
++        return std::string(raw);
++
++      return std::nullopt;
++    };
++
++  const auto enabled = value("RMF_LOCAL_MAPF_ENABLED");
++  if (enabled.has_value())
++    result.enabled = truthy(*enabled);
++
++  const auto parse_size = [&](const std::string& name, std::size_t& output)
++    {
++      const auto input = value(name);
++      if (!input.has_value())
++        return;
++
++      try
++      {
++        output = static_cast<std::size_t>(std::stoul(*input));
++      }
++      catch (const std::exception&)
++      {
++        // Keep the safe default.
++      }
++    };
++
++  parse_size("RMF_LOCAL_MAPF_MAX_AGENTS", result.max_agents);
++  result.max_agents = std::min(
++    result.max_agents,
++    rmf_traffic::agv::LocalConflictResolver::hard_maximum_agents);
++  parse_size(
++    "RMF_LOCAL_MAPF_MAX_HIGH_LEVEL_NODES", result.max_high_level_nodes);
++  parse_size(
++    "RMF_LOCAL_MAPF_MAX_LOW_LEVEL_REPLANS", result.max_low_level_replans);
++
++  return result;
++}
++
++LocalJointPlanningCoordinator::LocalJointPlanningCoordinator(Options options)
++: _options(std::move(options))
++{
++  _options.max_agents = std::min(
++    _options.max_agents,
++    rmf_traffic::agv::LocalConflictResolver::hard_maximum_agents);
++}
++
++LocalJointPlanningCoordinator::LocalJointPlanningCoordinator()
++: LocalJointPlanningCoordinator(Options{})
++{
++  // Do nothing
++}
++
++const LocalJointPlanningCoordinator::Options&
++LocalJointPlanningCoordinator::options() const
++{
++  return _options;
++}
++
++LocalJointPlanningCoordinator::Decision
++LocalJointPlanningCoordinator::solve(
++  std::shared_ptr<const rmf_traffic::schedule::Viewer> viewer,
++  const std::vector<Intent>& intents) const
++{
++  Decision decision;
++  decision.status = Status::fallback_disabled;
++  decision.reason = "disabled";
++
++  if (!_options.enabled)
++    return decision;
++
++  if (intents.size() < 2)
++  {
++    decision.status = Status::fallback_too_few_agents;
++    decision.reason = "too_few_agents";
++    return decision;
++  }
++
++  if (intents.size() > _options.max_agents
++    || intents.size()
++    > rmf_traffic::agv::LocalConflictResolver::hard_maximum_agents)
++  {
++    decision.status = Status::fallback_too_many_agents;
++    decision.reason = "too_many_agents";
++    return decision;
++  }
++
++  std::vector<rmf_traffic::agv::LocalConflictResolver::Agent> agents;
++  agents.reserve(intents.size());
++  for (const auto& intent : intents)
++  {
++    if (intent.cancelled || !intent.planner || intent.starts.empty())
++    {
++      decision.status = Status::fallback_unsupported;
++      decision.reason = "unsupported_intent";
++      return decision;
++    }
++
++    agents.push_back({
++      intent.participant, intent.starts, intent.goal, intent.planner});
++  }
++
++  rmf_traffic::agv::LocalConflictResolver::Options resolver_options;
++  resolver_options.max_agents = _options.max_agents;
++  resolver_options.max_high_level_nodes = _options.max_high_level_nodes;
++  resolver_options.max_low_level_replans = _options.max_low_level_replans;
++  resolver_options.max_solve_time = _options.max_solve_time;
++  resolver_options.max_low_level_time = _options.max_low_level_time;
++  const rmf_traffic::agv::LocalConflictResolver resolver(
++    std::move(viewer), resolver_options);
++  const auto result = resolver.solve(agents);
++  decision.metrics = result.metrics();
++  decision.reason = result.metrics().termination_reason;
++
++  using ResolverStatus = rmf_traffic::agv::LocalConflictResolver::Status;
++  switch (result.metrics().status)
++  {
++    case ResolverStatus::success:
++      decision.status = Status::success;
++      decision.proposal = result.proposal();
++      break;
++    case ResolverStatus::no_conflict:
++      decision.status = Status::no_conflict;
++      break;
++    case ResolverStatus::unsupported:
++      decision.status = Status::fallback_unsupported;
++      break;
++    case ResolverStatus::infeasible:
++      decision.status = Status::fallback_infeasible;
++      break;
++    case ResolverStatus::budget_exceeded:
++      decision.status = Status::fallback_budget_exceeded;
++      break;
++    case ResolverStatus::interrupted:
++      decision.status = Status::fallback_interrupted;
++      break;
++  }
++
++  return decision;
++}
++
++LocalJointPlanningCoordinator::Validation
++LocalJointPlanningCoordinator::validate(
++  const std::vector<Intent>& captured,
++  const std::vector<Intent>& current,
++  const rmf_traffic::Time now) const
++{
++  if (captured.size() != current.size())
++    return {false, "intent_set_changed"};
++
++  std::unordered_map<rmf_traffic::ParticipantId, const Intent*> by_id;
++  for (const auto& intent : current)
++    by_id[intent.participant] = &intent;
++
++  for (const auto& old : captured)
++  {
++    const auto it = by_id.find(old.participant);
++    if (it == by_id.end())
++      return {false, "intent_set_changed"};
++
++    const auto& value = *it->second;
++    if (value.cancelled)
++      return {false, "cancelled"};
++    if (value.generation != old.generation)
++      return {false, "generation_changed"};
++    if (!goals_match(value.goal, old.goal))
++      return {false, "goal_changed"};
++    if (value.movement_revision != old.movement_revision)
++      return {false, "location_changed"};
++    if (value.starts.empty())
++      return {false, "invalid_starts"};
++    if (now - value.report_received > _options.report_freshness)
++      return {false, "stale_report"};
++  }
++
++  return {true, "valid"};
++}
++
++} // namespace local_traffic
++} // namespace rmf_fleet_adapter
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.hpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.hpp
+new file mode 100644
+index 0000000..6c45ffb
+--- /dev/null
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.hpp
+@@ -0,0 +1,101 @@
++/*
++ * Copyright (C) 2026 Open Source Robotics Foundation
++ * Licensed under the Apache License, Version 2.0
++ */
++
++#ifndef RMF_FLEET_ADAPTER__LOCAL_TRAFFIC__LOCALJOINTPLANNINGCOORDINATOR_HPP
++#define RMF_FLEET_ADAPTER__LOCAL_TRAFFIC__LOCALJOINTPLANNINGCOORDINATOR_HPP
++
++#include <rmf_traffic/agv/LocalConflictResolver.hpp>
++
++#include <chrono>
++#include <cstdint>
++#include <optional>
++#include <string>
++#include <unordered_map>
++
++namespace rmf_fleet_adapter {
++namespace local_traffic {
++
++class LocalJointPlanningCoordinator
++{
++public:
++  struct Options
++  {
++    bool enabled = false;
++    std::size_t max_agents =
++      rmf_traffic::agv::LocalConflictResolver::hard_maximum_agents;
++    std::size_t max_high_level_nodes = 64;
++    std::size_t max_low_level_replans = 96;
++    std::chrono::steady_clock::duration max_solve_time =
++      std::chrono::seconds(2);
++    std::chrono::steady_clock::duration max_low_level_time =
++      std::chrono::milliseconds(500);
++    rmf_traffic::Duration report_freshness = std::chrono::seconds(1);
++
++    static Options load(
++      const std::unordered_map<std::string, std::string>& environment = {});
++  };
++
++  struct Intent
++  {
++    rmf_traffic::ParticipantId participant;
++    rmf_traffic::agv::Plan::StartSet starts;
++    rmf_traffic::agv::Plan::Goal goal;
++    std::shared_ptr<const rmf_traffic::agv::Planner> planner;
++    std::uint64_t generation;
++    std::uint64_t movement_revision;
++    rmf_traffic::Time report_received;
++    bool cancelled;
++  };
++
++  enum class Status
++  {
++    success,
++    no_conflict,
++    fallback_disabled,
++    fallback_too_few_agents,
++    fallback_too_many_agents,
++    fallback_unsupported,
++    fallback_infeasible,
++    fallback_budget_exceeded,
++    fallback_interrupted
++  };
++
++  struct Decision
++  {
++    Status status;
++    std::string reason;
++    std::optional<rmf_traffic::agv::LocalConflictResolver::Proposal> proposal;
++    rmf_traffic::agv::LocalConflictResolver::Metrics metrics;
++  };
++
++  struct Validation
++  {
++    bool valid;
++    std::string reason;
++  };
++
++  LocalJointPlanningCoordinator();
++
++  explicit LocalJointPlanningCoordinator(Options options);
++
++  const Options& options() const;
++
++  Decision solve(
++    std::shared_ptr<const rmf_traffic::schedule::Viewer> viewer,
++    const std::vector<Intent>& intents) const;
++
++  Validation validate(
++    const std::vector<Intent>& captured,
++    const std::vector<Intent>& current,
++    rmf_traffic::Time now) const;
++
++private:
++  Options _options;
++};
++
++} // namespace local_traffic
++} // namespace rmf_fleet_adapter
++
++#endif // RMF_FLEET_ADAPTER__LOCAL_TRAFFIC__LOCALJOINTPLANNINGCOORDINATOR_HPP
+diff --git a/rmf_fleet_adapter/test/local_traffic/test_LocalJointPlanningCoordinator.cpp b/rmf_fleet_adapter/test/local_traffic/test_LocalJointPlanningCoordinator.cpp
+new file mode 100644
+index 0000000..85e2baa
+--- /dev/null
++++ b/rmf_fleet_adapter/test/local_traffic/test_LocalJointPlanningCoordinator.cpp
+@@ -0,0 +1,131 @@
++/*
++ * Copyright (C) 2026 Open Source Robotics Foundation
++ * Licensed under the Apache License, Version 2.0
++ */
++
++#include <local_traffic/LocalJointPlanningCoordinator.hpp>
++
++#include <catch2/catch_test_macros.hpp>
++
++using namespace std::chrono_literals;
++using rmf_fleet_adapter::local_traffic::LocalJointPlanningCoordinator;
++
++namespace {
++
++LocalJointPlanningCoordinator::Intent intent(
++  const rmf_traffic::ParticipantId id,
++  const std::uint64_t generation = 1,
++  const std::uint64_t movement_revision = 1)
++{
++  const auto now = rmf_traffic::Time(rmf_traffic::Duration(1s));
++  return {
++    id,
++    {rmf_traffic::agv::Plan::Start(now, id, 0.0)},
++    rmf_traffic::agv::Plan::Goal(id + 10),
++    nullptr,
++    generation,
++    movement_revision,
++    now,
++    false};
++}
++
++} // anonymous namespace
++
++TEST_CASE("Local joint planning is disabled by default")
++{
++  const auto options = LocalJointPlanningCoordinator::Options::load({});
++  CHECK_FALSE(options.enabled);
++  CHECK(options.max_agents == 4);
++}
++
++TEST_CASE("Configured maximum cannot exceed the core hard limit")
++{
++  const auto options = LocalJointPlanningCoordinator::Options::load(
++    {{"RMF_LOCAL_MAPF_ENABLED", "1"}, {"RMF_LOCAL_MAPF_MAX_AGENTS", "99"}});
++  CHECK(options.enabled);
++  CHECK(options.max_agents == 4);
++}
++
++TEST_CASE("More than four active intents safely returns legacy ownership")
++{
++  LocalJointPlanningCoordinator::Options options;
++  options.enabled = true;
++  LocalJointPlanningCoordinator coordinator(options);
++  const auto decision = coordinator.solve(
++    nullptr, {intent(1), intent(2), intent(3), intent(4), intent(5)});
++
++  CHECK(decision.status
++    == LocalJointPlanningCoordinator::Status::fallback_too_many_agents);
++  CHECK_FALSE(decision.proposal.has_value());
++}
++
++TEST_CASE("Unsupported intents safely return legacy ownership")
++{
++  LocalJointPlanningCoordinator::Options options;
++  options.enabled = true;
++  LocalJointPlanningCoordinator coordinator(options);
++  const auto decision = coordinator.solve(nullptr, {intent(1), intent(2)});
++
++  CHECK(decision.status
++    == LocalJointPlanningCoordinator::Status::fallback_unsupported);
++  CHECK_FALSE(decision.proposal.has_value());
++}
++
++TEST_CASE("Generation goal cancellation and material motion are strict stale checks")
++{
++  LocalJointPlanningCoordinator::Options options;
++  options.enabled = true;
++  options.report_freshness = 2s;
++  LocalJointPlanningCoordinator coordinator(options);
++  const auto captured = std::vector{intent(1), intent(2)};
++  const auto now = rmf_traffic::Time(rmf_traffic::Duration(2s));
++
++  CHECK(coordinator.validate(captured, captured, now).valid);
++
++  auto current = captured;
++  current[0].generation++;
++  CHECK(coordinator.validate(captured, current, now).reason
++    == "generation_changed");
++
++  current = captured;
++  current[0].goal.waypoint(99);
++  CHECK(coordinator.validate(captured, current, now).reason
++    == "goal_changed");
++
++  current = captured;
++  current[0].cancelled = true;
++  CHECK(coordinator.validate(captured, current, now).reason == "cancelled");
++
++  current = captured;
++  current[0].movement_revision++;
++  CHECK(coordinator.validate(captured, current, now).reason
++    == "location_changed");
++}
++
++TEST_CASE("Fresh identical telemetry does not stale a captured intent")
++{
++  LocalJointPlanningCoordinator::Options options;
++  options.enabled = true;
++  options.report_freshness = 2s;
++  LocalJointPlanningCoordinator coordinator(options);
++  const auto captured = std::vector{intent(1), intent(2)};
++  auto current = captured;
++  current[0].report_received =
++    rmf_traffic::Time(rmf_traffic::Duration(1500ms));
++  const auto now = rmf_traffic::Time(rmf_traffic::Duration(2s));
++
++  CHECK(coordinator.validate(captured, current, now).valid);
++}
++
++TEST_CASE("Stale telemetry rejects application")
++{
++  LocalJointPlanningCoordinator::Options options;
++  options.enabled = true;
++  options.report_freshness = 500ms;
++  LocalJointPlanningCoordinator coordinator(options);
++  const auto captured = std::vector{intent(1), intent(2)};
++  const auto now = rmf_traffic::Time(rmf_traffic::Duration(2s));
++
++  CHECK(coordinator.validate(captured, captured, now).reason
++    == "stale_report");
++}
+-- 
+2.43.0
+

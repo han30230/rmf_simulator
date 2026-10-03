@@ -1,0 +1,297 @@
+From 826c7cc81a6d5dc0ff04b959224d02cf378c9469 Mon Sep 17 00:00:00 2001
+From: han30230 <han30230@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 22:40:06 +0900
+Subject: [PATCH 5/9] Track local planning and negotiation ownership
+
+---
+ .../LocalJointPlanningCoordinator.cpp         | 126 ++++++++++++++++++
+ .../LocalJointPlanningCoordinator.hpp         |  48 +++++++
+ .../test_LocalJointPlanningCoordinator.cpp    |  64 +++++++++
+ 3 files changed, 238 insertions(+)
+
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.cpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.cpp
+index 8ef45e6..861701d 100644
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.cpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.cpp
+@@ -227,5 +227,131 @@ LocalJointPlanningCoordinator::validate(
+   return {true, "valid"};
+ }
+ 
++void LocalJointPlanningCoordinator::upsert_intent(Intent intent)
++{
++  const auto id = intent.participant;
++  _intents.insert_or_assign(id, std::move(intent));
++  _owners.try_emplace(id, Owner::ordinary);
++}
++
++void LocalJointPlanningCoordinator::unregister_intent(
++  const rmf_traffic::ParticipantId participant,
++  const std::uint64_t generation)
++{
++  const auto it = _intents.find(participant);
++  if (it == _intents.end() || it->second.generation != generation)
++    return;
++
++  _intents.erase(it);
++  _owners.erase(participant);
++}
++
++std::vector<LocalJointPlanningCoordinator::Intent>
++LocalJointPlanningCoordinator::active_intents() const
++{
++  std::vector<Intent> result;
++  result.reserve(_intents.size());
++  for (const auto& [id, intent] : _intents)
++  {
++    (void)id;
++    result.push_back(intent);
++  }
++
++  std::sort(
++    result.begin(), result.end(),
++    [](const Intent& a, const Intent& b)
++    {
++      return a.participant < b.participant;
++    });
++  return result;
++}
++
++std::optional<std::uint64_t>
++LocalJointPlanningCoordinator::begin_local_cycle()
++{
++  if (!_options.enabled || _active_cycle.has_value()
++    || _intents.size() < 2 || _intents.size() > _options.max_agents)
++  {
++    return std::nullopt;
++  }
++
++  if (_runtime_metrics.negotiation_preemptions
++    >= _options.max_negotiation_preemptions)
++  {
++    ++_runtime_metrics.suppressed_local_retries;
++    return std::nullopt;
++  }
++
++  for (const auto& [id, value] : _owners)
++  {
++    (void)id;
++    if (value != Owner::ordinary)
++      return std::nullopt;
++  }
++
++  _active_cycle = _next_cycle++;
++  for (auto& [id, value] : _owners)
++  {
++    (void)id;
++    value = Owner::local_quiescing;
++  }
++  return _active_cycle;
++}
++
++LocalJointPlanningCoordinator::Cleanup
++LocalJointPlanningCoordinator::request_negotiation(
++  const rmf_traffic::ParticipantId participant)
++{
++  const auto cycle = _active_cycle.value_or(0);
++  const bool invalidate = _active_cycle.has_value();
++  if (invalidate)
++    ++_runtime_metrics.negotiation_preemptions;
++
++  _active_cycle = std::nullopt;
++  for (auto& [id, value] : _owners)
++  {
++    value = id == participant
++      ? Owner::negotiation_pending_cleanup
++      : Owner::ordinary;
++  }
++
++  return {invalidate, cycle};
++}
++
++void LocalJointPlanningCoordinator::finish_negotiation_cleanup(
++  const rmf_traffic::ParticipantId participant)
++{
++  const auto it = _owners.find(participant);
++  if (it != _owners.end()
++    && it->second == Owner::negotiation_pending_cleanup)
++  {
++    it->second = Owner::negotiation;
++  }
++}
++
++void LocalJointPlanningCoordinator::release_negotiation(
++  const rmf_traffic::ParticipantId participant)
++{
++  const auto it = _owners.find(participant);
++  if (it != _owners.end() && it->second == Owner::negotiation)
++    it->second = Owner::ordinary;
++}
++
++LocalJointPlanningCoordinator::Owner LocalJointPlanningCoordinator::owner(
++  const rmf_traffic::ParticipantId participant) const
++{
++  const auto it = _owners.find(participant);
++  if (it == _owners.end())
++    return Owner::ordinary;
++
++  return it->second;
++}
++
++const LocalJointPlanningCoordinator::RuntimeMetrics&
++LocalJointPlanningCoordinator::metrics() const
++{
++  return _runtime_metrics;
++}
++
+ } // namespace local_traffic
+ } // namespace rmf_fleet_adapter
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.hpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.hpp
+index 6c45ffb..6a3acd5 100644
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.hpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.hpp
+@@ -32,6 +32,7 @@ public:
+     std::chrono::steady_clock::duration max_low_level_time =
+       std::chrono::milliseconds(500);
+     rmf_traffic::Duration report_freshness = std::chrono::seconds(1);
++    std::size_t max_negotiation_preemptions = 3;
+ 
+     static Options load(
+       const std::unordered_map<std::string, std::string>& environment = {});
+@@ -76,6 +77,28 @@ public:
+     std::string reason;
+   };
+ 
++  enum class Owner
++  {
++    ordinary,
++    local_quiescing,
++    local_solving,
++    local_applying,
++    negotiation_pending_cleanup,
++    negotiation
++  };
++
++  struct Cleanup
++  {
++    bool invalidate_local_cycle;
++    std::uint64_t cycle;
++  };
++
++  struct RuntimeMetrics
++  {
++    std::size_t negotiation_preemptions = 0;
++    std::size_t suppressed_local_retries = 0;
++  };
++
+   LocalJointPlanningCoordinator();
+ 
+   explicit LocalJointPlanningCoordinator(Options options);
+@@ -91,8 +114,33 @@ public:
+     const std::vector<Intent>& current,
+     rmf_traffic::Time now) const;
+ 
++  void upsert_intent(Intent intent);
++
++  void unregister_intent(
++    rmf_traffic::ParticipantId participant,
++    std::uint64_t generation);
++
++  std::vector<Intent> active_intents() const;
++
++  std::optional<std::uint64_t> begin_local_cycle();
++
++  Cleanup request_negotiation(rmf_traffic::ParticipantId participant);
++
++  void finish_negotiation_cleanup(rmf_traffic::ParticipantId participant);
++
++  void release_negotiation(rmf_traffic::ParticipantId participant);
++
++  Owner owner(rmf_traffic::ParticipantId participant) const;
++
++  const RuntimeMetrics& metrics() const;
++
+ private:
+   Options _options;
++  std::unordered_map<rmf_traffic::ParticipantId, Intent> _intents;
++  std::unordered_map<rmf_traffic::ParticipantId, Owner> _owners;
++  std::optional<std::uint64_t> _active_cycle;
++  std::uint64_t _next_cycle = 1;
++  RuntimeMetrics _runtime_metrics;
+ };
+ 
+ } // namespace local_traffic
+diff --git a/rmf_fleet_adapter/test/local_traffic/test_LocalJointPlanningCoordinator.cpp b/rmf_fleet_adapter/test/local_traffic/test_LocalJointPlanningCoordinator.cpp
+index 85e2baa..09e20bf 100644
+--- a/rmf_fleet_adapter/test/local_traffic/test_LocalJointPlanningCoordinator.cpp
++++ b/rmf_fleet_adapter/test/local_traffic/test_LocalJointPlanningCoordinator.cpp
+@@ -129,3 +129,67 @@ TEST_CASE("Stale telemetry rejects application")
+   CHECK(coordinator.validate(captured, captured, now).reason
+     == "stale_report");
+ }
++
++TEST_CASE("Only one navigation owner exists during negotiation takeover")
++{
++  LocalJointPlanningCoordinator::Options options;
++  options.enabled = true;
++  LocalJointPlanningCoordinator coordinator(options);
++  coordinator.upsert_intent(intent(1));
++  coordinator.upsert_intent(intent(2));
++
++  const auto cycle = coordinator.begin_local_cycle();
++  REQUIRE(cycle.has_value());
++  CHECK(coordinator.owner(1)
++    == LocalJointPlanningCoordinator::Owner::local_quiescing);
++
++  const auto cleanup = coordinator.request_negotiation(1);
++  CHECK(cleanup.invalidate_local_cycle);
++  CHECK(cleanup.cycle == *cycle);
++  CHECK(coordinator.owner(1)
++    == LocalJointPlanningCoordinator::Owner::negotiation_pending_cleanup);
++  CHECK_FALSE(coordinator.begin_local_cycle().has_value());
++
++  coordinator.finish_negotiation_cleanup(1);
++  CHECK(coordinator.owner(1)
++    == LocalJointPlanningCoordinator::Owner::negotiation);
++}
++
++TEST_CASE("Repeated negotiation preemption suppresses local retry")
++{
++  LocalJointPlanningCoordinator::Options options;
++  options.enabled = true;
++  options.max_negotiation_preemptions = 2;
++  LocalJointPlanningCoordinator coordinator(options);
++  coordinator.upsert_intent(intent(1));
++  coordinator.upsert_intent(intent(2));
++
++  REQUIRE(coordinator.begin_local_cycle().has_value());
++  coordinator.request_negotiation(1);
++  coordinator.finish_negotiation_cleanup(1);
++  coordinator.release_negotiation(1);
++
++  REQUIRE(coordinator.begin_local_cycle().has_value());
++  coordinator.request_negotiation(1);
++  coordinator.finish_negotiation_cleanup(1);
++  coordinator.release_negotiation(1);
++
++  CHECK_FALSE(coordinator.begin_local_cycle().has_value());
++  CHECK(coordinator.metrics().negotiation_preemptions == 2);
++  CHECK(coordinator.metrics().suppressed_local_retries == 1);
++}
++
++TEST_CASE("Unregister removes completed and future-ineligible intents")
++{
++  LocalJointPlanningCoordinator::Options options;
++  options.enabled = true;
++  LocalJointPlanningCoordinator coordinator(options);
++  coordinator.upsert_intent(intent(1));
++  coordinator.upsert_intent(intent(2));
++  CHECK(coordinator.active_intents().size() == 2);
++
++  coordinator.unregister_intent(2, 1);
++  const auto active = coordinator.active_intents();
++  REQUIRE(active.size() == 1);
++  CHECK(active.front().participant == 1);
++}
+-- 
+2.43.0
+

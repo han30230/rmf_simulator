@@ -1,0 +1,38 @@
+building_name: p4_local_mapf_experiment
+metadata: {simulation_only: true}
+levels:
+  L1:
+    elevation: 0.0
+    vertices:
+      - [6.833, 92.871, {name: '2101', is_charger: true}]
+      - [12.5, 92.871, {name: '2102'}]
+      - [18.46, 92.871, {name: '2103'}]
+      - [30.424, 92.871, {name: '2104'}]
+      - [42.508, 92.871, {name: '2105', is_passthrough_point: true}]
+      - [54.818, 92.871, {name: '2106'}]
+      - [66.612, 92.871, {name: '2107'}]
+      - [73.7274, 92.8248, {name: '2108', is_charger: true}]
+      - [42.508, 89.8, {name: '6137', is_holding_point: true}]
+      - [0.0, 92.871, {name: 'PARK_W', is_holding_point: true}]
+      - [80.0, 92.8248, {name: 'PARK_E', is_holding_point: true}]
+    lanes:
+      - [0, 1, {graph_idx: 0}]
+      - [1, 0, {graph_idx: 0}]
+      - [1, 2, {graph_idx: 0}]
+      - [2, 1, {graph_idx: 0}]
+      - [2, 3, {graph_idx: 0}]
+      - [3, 2, {graph_idx: 0}]
+      - [3, 4, {graph_idx: 0}]
+      - [4, 3, {graph_idx: 0}]
+      - [4, 5, {graph_idx: 0}]
+      - [5, 4, {graph_idx: 0}]
+      - [5, 6, {graph_idx: 0}]
+      - [6, 5, {graph_idx: 0}]
+      - [6, 7, {graph_idx: 0}]
+      - [7, 6, {graph_idx: 0}]
+      - [4, 8, {graph_idx: 0}]
+      - [8, 4, {graph_idx: 0}]
+      - [9, 0, {graph_idx: 0}]
+      - [0, 9, {graph_idx: 0}]
+      - [7, 10, {graph_idx: 0}]
+      - [10, 7, {graph_idx: 0}]

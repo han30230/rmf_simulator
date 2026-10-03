@@ -1,0 +1,31 @@
+Run: 2026-10-03, 10 s local solve budget, intent-set retry suppression enabled,
+120 s MQTT observation
+Tasks: A1->2108, B1->2101, then B2->2101, then A2->2108
+
+cycle 1: success, holding_order_found, solve=0.014 s, nodes=1,
+  low_level_replans=5, conflicts=1/1, holding_used=1, started=2
+cycle 2: success, holding_order_found, solve=0.038 s, nodes=1,
+  low_level_replans=5, conflicts=1/1, holding_used=1, started=2
+cycle 3 (3 agents): time_budget, solve=10.000 s, nodes=20,
+  low_level_replans=67, conflicts_resolved/detected=0/4, holding_used=0;
+  stale validation also observed generation_changed
+cycle 4 (4 agents): time_budget, solve=10.000 s, nodes=24,
+  low_level_replans=68, conflicts_resolved/detected=0/6, holding_used=0;
+  stale validation also observed generation_changed
+
+No cycle 5 was started for the unchanged four-agent intent set despite subsequent
+legacy negotiation failures and replans. This verifies bounded retry suppression.
+
+Totals within the 120 s monitor window:
+  queued tasks=4
+  local solve completions=4 (2 two-agent successes, 2 budget failures)
+  legacy failed-negotiation log records=22
+  replan requests=19
+  original task completions=0/4
+  process terminations=0
+  minimum simulator center distance=1.4938 m (A1/B1)
+  holding point 6137 visits=0
+
+Final classification: FAIL. Increasing the budget from 2 s to 10 s did not solve
+the dynamic three-agent or four-agent cases. A1/B1 ended face-to-face and the
+simulator reported obstacle blocking; B2 stopped behind B1.

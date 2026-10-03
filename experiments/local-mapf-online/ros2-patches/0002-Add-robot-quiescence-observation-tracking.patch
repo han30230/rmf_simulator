@@ -1,0 +1,487 @@
+From a6f8c9f1e8ed163500ed52859e219f3725cb3267 Mon Sep 17 00:00:00 2001
+From: han30230 <han30230@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 22:29:26 +0900
+Subject: [PATCH 2/9] Add robot quiescence observation tracking
+
+---
+ rmf_fleet_adapter/CMakeLists.txt              |   1 +
+ .../local_traffic/RobotObservation.cpp        | 183 ++++++++++++++++++
+ .../local_traffic/RobotObservation.hpp        |  98 ++++++++++
+ .../local_traffic/test_RobotObservation.cpp   | 158 +++++++++++++++
+ 4 files changed, 440 insertions(+)
+ create mode 100644 rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/RobotObservation.cpp
+ create mode 100644 rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/RobotObservation.hpp
+ create mode 100644 rmf_fleet_adapter/test/local_traffic/test_RobotObservation.cpp
+
+diff --git a/rmf_fleet_adapter/CMakeLists.txt b/rmf_fleet_adapter/CMakeLists.txt
+index ef83cb6..f010492 100644
+--- a/rmf_fleet_adapter/CMakeLists.txt
++++ b/rmf_fleet_adapter/CMakeLists.txt
+@@ -140,6 +140,7 @@ if (BUILD_TESTING)
+       test/tasks/test_Delivery.cpp
+       test/tasks/test_Loop.cpp
+       test/test_Task.cpp
++      test/local_traffic/test_RobotObservation.cpp
+     TIMEOUT 300
+   )
+   ament_target_dependencies(test_rmf_fleet_adapter
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/RobotObservation.cpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/RobotObservation.cpp
+new file mode 100644
+index 0000000..33156d5
+--- /dev/null
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/RobotObservation.cpp
+@@ -0,0 +1,183 @@
++/*
++ * Copyright (C) 2026 Open Source Robotics Foundation
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++#include "RobotObservation.hpp"
++
++#include <cmath>
++
++namespace rmf_fleet_adapter {
++namespace local_traffic {
++
++namespace {
++
++double yaw_difference(const double a, const double b)
++{
++  return std::abs(std::remainder(a - b, 2.0*M_PI));
++}
++
++bool poses_match(
++  const Eigen::Vector3d& a,
++  const Eigen::Vector3d& b,
++  const double translation_tolerance,
++  const double rotation_tolerance)
++{
++  return (a.head<2>() - b.head<2>()).norm() <= translation_tolerance
++    && yaw_difference(a[2], b[2]) <= rotation_tolerance;
++}
++
++} // anonymous namespace
++
++RobotObservationTracker::RobotObservationTracker(
++  const double translation_tolerance,
++  const double rotation_tolerance)
++: _translation_tolerance(translation_tolerance),
++  _rotation_tolerance(rotation_tolerance)
++{
++  // Do nothing
++}
++
++void RobotObservationTracker::update(Report report)
++{
++  bool moved = false;
++  if (_latest.has_value())
++  {
++    moved = !poses_match(
++      _latest->pose,
++      report.pose,
++      _translation_tolerance,
++      _rotation_tolerance)
++      || !_starts_match(
++      _latest->starts,
++      report.starts,
++      _translation_tolerance,
++      _rotation_tolerance);
++    _motion_evidence = true;
++  }
++
++  if (report.driving.value_or(false))
++    moved = true;
++
++  if (report.speed.has_value() && std::abs(*report.speed) > 0.0)
++    _motion_evidence = true;
++
++  if (moved)
++  {
++    ++_movement_revision;
++    _stable_since = std::nullopt;
++  }
++  else if (_stop_requested_at.has_value()
++    && report.received_at > *_stop_requested_at
++    && !_stable_since.has_value())
++  {
++    _stable_since = report.sample_time;
++  }
++
++  _last_update_moved = moved;
++  _latest = std::move(report);
++}
++
++void RobotObservationTracker::request_stop(const rmf_traffic::Time requested_at)
++{
++  _stop_requested_at = requested_at;
++  _stable_since = std::nullopt;
++  _last_update_moved = false;
++  _motion_evidence = false;
++}
++
++QuiescenceStatus RobotObservationTracker::evaluate(
++  const rmf_traffic::Time now,
++  const QuiescenceOptions& options) const
++{
++  if (!_stop_requested_at.has_value())
++    return QuiescenceStatus::waiting_for_report;
++
++  if (now - *_stop_requested_at > options.stop_timeout)
++    return QuiescenceStatus::timeout;
++
++  if (!_latest.has_value())
++    return QuiescenceStatus::waiting_for_report;
++
++  if (!_latest->connected)
++    return QuiescenceStatus::disconnected;
++
++  if (_latest->received_at <= *_stop_requested_at)
++    return QuiescenceStatus::waiting_for_post_stop_report;
++
++  if (now - _latest->received_at > options.report_freshness)
++    return QuiescenceStatus::stale_report;
++
++  if (_latest->starts.empty())
++    return QuiescenceStatus::invalid_starts;
++
++  if (_latest->driving.value_or(false)
++    || (_latest->speed.has_value()
++    && std::abs(*_latest->speed) > options.speed_threshold)
++    || _last_update_moved)
++  {
++    return QuiescenceStatus::moving;
++  }
++
++  if (!_motion_evidence)
++    return QuiescenceStatus::waiting_for_motion_evidence;
++
++  if (!_stable_since.has_value()
++    || now - *_stable_since < options.settle_duration)
++  {
++    return QuiescenceStatus::settling;
++  }
++
++  return QuiescenceStatus::ready;
++}
++
++std::uint64_t RobotObservationTracker::movement_revision() const
++{
++  return _movement_revision;
++}
++
++const std::optional<RobotObservationTracker::Report>&
++RobotObservationTracker::latest() const
++{
++  return _latest;
++}
++
++bool RobotObservationTracker::_starts_match(
++  const rmf_traffic::agv::Plan::StartSet& a,
++  const rmf_traffic::agv::Plan::StartSet& b,
++  const double translation_tolerance,
++  const double rotation_tolerance)
++{
++  if (a.size() != b.size())
++    return false;
++
++  for (std::size_t i = 0; i < a.size(); ++i)
++  {
++    const auto& lhs = a[i];
++    const auto& rhs = b[i];
++    if (lhs.waypoint() != rhs.waypoint()
++      || lhs.lane() != rhs.lane()
++      || yaw_difference(lhs.orientation(), rhs.orientation())
++      > rotation_tolerance
++      || lhs.location().has_value() != rhs.location().has_value())
++    {
++      return false;
++    }
++
++    if (lhs.location().has_value()
++      && (*lhs.location() - *rhs.location()).norm() > translation_tolerance)
++    {
++      return false;
++    }
++  }
++
++  return true;
++}
++
++} // namespace local_traffic
++} // namespace rmf_fleet_adapter
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/RobotObservation.hpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/RobotObservation.hpp
+new file mode 100644
+index 0000000..13ffc9b
+--- /dev/null
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/RobotObservation.hpp
+@@ -0,0 +1,98 @@
++/*
++ * Copyright (C) 2026 Open Source Robotics Foundation
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++#ifndef RMF_FLEET_ADAPTER__LOCAL_TRAFFIC__ROBOTOBSERVATION_HPP
++#define RMF_FLEET_ADAPTER__LOCAL_TRAFFIC__ROBOTOBSERVATION_HPP
++
++#include <rmf_traffic/agv/Planner.hpp>
++
++#include <Eigen/Core>
++
++#include <cstdint>
++#include <optional>
++
++namespace rmf_fleet_adapter {
++namespace local_traffic {
++
++struct QuiescenceOptions
++{
++  rmf_traffic::Duration report_freshness = std::chrono::seconds(1);
++  rmf_traffic::Duration settle_duration = std::chrono::milliseconds(500);
++  rmf_traffic::Duration stop_timeout = std::chrono::seconds(5);
++  double translation_tolerance = 0.01;
++  double rotation_tolerance = 0.02;
++  double speed_threshold = 0.01;
++};
++
++enum class QuiescenceStatus
++{
++  waiting_for_report,
++  waiting_for_post_stop_report,
++  waiting_for_motion_evidence,
++  stale_report,
++  disconnected,
++  invalid_starts,
++  moving,
++  settling,
++  ready,
++  timeout
++};
++
++class RobotObservationTracker
++{
++public:
++  explicit RobotObservationTracker(
++    double translation_tolerance = 0.01,
++    double rotation_tolerance = 0.02);
++
++  struct Report
++  {
++    rmf_traffic::Time received_at;
++    rmf_traffic::Time sample_time;
++    Eigen::Vector3d pose;
++    std::optional<bool> driving;
++    std::optional<double> speed;
++    bool connected;
++    rmf_traffic::agv::Plan::StartSet starts;
++  };
++
++  void update(Report report);
++
++  void request_stop(rmf_traffic::Time requested_at);
++
++  QuiescenceStatus evaluate(
++    rmf_traffic::Time now,
++    const QuiescenceOptions& options) const;
++
++  std::uint64_t movement_revision() const;
++
++  const std::optional<Report>& latest() const;
++
++private:
++  static bool _starts_match(
++    const rmf_traffic::agv::Plan::StartSet& a,
++    const rmf_traffic::agv::Plan::StartSet& b,
++    double translation_tolerance = 1e-6,
++    double rotation_tolerance = 1e-6);
++
++  std::optional<Report> _latest;
++  std::optional<rmf_traffic::Time> _stop_requested_at;
++  std::optional<rmf_traffic::Time> _stable_since;
++  std::uint64_t _movement_revision = 0;
++  bool _last_update_moved = false;
++  bool _motion_evidence = false;
++  double _translation_tolerance;
++  double _rotation_tolerance;
++};
++
++} // namespace local_traffic
++} // namespace rmf_fleet_adapter
++
++#endif // RMF_FLEET_ADAPTER__LOCAL_TRAFFIC__ROBOTOBSERVATION_HPP
+diff --git a/rmf_fleet_adapter/test/local_traffic/test_RobotObservation.cpp b/rmf_fleet_adapter/test/local_traffic/test_RobotObservation.cpp
+new file mode 100644
+index 0000000..c03326a
+--- /dev/null
++++ b/rmf_fleet_adapter/test/local_traffic/test_RobotObservation.cpp
+@@ -0,0 +1,158 @@
++/*
++ * Copyright (C) 2026 Open Source Robotics Foundation
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ */
++
++#include <local_traffic/RobotObservation.hpp>
++
++#include <catch2/catch_test_macros.hpp>
++
++using namespace std::chrono_literals;
++using rmf_fleet_adapter::local_traffic::QuiescenceOptions;
++using rmf_fleet_adapter::local_traffic::QuiescenceStatus;
++using rmf_fleet_adapter::local_traffic::RobotObservationTracker;
++
++namespace {
++
++rmf_traffic::Time time_at(const std::chrono::milliseconds offset)
++{
++  return rmf_traffic::Time(rmf_traffic::Duration(offset));
++}
++
++RobotObservationTracker::Report report(
++  const std::chrono::milliseconds at,
++  const Eigen::Vector3d pose = Eigen::Vector3d::Zero(),
++  std::optional<bool> driving = std::nullopt,
++  std::optional<double> speed = std::nullopt)
++{
++  return {
++    time_at(at),
++    time_at(at),
++    pose,
++    std::move(driving),
++    std::move(speed),
++    true,
++    {rmf_traffic::agv::Plan::Start(time_at(at), 0, pose[2], pose.head<2>())}
++  };
++}
++
++QuiescenceOptions options()
++{
++  QuiescenceOptions result;
++  result.report_freshness = 400ms;
++  result.settle_duration = 300ms;
++  result.stop_timeout = 2s;
++  result.translation_tolerance = 0.02;
++  result.rotation_tolerance = 0.03;
++  result.speed_threshold = 0.01;
++  return result;
++}
++
++} // anonymous namespace
++
++TEST_CASE("Identical fresh reports settle without a movement revision")
++{
++  RobotObservationTracker tracker;
++  tracker.update(report(0ms));
++  const auto initial_revision = tracker.movement_revision();
++  tracker.request_stop(time_at(50ms));
++
++  tracker.update(report(100ms));
++  CHECK(tracker.evaluate(time_at(100ms), options())
++    == QuiescenceStatus::settling);
++
++  tracker.update(report(450ms));
++  CHECK(tracker.movement_revision() == initial_revision);
++  CHECK(tracker.evaluate(time_at(450ms), options())
++    == QuiescenceStatus::ready);
++}
++
++TEST_CASE("Material motion changes the semantic revision and restarts settling")
++{
++  RobotObservationTracker tracker;
++  tracker.request_stop(time_at(0ms));
++  tracker.update(report(100ms));
++  const auto before_move = tracker.movement_revision();
++
++  tracker.update(report(250ms, Eigen::Vector3d{0.10, 0.0, 0.0}));
++  CHECK(tracker.movement_revision() == before_move + 1);
++  CHECK(tracker.evaluate(time_at(250ms), options())
++    == QuiescenceStatus::moving);
++
++  tracker.update(report(300ms, Eigen::Vector3d{0.10, 0.0, 0.0}));
++  CHECK(tracker.evaluate(time_at(300ms), options())
++    == QuiescenceStatus::settling);
++}
++
++TEST_CASE("Pose jitter inside configured tolerances is not semantic movement")
++{
++  RobotObservationTracker tracker(0.02, 0.03);
++  tracker.update(report(0ms));
++  const auto initial_revision = tracker.movement_revision();
++  tracker.request_stop(time_at(50ms));
++
++  tracker.update(report(100ms, Eigen::Vector3d{0.01, 0.0, 0.02}));
++  tracker.update(report(450ms, Eigen::Vector3d{0.01, 0.0, 0.02}));
++  CHECK(tracker.movement_revision() == initial_revision);
++  CHECK(tracker.evaluate(time_at(450ms), options())
++    == QuiescenceStatus::ready);
++}
++
++TEST_CASE("Freshness, connectivity, valid starts, and timeout gate readiness")
++{
++  RobotObservationTracker tracker;
++  tracker.request_stop(time_at(0ms));
++  CHECK(tracker.evaluate(time_at(100ms), options())
++    == QuiescenceStatus::waiting_for_report);
++
++  auto disconnected = report(100ms);
++  disconnected.connected = false;
++  tracker.update(disconnected);
++  CHECK(tracker.evaluate(time_at(100ms), options())
++    == QuiescenceStatus::disconnected);
++
++  auto invalid = report(200ms);
++  invalid.starts.clear();
++  tracker.update(invalid);
++  CHECK(tracker.evaluate(time_at(200ms), options())
++    == QuiescenceStatus::invalid_starts);
++
++  tracker.update(report(300ms));
++  CHECK(tracker.evaluate(time_at(800ms), options())
++    == QuiescenceStatus::stale_report);
++  CHECK(tracker.evaluate(time_at(2100ms), options())
++    == QuiescenceStatus::timeout);
++}
++
++TEST_CASE("Stop acknowledgement alone is not stationary motion evidence")
++{
++  RobotObservationTracker tracker;
++  tracker.update(report(0ms, Eigen::Vector3d::Zero(), false));
++  tracker.request_stop(time_at(50ms));
++
++  tracker.update(report(100ms, Eigen::Vector3d::Zero(), false));
++  CHECK(tracker.evaluate(time_at(100ms), options())
++    == QuiescenceStatus::settling);
++
++  tracker.update(report(450ms, Eigen::Vector3d::Zero(), true));
++  CHECK(tracker.evaluate(time_at(450ms), options())
++    == QuiescenceStatus::moving);
++
++  tracker.update(report(500ms, Eigen::Vector3d::Zero(), false, 0.2));
++  CHECK(tracker.evaluate(time_at(500ms), options())
++    == QuiescenceStatus::moving);
++}
++
++TEST_CASE("A report predating the stop request cannot establish quiescence")
++{
++  RobotObservationTracker tracker;
++  tracker.update(report(100ms));
++  tracker.request_stop(time_at(150ms));
++  CHECK(tracker.evaluate(time_at(200ms), options())
++    == QuiescenceStatus::waiting_for_post_stop_report);
++}
+-- 
+2.43.0
+

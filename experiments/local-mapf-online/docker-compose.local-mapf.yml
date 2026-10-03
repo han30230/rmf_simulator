@@ -1,0 +1,51 @@
+services:
+  rmf_traffic_schedule:
+    volumes:
+      - /home/han30230/rmf-local-lab-20261003/worktrees/rmf_ros2-local-mapf-online/install-core/lib/librmf_traffic.so:/rmf_demos_ws/install/rmf_traffic/lib/librmf_traffic.so:ro
+
+  rmf_traffic_blockade:
+    volumes:
+      - /home/han30230/rmf-local-lab-20261003/worktrees/rmf_ros2-local-mapf-online/install-core/lib/librmf_traffic.so:/rmf_demos_ws/install/rmf_traffic/lib/librmf_traffic.so:ro
+
+  rmf_task_dispatcher:
+    volumes:
+      - /home/han30230/rmf-local-lab-20261003/worktrees/rmf_ros2-local-mapf-online/install-core/lib/librmf_traffic.so:/rmf_demos_ws/install/rmf_traffic/lib/librmf_traffic.so:ro
+      - /home/han30230/rmf-local-lab-20261003/worktrees/rmf_ros2-local-mapf-online/install-fleet-only/rmf_fleet_adapter/lib/librmf_fleet_adapter.so:/rmf_demos_ws/install/rmf_fleet_adapter/lib/librmf_fleet_adapter.so:ro
+
+  vda5050_fleet_adapter:
+    volumes:
+      - /home/han30230/rmf-local-lab-20261003/worktrees/rmf_ros2-local-mapf-online/install-core/lib/librmf_traffic.so:/rmf_demos_ws/install/rmf_traffic/lib/librmf_traffic.so:ro
+      - /home/han30230/rmf-local-lab-20261003/worktrees/rmf_ros2-local-mapf-online/install-fleet-only/rmf_fleet_adapter/lib/librmf_fleet_adapter.so:/rmf_demos_ws/install/rmf_fleet_adapter/lib/librmf_fleet_adapter.so:ro
+      - /home/han30230/rmf-local-lab-20261003/worktrees/rmf_ros2-local-mapf-online/install-python-only/rmf_fleet_adapter_python/lib/python/site-packages/rmf_adapter.cpython-312-x86_64-linux-gnu.so:/rmf_demos_ws/install/rmf_fleet_adapter_python/lib/python/site-packages/rmf_adapter.cpython-312-x86_64-linux-gnu.so:ro
+      - ../experiments/local-mapf-online/fixtures/fleet.yaml:/local-mapf/fleet.yaml:ro
+      - ../experiments/local-mapf-online/fixtures/p4_local_mapf.yaml:/local-mapf/nav_graph.yaml:ro
+    environment:
+      - ROS_DOMAIN_ID=55
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - RMF_LOCAL_MAPF_ENABLED=1
+      - RMF_LOCAL_MAPF_MAX_AGENTS=4
+      - RMF_LOCAL_MAPF_MAX_HIGH_LEVEL_NODES=64
+      - RMF_LOCAL_MAPF_MAX_LOW_LEVEL_REPLANS=96
+      - RMF_LOCAL_MAPF_MAX_SOLVE_MS=${RMF_LOCAL_MAPF_MAX_SOLVE_MS:-2000}
+      - RMF_LOCAL_MAPF_MAX_LOW_LEVEL_MS=500
+      - RMF_LOCAL_MAPF_REPORT_FRESHNESS_MS=1500
+      - RMF_LOCAL_MAPF_SETTLE_MS=500
+      - RMF_LOCAL_MAPF_STOP_TIMEOUT_MS=5000
+      - RMF_LOCAL_MAPF_STATIONARY_HOLD_MS=3600000
+      - RMF_LOCAL_MAPF_MAX_NEGOTIATION_PREEMPTIONS=3
+      - RMF_LOCAL_MAPF_MAX_CONSECUTIVE_FAILURES=1
+    command:
+      - bash
+      - -c
+      - |
+        cd /vda5050_ws &&
+        colcon build --packages-select vda5050_fleet_adapter --symlink-install &&
+        source install/setup.bash &&
+        ros2 run vda5050_fleet_adapter fleet_adapter \
+          -c /local-mapf/fleet.yaml \
+          -n /local-mapf/nav_graph.yaml
+
+  mutex_group_supervisor:
+    volumes:
+      - /home/han30230/rmf-local-lab-20261003/worktrees/rmf_ros2-local-mapf-online/install-core/lib/librmf_traffic.so:/rmf_demos_ws/install/rmf_traffic/lib/librmf_traffic.so:ro
+      - /home/han30230/rmf-local-lab-20261003/worktrees/rmf_ros2-local-mapf-online/install-fleet-only/rmf_fleet_adapter/lib/librmf_fleet_adapter.so:/rmf_demos_ws/install/rmf_fleet_adapter/lib/librmf_fleet_adapter.so:ro

@@ -1,0 +1,352 @@
+From 6c0d1dc5049c528a4fea42e9de1fed264a112ac5 Mon Sep 17 00:00:00 2001
+From: han30230 <han30230@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 08:27:14 +0900
+Subject: [PATCH 8/9] Bound online local planning failures
+
+---
+ .../rmf_fleet_adapter/events/GoToPlace.cpp    | 60 +++++++++++++++-
+ .../LocalJointPlanningCoordinator.cpp         | 69 +++++++++++++++++--
+ .../LocalJointPlanningCoordinator.hpp         |  7 ++
+ .../test_LocalJointPlanningCoordinator.cpp    | 28 +++++++-
+ 4 files changed, 155 insertions(+), 9 deletions(-)
+
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.cpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.cpp
+index ecd08b1..168b03b 100644
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.cpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.cpp
+@@ -861,6 +861,10 @@ void GoToPlace::Active::_try_local_planning()
+     return;
+ 
+   auto intents = coordinator->active_intents();
++  RCLCPP_INFO(
++    _context->node()->get_logger(),
++    "Local MAPF cycle [%lu] quiescing [%zu] participants",
++    static_cast<unsigned long>(*cycle), intents.size());
+   for (const auto& intent : intents)
+   {
+     if (!intent.request_stop || !intent.quiescence_status
+@@ -905,6 +909,13 @@ void GoToPlace::Active::_try_local_planning()
+           || status == local_traffic::QuiescenceStatus::disconnected
+           || status == local_traffic::QuiescenceStatus::invalid_starts)
+         {
++          RCLCPP_WARN(
++            self->_context->node()->get_logger(),
++            "Local MAPF cycle [%lu] quiescence failed for participant [%lu] "
++            "with status [%d]",
++            static_cast<unsigned long>(cycle),
++            static_cast<unsigned long>(intent.participant),
++            static_cast<int>(status));
+           self->_local_quiescence_timer = nullptr;
+           self->_fallback_local_group(cycle, false);
+           return;
+@@ -950,10 +961,30 @@ void GoToPlace::Active::_try_local_planning()
+               if (!self || !coordinator->cycle_active(cycle))
+                 return;
+ 
++              RCLCPP_INFO(
++                self->_context->node()->get_logger(),
++                "Local MAPF cycle [%lu] solve status [%d], reason [%s], "
++                "solve %.3fs, high-level [%zu], replans [%zu], conflicts "
++                "[%zu/%zu], holding [%zu]",
++                static_cast<unsigned long>(cycle),
++                static_cast<int>(decision.status), decision.reason.c_str(),
++                decision.metrics.solve_seconds,
++                decision.metrics.high_level_nodes,
++                decision.metrics.low_level_replans,
++                decision.metrics.conflicts_resolved,
++                decision.metrics.conflicts_detected,
++                decision.metrics.holding_points_used);
++
+               const auto validation = coordinator->validate(
+                 current, coordinator->active_intents(), self->_context->now());
+               if (!validation.valid || !decision.proposal.has_value())
+               {
++                RCLCPP_WARN(
++                  self->_context->node()->get_logger(),
++                  "Local MAPF cycle [%lu] returning to legacy planning: %s",
++                  static_cast<unsigned long>(cycle),
++                  validation.valid ? decision.reason.c_str()
++                  : validation.reason.c_str());
+                 self->_fallback_local_group(cycle, false);
+                 return;
+               }
+@@ -964,6 +995,12 @@ void GoToPlace::Active::_try_local_planning()
+                 *decision.proposal);
+               if (!conflict_validation.valid)
+               {
++                RCLCPP_WARN(
++                  self->_context->node()->get_logger(),
++                  "Local MAPF cycle [%lu] rejected during fresh conflict "
++                  "validation: %s",
++                  static_cast<unsigned long>(cycle),
++                  conflict_validation.reason.c_str());
+                 self->_fallback_local_group(cycle, false);
+                 return;
+               }
+@@ -1039,15 +1076,32 @@ void GoToPlace::Active::_try_local_planning()
+               if (result.status
+                 == local_traffic::GroupPlanApplication::Status::success)
+               {
++                RCLCPP_INFO(
++                  self->_context->node()->get_logger(),
++                  "Local MAPF cycle [%lu] registered and started [%zu] plans",
++                  static_cast<unsigned long>(cycle), result.started.size());
+                 self->_local_stale_retries = 0;
+-                coordinator->finish_local_cycle(cycle);
++                coordinator->complete_local_cycle(cycle);
+               }
+               else if (result.status
+                 == local_traffic::GroupPlanApplication::Status::
+                 registration_failed)
+               {
++                RCLCPP_WARN(
++                  self->_context->node()->get_logger(),
++                  "Local MAPF cycle [%lu] schedule registration failed after "
++                  "[%zu] registrations",
++                  static_cast<unsigned long>(cycle), result.registered.size());
+                 self->_fallback_local_group(cycle, false);
+               }
++              else
++              {
++                RCLCPP_WARN(
++                  self->_context->node()->get_logger(),
++                  "Local MAPF cycle [%lu] execution start failed after [%zu] "
++                  "starts; waiting for stopped occupancy recovery",
++                  static_cast<unsigned long>(cycle), result.started.size());
++              }
+             });
+         }).detach();
+         });
+@@ -1103,7 +1157,7 @@ void GoToPlace::Active::_fallback_local_group(
+         }
+ 
+         self->_local_quiescence_timer = nullptr;
+-        coordinator->finish_local_cycle(cycle);
++        coordinator->fail_local_cycle(cycle);
+         for (const auto& intent : intents)
+           intent.fallback();
+           });
+@@ -1112,7 +1166,7 @@ void GoToPlace::Active::_fallback_local_group(
+   }
+ 
+   const auto intents = coordinator->active_intents();
+-  coordinator->finish_local_cycle(cycle);
++  coordinator->fail_local_cycle(cycle);
+   for (const auto& intent : intents)
+     intent.fallback();
+ }
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.cpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.cpp
+index b816efb..252ca3f 100644
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.cpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.cpp
+@@ -122,6 +122,9 @@ LocalJointPlanningCoordinator::Options::load(
+   parse_size(
+     "RMF_LOCAL_MAPF_MAX_NEGOTIATION_PREEMPTIONS",
+     result.max_negotiation_preemptions);
++  parse_size(
++    "RMF_LOCAL_MAPF_MAX_CONSECUTIVE_FAILURES",
++    result.max_consecutive_failures);
+ 
+   return result;
+ }
+@@ -197,16 +200,37 @@ LocalJointPlanningCoordinator::solve(
+   resolver_options.max_low_level_time = _options.max_low_level_time;
+   const rmf_traffic::agv::LocalConflictResolver resolver(
+     std::move(viewer), resolver_options);
+-  const auto result = resolver.solve(agents);
+-  decision.metrics = result.metrics();
+-  decision.reason = result.metrics().termination_reason;
++
++  // This is an opt-in integration boundary around an experimental solver. A
++  // malformed or unsupported runtime input must return ownership to the
++  // legacy negotiation path instead of terminating the fleet adapter process.
++  std::optional<rmf_traffic::agv::LocalConflictResolver::Result> result;
++  try
++  {
++    result = resolver.solve(agents);
++  }
++  catch (const std::exception& e)
++  {
++    decision.status = Status::fallback_unsupported;
++    decision.reason = std::string("solver_exception:") + e.what();
++    return decision;
++  }
++  catch (...)
++  {
++    decision.status = Status::fallback_unsupported;
++    decision.reason = "solver_exception:unknown";
++    return decision;
++  }
++
++  decision.metrics = result->metrics();
++  decision.reason = result->metrics().termination_reason;
+ 
+   using ResolverStatus = rmf_traffic::agv::LocalConflictResolver::Status;
+-  switch (result.metrics().status)
++  switch (result->metrics().status)
+   {
+     case ResolverStatus::success:
+       decision.status = Status::success;
+-      decision.proposal = result.proposal();
++      decision.proposal = result->proposal();
+       break;
+     case ResolverStatus::no_conflict:
+       decision.status = Status::no_conflict;
+@@ -360,6 +384,13 @@ LocalJointPlanningCoordinator::validate_proposal(
+ void LocalJointPlanningCoordinator::upsert_intent(Intent intent)
+ {
+   const auto id = intent.participant;
++  const auto existing = _intents.find(id);
++  if (existing == _intents.end()
++    || !goals_match(existing->second.goal, intent.goal))
++  {
++    _consecutive_failures = 0;
++  }
++
+   _intents.insert_or_assign(id, std::move(intent));
+   _owners.try_emplace(id, Owner::ordinary);
+ }
+@@ -389,6 +420,7 @@ void LocalJointPlanningCoordinator::unregister_intent(
+ 
+   _intents.erase(it);
+   _owners.erase(participant);
++  _consecutive_failures = 0;
+ }
+ 
+ std::vector<LocalJointPlanningCoordinator::Intent>
+@@ -427,6 +459,12 @@ LocalJointPlanningCoordinator::begin_local_cycle()
+     return std::nullopt;
+   }
+ 
++  if (_consecutive_failures >= _options.max_consecutive_failures)
++  {
++    ++_runtime_metrics.suppressed_local_retries;
++    return std::nullopt;
++  }
++
+   for (const auto& [id, value] : _owners)
+   {
+     (void)id;
+@@ -487,6 +525,27 @@ void LocalJointPlanningCoordinator::finish_local_cycle(
+   }
+ }
+ 
++void LocalJointPlanningCoordinator::complete_local_cycle(
++  const std::uint64_t cycle)
++{
++  if (!cycle_active(cycle))
++    return;
++
++  _consecutive_failures = 0;
++  finish_local_cycle(cycle);
++}
++
++void LocalJointPlanningCoordinator::fail_local_cycle(
++  const std::uint64_t cycle)
++{
++  if (!cycle_active(cycle))
++    return;
++
++  ++_consecutive_failures;
++  ++_runtime_metrics.local_failures;
++  finish_local_cycle(cycle);
++}
++
+ LocalJointPlanningCoordinator::Cleanup
+ LocalJointPlanningCoordinator::request_negotiation(
+   const rmf_traffic::ParticipantId participant)
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.hpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.hpp
+index cfb7739..fd914d9 100644
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.hpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.hpp
+@@ -37,6 +37,7 @@ public:
+     rmf_traffic::Duration stop_timeout = std::chrono::seconds(5);
+     rmf_traffic::Duration stationary_hold_duration = std::chrono::hours(1);
+     std::size_t max_negotiation_preemptions = 3;
++    std::size_t max_consecutive_failures = 1;
+ 
+     static Options load(
+       const std::unordered_map<std::string, std::string>& environment = {});
+@@ -107,6 +108,7 @@ public:
+   {
+     std::size_t negotiation_preemptions = 0;
+     std::size_t suppressed_local_retries = 0;
++    std::size_t local_failures = 0;
+   };
+ 
+   LocalJointPlanningCoordinator();
+@@ -157,6 +159,10 @@ public:
+ 
+   void finish_local_cycle(std::uint64_t cycle);
+ 
++  void complete_local_cycle(std::uint64_t cycle);
++
++  void fail_local_cycle(std::uint64_t cycle);
++
+   Cleanup request_negotiation(rmf_traffic::ParticipantId participant);
+ 
+   void finish_negotiation_cleanup(rmf_traffic::ParticipantId participant);
+@@ -174,6 +180,7 @@ private:
+   std::optional<std::uint64_t> _active_cycle;
+   std::uint64_t _next_cycle = 1;
+   RuntimeMetrics _runtime_metrics;
++  std::size_t _consecutive_failures = 0;
+ };
+ 
+ } // namespace local_traffic
+diff --git a/rmf_fleet_adapter/test/local_traffic/test_LocalJointPlanningCoordinator.cpp b/rmf_fleet_adapter/test/local_traffic/test_LocalJointPlanningCoordinator.cpp
+index 84f9926..08d5122 100644
+--- a/rmf_fleet_adapter/test/local_traffic/test_LocalJointPlanningCoordinator.cpp
++++ b/rmf_fleet_adapter/test/local_traffic/test_LocalJointPlanningCoordinator.cpp
+@@ -55,7 +55,8 @@ TEST_CASE("Search and telemetry budgets are configurable")
+       {"RMF_LOCAL_MAPF_SETTLE_MS", "600"},
+       {"RMF_LOCAL_MAPF_STOP_TIMEOUT_MS", "4500"},
+       {"RMF_LOCAL_MAPF_STATIONARY_HOLD_MS", "120000"},
+-      {"RMF_LOCAL_MAPF_MAX_NEGOTIATION_PREEMPTIONS", "5"}});
++      {"RMF_LOCAL_MAPF_MAX_NEGOTIATION_PREEMPTIONS", "5"},
++      {"RMF_LOCAL_MAPF_MAX_CONSECUTIVE_FAILURES", "2"}});
+ 
+   CHECK(options.max_solve_time == 1750ms);
+   CHECK(options.max_low_level_time == 275ms);
+@@ -64,6 +65,7 @@ TEST_CASE("Search and telemetry budgets are configurable")
+   CHECK(options.stop_timeout == 4500ms);
+   CHECK(options.stationary_hold_duration == 120000ms);
+   CHECK(options.max_negotiation_preemptions == 5);
++  CHECK(options.max_consecutive_failures == 2);
+ }
+ 
+ TEST_CASE("More than four active intents safely returns legacy ownership")
+@@ -210,6 +212,30 @@ TEST_CASE("Repeated negotiation preemption suppresses local retry")
+   CHECK(coordinator.metrics().suppressed_local_retries == 1);
+ }
+ 
++TEST_CASE("A failed intent set is not retried until membership changes")
++{
++  LocalJointPlanningCoordinator::Options options;
++  options.enabled = true;
++  options.max_consecutive_failures = 1;
++  LocalJointPlanningCoordinator coordinator(options);
++  coordinator.upsert_intent(intent(1));
++  coordinator.upsert_intent(intent(2));
++
++  const auto failed_cycle = coordinator.begin_local_cycle();
++  REQUIRE(failed_cycle.has_value());
++  coordinator.fail_local_cycle(*failed_cycle);
++  CHECK_FALSE(coordinator.begin_local_cycle().has_value());
++  CHECK(coordinator.metrics().local_failures == 1);
++  CHECK(coordinator.metrics().suppressed_local_retries == 1);
++
++  // Mere replanning of an unchanged task must not re-enable an expensive
++  // local solve, but a newly active participant creates a new intent set.
++  coordinator.upsert_intent(intent(1, 2));
++  CHECK_FALSE(coordinator.begin_local_cycle().has_value());
++  coordinator.upsert_intent(intent(3));
++  CHECK(coordinator.begin_local_cycle().has_value());
++}
++
+ TEST_CASE("Unregister removes completed and future-ineligible intents")
+ {
+   LocalJointPlanningCoordinator::Options options;
+-- 
+2.43.0
+
