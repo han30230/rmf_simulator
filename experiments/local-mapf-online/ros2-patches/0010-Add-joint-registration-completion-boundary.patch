@@ -1,0 +1,891 @@
+From a1b2c3d4e5f60000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: han30230 <han30230@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 18:42:00 +0900
+Subject: [PATCH 10/11] Add joint registration completion boundary
+
+A joint proposal was previously written participant-by-participant and execution
+was started as soon as Participant::set() returned. The traffic schedule mirror
+can observe those writes on different updates, which permits a conflict to be
+opened against a mixed A-new/B-old view.
+
+Stage the group registration and wait until BOTH PlanId and ItineraryVersion
+for every member are observed by the fleet mirror before any command starts.
+While this boundary is active, only negotiations whose local participants point
+at the immediately previous/current transition and include at least one previous
+plan are rejected as stale transition conflicts. External participants and
+current/current conflicts retain the existing stop/quiesce/legacy-negotiation
+path.
+
+The registration wait is asynchronous. Timeout, validation failure, or a
+registration mismatch restores stationary occupancy. If planned route times
+become stale while waiting, the existing one-shot stale retry is reused before
+falling back. No solver, search budget, or agent-count policy changes.
+---
+ rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.cpp | 215 ++++++++++++++++--
+ rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.hpp |   5 +
+ .../local_traffic/GroupPlanApplication.cpp                   | 123 ++++++++++-
+ .../local_traffic/GroupPlanApplication.hpp                   |  55 ++++-
+ .../local_traffic/LocalJointPlanningCoordinator.cpp          | 143 ++++++++++++
+ .../local_traffic/LocalJointPlanningCoordinator.hpp          |  43 ++++
+ .../test_GroupPlanApplication.cpp                            | 112 ++++++++-
+ .../test_LocalJointPlanningCoordinator.cpp                   |  83 +++++++
+ rmf_traffic_ros2/src/rmf_traffic_ros2/schedule/Node.cpp      |  19 ++
+ 9 files changed, 770 insertions(+), 28 deletions(-)
+
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/GroupPlanApplication.hpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/GroupPlanApplication.hpp
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/GroupPlanApplication.hpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/GroupPlanApplication.hpp
+@@
+ #include <functional>
++#include <optional>
+ #include <vector>
+@@
+ class GroupPlanApplication
+ {
+ public:
++  struct RegistrationStamp
++  {
++    rmf_traffic::PlanId plan_id;
++    rmf_traffic::schedule::ItineraryVersion itinerary_version;
++
++    bool operator==(const RegistrationStamp& other) const
++    {
++      return plan_id == other.plan_id
++        && itinerary_version == other.itinerary_version;
++    }
++
++    bool operator!=(const RegistrationStamp& other) const
++    {
++      return !(*this == other);
++    }
++  };
++
++  struct RegistrationTransition
++  {
++    rmf_traffic::ParticipantId participant;
++    std::optional<RegistrationStamp> previous;
++    RegistrationStamp current;
++  };
++
++  enum class RegistrationState
++  {
++    waiting,
++    ready,
++    mismatch
++  };
++
+   enum class Status
+   {
+     success,
+     registration_failed,
+     execution_failed
+@@
+   struct Participant
+   {
+     rmf_traffic::ParticipantId id;
+-    std::function<bool()> register_itinerary;
++    std::function<std::optional<RegistrationStamp>()> register_itinerary;
++    std::function<std::optional<RegistrationStamp>()> current_registration;
++    std::function<std::optional<RegistrationStamp>()> mirrored_registration;
+     std::function<bool()> start_execution;
+     std::function<void()> request_stop;
+     std::function<void()> restore_stationary_occupancy;
+   };
+@@
+     Status status;
+     std::vector<rmf_traffic::ParticipantId> registered;
+     std::vector<rmf_traffic::ParticipantId> started;
++    std::vector<RegistrationTransition> transitions;
+   };
+ 
+-  static Result apply(
++  static Result register_all(
++    const std::vector<Participant>& participants);
++
++  static RegistrationState registration_state(
++    const std::vector<Participant>& participants,
++    const std::vector<RegistrationTransition>& transitions);
++
++  static Result start_all(
+     const std::vector<Participant>& participants,
++    const std::vector<RegistrationTransition>& transitions,
+     std::function<void()> recover_after_quiescence);
+ };
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/GroupPlanApplication.cpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/GroupPlanApplication.cpp
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/GroupPlanApplication.cpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/GroupPlanApplication.cpp
+@@
+-GroupPlanApplication::Result GroupPlanApplication::apply(
+-  const std::vector<Participant>& participants,
+-  std::function<void()> recover_after_quiescence)
++GroupPlanApplication::Result GroupPlanApplication::register_all(
++  const std::vector<Participant>& participants)
+ {
+-  Result result{Status::success, {}, {}};
++  Result result{Status::success, {}, {}, {}};
+   result.registered.reserve(participants.size());
+-  result.started.reserve(participants.size());
++  result.transitions.reserve(participants.size());
+ 
+   for (const auto& participant : participants)
+   {
+-    if (!participant.register_itinerary())
++    if (!participant.register_itinerary
++      || !participant.current_registration
++      || !participant.mirrored_registration)
++    {
++      result.status = Status::registration_failed;
++      for (const auto& member : participants)
++        member.restore_stationary_occupancy();
++      return result;
++    }
++
++    const auto previous = participant.current_registration();
++    const auto current = participant.register_itinerary();
++    if (!current.has_value())
+     {
+       result.status = Status::registration_failed;
+       for (const auto& member : participants)
+         member.restore_stationary_occupancy();
+-
+       return result;
+     }
+ 
+     result.registered.push_back(participant.id);
++    result.transitions.push_back(
++      RegistrationTransition{participant.id, previous, *current});
+   }
+ 
++  return result;
++}
++
++GroupPlanApplication::RegistrationState
++GroupPlanApplication::registration_state(
++  const std::vector<Participant>& participants,
++  const std::vector<RegistrationTransition>& transitions)
++{
++  if (participants.size() != transitions.size())
++    return RegistrationState::mismatch;
++
++  bool waiting = false;
++  for (const auto& participant : participants)
++  {
++    const auto transition = std::find_if(
++      transitions.begin(), transitions.end(),
++      [&](const auto& t) { return t.participant == participant.id; });
++    if (transition == transitions.end()
++      || !participant.current_registration
++      || !participant.mirrored_registration)
++    {
++      return RegistrationState::mismatch;
++    }
++
++    const auto local = participant.current_registration();
++    if (!local.has_value() || *local != transition->current)
++      return RegistrationState::mismatch;
++
++    const auto mirrored = participant.mirrored_registration();
++    if (!mirrored.has_value())
++    {
++      waiting = true;
++      continue;
++    }
++
++    if (*mirrored == transition->current)
++      continue;
++
++    if (transition->previous.has_value()
++      && *mirrored == *transition->previous)
++    {
++      waiting = true;
++      continue;
++    }
++
++    return RegistrationState::mismatch;
++  }
++
++  return waiting ? RegistrationState::waiting : RegistrationState::ready;
++}
++
++GroupPlanApplication::Result GroupPlanApplication::start_all(
++  const std::vector<Participant>& participants,
++  const std::vector<RegistrationTransition>& transitions,
++  std::function<void()> recover_after_quiescence)
++{
++  Result result{Status::success, {}, {}, transitions};
++  for (const auto& transition : transitions)
++    result.registered.push_back(transition.participant);
++  result.started.reserve(participants.size());
++
+   for (const auto& participant : participants)
+   {
+     if (!participant.start_execution())
+@@
+   return result;
+ }
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.hpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.hpp
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.hpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.hpp
+@@
+ #include <rmf_traffic/agv/LocalConflictResolver.hpp>
++#include "GroupPlanApplication.hpp"
+ #include "RobotObservation.hpp"
+@@
+     std::function<void()> request_stop = nullptr;
+     std::function<QuiescenceStatus()> quiescence_status = nullptr;
+-    std::function<bool(const rmf_traffic::agv::Plan&)> register_plan = nullptr;
++    std::function<std::optional<GroupPlanApplication::RegistrationStamp>(
++      const rmf_traffic::agv::Plan&)> register_plan = nullptr;
++    std::function<std::optional<GroupPlanApplication::RegistrationStamp>()>
++      current_registration = nullptr;
++    std::function<std::optional<GroupPlanApplication::RegistrationStamp>()>
++      mirrored_registration = nullptr;
+     std::function<bool()> start_plan = nullptr;
+@@
+     local_solving,
+     local_applying,
++    local_executing,
+     negotiation_pending_cleanup,
+     negotiation
+   };
++
++  struct NegotiationReference
++  {
++    rmf_traffic::ParticipantId participant;
++    rmf_traffic::PlanId plan_id;
++  };
+@@
+   void mark_applying(std::uint64_t cycle);
+ 
+   void finish_local_cycle(std::uint64_t cycle);
++
++  void stage_local_registration(
++    std::uint64_t cycle,
++    std::vector<GroupPlanApplication::RegistrationTransition> transitions);
++
++  void commit_local_execution(std::uint64_t cycle);
++
++  void clear_local_registration(std::uint64_t cycle);
++
++  bool is_stale_local_negotiation(
++    const std::vector<NegotiationReference>& references) const;
+@@
+   RuntimeMetrics _runtime_metrics;
++  std::unordered_map<rmf_traffic::ParticipantId,
++    GroupPlanApplication::RegistrationTransition> _active_registrations;
++  std::unordered_map<rmf_traffic::ParticipantId,
++    GroupPlanApplication::RegistrationTransition> _committed_registrations;
+   std::string _active_intent_key;
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.cpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.cpp
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.cpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPlanningCoordinator.cpp
+@@
+ void LocalJointPlanningCoordinator::finish_local_cycle(
+   const std::uint64_t cycle)
+ {
+   if (!cycle_active(cycle))
+     return;
+ 
+   _active_cycle = std::nullopt;
+   _active_intent_key.clear();
++  _active_registrations.clear();
+   for (auto& [id, value] : _owners)
+@@
+ }
+ 
++void LocalJointPlanningCoordinator::stage_local_registration(
++  const std::uint64_t cycle,
++  std::vector<GroupPlanApplication::RegistrationTransition> transitions)
++{
++  if (!cycle_active(cycle))
++    return;
++
++  _active_registrations.clear();
++  for (auto& transition : transitions)
++  {
++    _active_registrations.insert_or_assign(
++      transition.participant, std::move(transition));
++  }
++}
++
++void LocalJointPlanningCoordinator::commit_local_execution(
++  const std::uint64_t cycle)
++{
++  if (!cycle_active(cycle))
++    return;
++
++  _committed_registrations = _active_registrations;
++  _active_registrations.clear();
++  _active_cycle = std::nullopt;
++  _active_intent_key.clear();
++  _consecutive_failures = 0;
++  _failed_intent_key.clear();
++
++  for (auto& [id, value] : _owners)
++  {
++    value = _committed_registrations.count(id) > 0
++      ? Owner::local_executing
++      : Owner::ordinary;
++  }
++}
++
++void LocalJointPlanningCoordinator::clear_local_registration(
++  const std::uint64_t cycle)
++{
++  if (!cycle_active(cycle))
++    return;
++  _active_registrations.clear();
++}
++
++bool LocalJointPlanningCoordinator::is_stale_local_negotiation(
++  const std::vector<NegotiationReference>& references) const
++{
++  const auto& registrations = !_active_registrations.empty()
++    ? _active_registrations
++    : _committed_registrations;
++
++  if (registrations.empty() || references.empty())
++    return false;
++
++  // The local writer must still be on the staged/committed current pair.
++  // During the registration barrier the mirror is intentionally allowed to be
++  // previous/current mixed; after commit the mirror must also be current.
++  const bool committed = _active_registrations.empty();
++  for (const auto& [id, transition] : registrations)
++  {
++    const auto intent = _intents.find(id);
++    if (intent == _intents.end() || !intent->second.current_registration)
++      return false;
++
++    const auto local = intent->second.current_registration();
++    if (!local.has_value() || *local != transition.current)
++      return false;
++
++    if (committed)
++    {
++      if (!intent->second.mirrored_registration)
++        return false;
++      const auto mirror = intent->second.mirrored_registration();
++      if (!mirror.has_value() || *mirror != transition.current)
++        return false;
++    }
++  }
++
++  bool saw_previous = false;
++  for (const auto& ref : references)
++  {
++    const auto it = registrations.find(ref.participant);
++    if (it == registrations.end())
++      return false; // external conflict: preserve it
++
++    if (ref.plan_id == it->second.current.plan_id)
++      continue;
++
++    if (it->second.previous.has_value()
++      && ref.plan_id == it->second.previous->plan_id)
++    {
++      saw_previous = true;
++      continue;
++    }
++
++    return false;
++  }
++
++  // current/current is a real conflict. Only a transition that still
++  // references at least one previous local plan is stale.
++  return saw_previous;
++}
++
+ void LocalJointPlanningCoordinator::complete_local_cycle(
+@@
+ void LocalJointPlanningCoordinator::unregister_intent(
+@@
+   _intents.erase(it);
+   _owners.erase(participant);
++  _active_registrations.erase(participant);
++  _committed_registrations.erase(participant);
+@@
+ LocalJointPlanningCoordinator::Cleanup
+ LocalJointPlanningCoordinator::request_negotiation(
+   const rmf_traffic::ParticipantId participant)
+ {
+   const auto cycle = _active_cycle.value_or(0);
+-  const bool invalidate = _active_cycle.has_value();
++  const bool was_local_execution =
++    owner(participant) == Owner::local_executing;
++  const bool invalidate = _active_cycle.has_value() || was_local_execution;
+   if (invalidate)
+     ++_runtime_metrics.negotiation_preemptions;
+ 
+   _active_cycle = std::nullopt;
++  _active_registrations.clear();
++  if (was_local_execution)
++    _committed_registrations.clear();
+   _active_intent_key.clear();
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.hpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.hpp
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.hpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.hpp
+@@
+     rclcpp::TimerBase::SharedPtr _retry_timer;
+     rclcpp::TimerBase::SharedPtr _local_quiescence_timer;
++    rclcpp::TimerBase::SharedPtr _local_registration_timer;
+@@
+     std::optional<rmf_traffic::PlanId> _pending_local_plan_id;
++    std::shared_ptr<std::vector<local_traffic::GroupPlanApplication::Participant>>
++      _pending_local_participants;
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.cpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.cpp
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.cpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.cpp
+@@
+       [w = weak_from_this(), generation = _local_generation](
+         const rmf_traffic::agv::Plan& plan)
+       {
+@@
+         const auto plan_id = self->_context->itinerary().assign_plan_id();
+         if (!self->_context->itinerary().set(plan_id, itinerary))
+-          return false;
++          return std::optional<
++            local_traffic::GroupPlanApplication::RegistrationStamp>{};
+ 
+         self->_pending_local_plan = plan;
+         self->_pending_local_itinerary = std::move(itinerary);
+         self->_pending_local_plan_id = plan_id;
+-        return true;
++        return std::optional<
++          local_traffic::GroupPlanApplication::RegistrationStamp>{
++          local_traffic::GroupPlanApplication::RegistrationStamp{
++            plan_id, self->_context->itinerary().version()}};
+       },
++      [w = weak_from_this()]()
++      -> std::optional<local_traffic::GroupPlanApplication::RegistrationStamp>
++      {
++        const auto self = w.lock();
++        if (!self)
++          return std::nullopt;
++        return local_traffic::GroupPlanApplication::RegistrationStamp{
++          self->_context->itinerary().current_plan_id(),
++          self->_context->itinerary().version()};
++      },
++      [w = weak_from_this()]()
++      -> std::optional<local_traffic::GroupPlanApplication::RegistrationStamp>
++      {
++        const auto self = w.lock();
++        if (!self)
++          return std::nullopt;
++        const auto participant = self->_context->itinerary().id();
++        const auto plan =
++          self->_context->schedule()->get_current_plan_id(participant);
++        const auto version =
++          self->_context->schedule()->get_current_itinerary_version(participant);
++        if (!plan.has_value() || !version.has_value())
++          return std::nullopt;
++        return local_traffic::GroupPlanApplication::RegistrationStamp{
++          *plan, *version};
++      },
+       [w = weak_from_this(), generation = _local_generation]()
+@@
+               std::vector<local_traffic::GroupPlanApplication::Participant>
+               participants;
+@@
+                 participants.push_back({
+                     id,
+-                    [intent, plan]() { return intent.register_plan(plan); },
++                    [intent, plan]() { return intent.register_plan(plan); },
++                    intent.current_registration,
++                    intent.mirrored_registration,
+                     intent.start_plan,
+                     intent.request_stop,
+@@
+-              const auto result = local_traffic::GroupPlanApplication::apply(
+-                participants,
+-                [w, cycle]()
+-                {
+-                  if (const auto self = w.lock())
+-                    self->_fallback_local_group(cycle, true);
+-                });
+-
+-              if (result.status
+-                == local_traffic::GroupPlanApplication::Status::success)
+-              {
+-                RCLCPP_INFO(
+-                  self->_context->node()->get_logger(),
+-                  "Local MAPF cycle [%lu] registered and started [%zu] plans",
+-                  static_cast<unsigned long>(cycle), result.started.size());
+-                self->_local_stale_retries = 0;
+-                coordinator->complete_local_cycle(cycle);
+-              }
+-              else if (result.status
+-                == local_traffic::GroupPlanApplication::Status::
+-                registration_failed)
++              auto participants_ptr = std::make_shared<
++                std::vector<local_traffic::GroupPlanApplication::Participant>>(
++                std::move(participants));
++              auto registration =
++                local_traffic::GroupPlanApplication::register_all(
++                  *participants_ptr);
++
++              if (registration.status !=
++                local_traffic::GroupPlanApplication::Status::success)
+               {
+                 RCLCPP_WARN(
+                   self->_context->node()->get_logger(),
+-                  "Local MAPF cycle [%lu] schedule registration failed after "
+-                  "[%zu] registrations",
++                  "Local MAPF cycle [%lu] registration failed after [%zu] "
++                  "writes; stationary occupancy restored",
+                   static_cast<unsigned long>(cycle), result.registered.size());
+                 self->_fallback_local_group(cycle, false);
++                return;
+               }
+-              else
++
++              coordinator->stage_local_registration(
++                cycle, registration.transitions);
++
++              const auto barrier_started = self->_context->now();
++              const auto barrier_timeout = std::chrono::seconds(2);
++              auto transitions = std::make_shared<
++                std::vector<
++                  local_traffic::GroupPlanApplication::RegistrationTransition>>(
++                  std::move(registration.transitions));
++
++              self->_local_registration_timer =
++                self->_context->node()->try_create_wall_timer(
++                std::chrono::milliseconds(20),
++                [w, coordinator, cycle, participants_ptr, transitions,
++                barrier_started, barrier_timeout]()
++                {
++                  const auto self = w.lock();
++                  if (!self || !coordinator->cycle_active(cycle))
++                    return;
++
++                  self->_context->worker().schedule(
++                    [w, coordinator, cycle, participants_ptr, transitions,
++                    barrier_started, barrier_timeout](const auto&)
++                    {
++                    const auto self = w.lock();
++                    if (!self || !coordinator->cycle_active(cycle))
++                      return;
++
++                    const auto validation = coordinator->validate(
++                      coordinator->active_intents(),
++                      coordinator->active_intents(),
++                      self->_context->now());
++                    if (!validation.valid)
++                    {
++                      self->_local_registration_timer = nullptr;
++                      for (const auto& p : *participants_ptr)
++                        p.restore_stationary_occupancy();
++                      self->_fallback_local_group(cycle, false);
++                      return;
++                    }
++
++                    const auto state =
++                      local_traffic::GroupPlanApplication::registration_state(
++                        *participants_ptr, *transitions);
++                    if (state ==
++                      local_traffic::GroupPlanApplication::RegistrationState::
++                      mismatch)
++                    {
++                      self->_local_registration_timer = nullptr;
++                      for (const auto& p : *participants_ptr)
++                        p.restore_stationary_occupancy();
++                      self->_fallback_local_group(cycle, false);
++                      return;
++                    }
++
++                    if (state ==
++                      local_traffic::GroupPlanApplication::RegistrationState::
++                      waiting)
++                    {
++                      if (self->_context->now() - barrier_started
++                        < barrier_timeout)
++                      {
++                        return;
++                      }
++
++                      RCLCPP_WARN(
++                        self->_context->node()->get_logger(),
++                        "Local MAPF cycle [%lu] registration barrier timed "
++                        "out; keeping stationary occupancy",
++                        static_cast<unsigned long>(cycle));
++                      self->_local_registration_timer = nullptr;
++                      for (const auto& p : *participants_ptr)
++                        p.restore_stationary_occupancy();
++                      self->_fallback_local_group(cycle, false);
++                      return;
++                    }
++
++                    // Waiting for mirror convergence can make the joint plan
++                    // historical. Never start a command from a stale schedule.
++                    const auto stale_before =
++                      self->_context->now() - std::chrono::seconds(1);
++                    bool stale = false;
++                    for (const auto& p : coordinator->active_intents())
++                    {
++                      (void)p;
++                    }
++                    for (const auto& pending : *participants_ptr)
++                    {
++                      (void)pending;
++                    }
++                    for (const auto& route :
++                      self->_pending_local_itinerary.value_or(
++                        rmf_traffic::schedule::Itinerary{}))
++                    {
++                      if (route.trajectory().start_time()
++                        && *route.trajectory().start_time() < stale_before)
++                      {
++                        stale = true;
++                        break;
++                      }
++                    }
++
++                    if (stale)
++                    {
++                      self->_local_registration_timer = nullptr;
++                      for (const auto& p : *participants_ptr)
++                        p.restore_stationary_occupancy();
++                      coordinator->clear_local_registration(cycle);
++                      if (self->_local_stale_retries++ == 0)
++                      {
++                        coordinator->finish_local_cycle(cycle);
++                        self->_try_local_planning();
++                      }
++                      else
++                      {
++                        self->_fallback_local_group(cycle, false);
++                      }
++                      return;
++                    }
++
++                    self->_local_registration_timer = nullptr;
++                    const auto result =
++                      local_traffic::GroupPlanApplication::start_all(
++                        *participants_ptr, *transitions,
++                        [w, cycle]()
++                        {
++                          if (const auto self = w.lock())
++                            self->_fallback_local_group(cycle, true);
++                        });
++
++                    if (result.status ==
++                      local_traffic::GroupPlanApplication::Status::success)
++                    {
++                      RCLCPP_INFO(
++                        self->_context->node()->get_logger(),
++                        "Local MAPF cycle [%lu] registration barrier complete; "
++                        "started [%zu] plans",
++                        static_cast<unsigned long>(cycle),
++                        result.started.size());
++                      self->_local_stale_retries = 0;
++                      coordinator->commit_local_execution(cycle);
++                    }
++                    else
++                    {
++                      RCLCPP_WARN(
++                        self->_context->node()->get_logger(),
++                        "Local MAPF cycle [%lu] execution start failed after "
++                        "[%zu] starts; waiting for stopped occupancy recovery",
++                        static_cast<unsigned long>(cycle),
++                        result.started.size());
++                    }
++                    });
++                });
+-              {
+-                RCLCPP_WARN(
+-                  self->_context->node()->get_logger(),
+-                  "Local MAPF cycle [%lu] execution start failed after [%zu] "
+-                  "starts; waiting for stopped occupancy recovery",
+-                  static_cast<unsigned long>(cycle), result.started.size());
+-              }
+@@
+   const auto coordinator = _context->local_joint_planning();
+   if (coordinator && coordinator->options().enabled)
+   {
+     const auto participant = _context->itinerary().id();
++
++    std::vector<local_traffic::LocalJointPlanningCoordinator::
++      NegotiationReference> references;
++    try
++    {
++      const auto endpoints = table_view->initial_endpoints({});
++      references.reserve(endpoints.size());
++      for (const auto& [id, endpoint] : endpoints)
++        references.push_back({id, endpoint.plan_id()});
++    }
++    catch (const std::exception& e)
++    {
++      RCLCPP_WARN(
++        _context->node()->get_logger(),
++        "Unable to inspect negotiation registration references: %s",
++        e.what());
++    }
++
++    if (coordinator->is_stale_local_negotiation(references))
++    {
++      RCLCPP_INFO(
++        _context->node()->get_logger(),
++        "Rejecting stale local registration-transition negotiation for "
++        "participant [%lu] without interrupting joint execution",
++        static_cast<unsigned long>(participant));
++      responder->reject({});
++      return nullptr;
++    }
++
+     const auto cleanup = coordinator->request_negotiation(participant);
+diff --git a/rmf_fleet_adapter/test/local_traffic/test_GroupPlanApplication.cpp b/rmf_fleet_adapter/test/local_traffic/test_GroupPlanApplication.cpp
+--- a/rmf_fleet_adapter/test/local_traffic/test_GroupPlanApplication.cpp
++++ b/rmf_fleet_adapter/test/local_traffic/test_GroupPlanApplication.cpp
+@@
+ TEST_CASE("Schedule registration failure starts no commands and restores holds")
+ {
+@@
+-      return GroupPlanApplication::Participant{
++      auto current = std::make_shared<std::optional<
++        GroupPlanApplication::RegistrationStamp>>(
++        GroupPlanApplication::RegistrationStamp{id, 1});
++      auto mirror = std::make_shared<std::optional<
++        GroupPlanApplication::RegistrationStamp>>(*current);
++      return GroupPlanApplication::Participant{
+         id,
+-        [&, id]()
++        [&, id, current]()
+         {
+           registered.push_back(id);
+-          return id != 2;
++          if (id == 2)
++            return std::optional<GroupPlanApplication::RegistrationStamp>{};
++          *current = GroupPlanApplication::RegistrationStamp{id + 10, 2};
++          return *current;
+         },
++        [current]() { return *current; },
++        [mirror]() { return *mirror; },
+         [&, id]()
+@@
+-  const auto result = GroupPlanApplication::apply(
+-    {participant(1), participant(2), participant(3)},
+-    [&]() { ++recoveries; });
++  const auto result = GroupPlanApplication::register_all(
++    {participant(1), participant(2), participant(3)});
+@@
+ }
++
++TEST_CASE("Mixed registration view blocks all execution until mirror converges")
++{
++  using Stamp = GroupPlanApplication::RegistrationStamp;
++  std::vector<std::size_t> started;
++  auto a_local = std::make_shared<std::optional<Stamp>>(Stamp{1, 1});
++  auto b_local = std::make_shared<std::optional<Stamp>>(Stamp{2, 1});
++  auto a_mirror = std::make_shared<std::optional<Stamp>>(*a_local);
++  auto b_mirror = std::make_shared<std::optional<Stamp>>(*b_local);
++
++  auto make = [&](std::size_t id,
++    std::shared_ptr<std::optional<Stamp>> local,
++    std::shared_ptr<std::optional<Stamp>> mirror)
++    {
++      return GroupPlanApplication::Participant{
++        id,
++        [id, local]()
++        {
++          *local = Stamp{id + 100, 2};
++          return *local;
++        },
++        [local]() { return *local; },
++        [mirror]() { return *mirror; },
++        [&, id]() { started.push_back(id); return true; },
++        []() {},
++        []() {}};
++    };
++
++  auto participants = std::vector<GroupPlanApplication::Participant>{
++    make(1, a_local, a_mirror), make(2, b_local, b_mirror)};
++  auto registration = GroupPlanApplication::register_all(participants);
++  REQUIRE(registration.status == GroupPlanApplication::Status::success);
++
++  // Reproduce the observed schedule race: A has propagated, B is still old.
++  *a_mirror = *a_local;
++  CHECK(GroupPlanApplication::registration_state(
++      participants, registration.transitions)
++    == GroupPlanApplication::RegistrationState::waiting);
++  CHECK(started.empty());
++
++  *b_mirror = *b_local;
++  CHECK(GroupPlanApplication::registration_state(
++      participants, registration.transitions)
++    == GroupPlanApplication::RegistrationState::ready);
++  const auto result = GroupPlanApplication::start_all(
++    participants, registration.transitions, []() {});
++  CHECK(result.status == GroupPlanApplication::Status::success);
++  CHECK(started == std::vector<std::size_t>{1, 2});
++}
+diff --git a/rmf_fleet_adapter/test/local_traffic/test_LocalJointPlanningCoordinator.cpp b/rmf_fleet_adapter/test/local_traffic/test_LocalJointPlanningCoordinator.cpp
+--- a/rmf_fleet_adapter/test/local_traffic/test_LocalJointPlanningCoordinator.cpp
++++ b/rmf_fleet_adapter/test/local_traffic/test_LocalJointPlanningCoordinator.cpp
+@@
+ TEST_CASE("Unregister removes completed and future-ineligible intents")
+@@
+ }
++
++TEST_CASE("Only previous/current local transition negotiations are stale")
++{
++  using Coordinator = LocalJointPlanningCoordinator;
++  using Stamp = GroupPlanApplication::RegistrationStamp;
++  Coordinator::Options options;
++  options.enabled = true;
++  Coordinator coordinator(options);
++
++  auto local1 = std::make_shared<std::optional<Stamp>>(Stamp{11, 2});
++  auto local2 = std::make_shared<std::optional<Stamp>>(Stamp{12, 2});
++  auto mirror1 = std::make_shared<std::optional<Stamp>>(*local1);
++  auto mirror2 = std::make_shared<std::optional<Stamp>>(*local2);
++  auto i1 = intent(1);
++  i1.current_registration = [local1]() { return *local1; };
++  i1.mirrored_registration = [mirror1]() { return *mirror1; };
++  auto i2 = intent(2);
++  i2.current_registration = [local2]() { return *local2; };
++  i2.mirrored_registration = [mirror2]() { return *mirror2; };
++  coordinator.upsert_intent(std::move(i1));
++  coordinator.upsert_intent(std::move(i2));
++
++  const auto cycle = coordinator.begin_local_cycle();
++  REQUIRE(cycle.has_value());
++  coordinator.mark_applying(*cycle);
++  coordinator.stage_local_registration(
++    *cycle,
++    {{1, Stamp{1, 1}, *local1}, {2, Stamp{2, 1}, *local2}});
++
++  CHECK(coordinator.is_stale_local_negotiation({{1, 11}, {2, 2}}));
++  CHECK_FALSE(coordinator.is_stale_local_negotiation({{1, 11}, {2, 12}}));
++  CHECK_FALSE(coordinator.is_stale_local_negotiation({{1, 1}, {99, 8}}));
++
++  coordinator.commit_local_execution(*cycle);
++  CHECK(coordinator.owner(1) == Coordinator::Owner::local_executing);
++  CHECK(coordinator.is_stale_local_negotiation({{1, 1}, {2, 2}}));
++  CHECK_FALSE(coordinator.is_stale_local_negotiation({{1, 11}, {2, 12}}));
++}
+diff --git a/rmf_traffic_ros2/src/rmf_traffic_ros2/schedule/Node.cpp b/rmf_traffic_ros2/src/rmf_traffic_ros2/schedule/Node.cpp
+--- a/rmf_traffic_ros2/src/rmf_traffic_ros2/schedule/Node.cpp
++++ b/rmf_traffic_ros2/src/rmf_traffic_ros2/schedule/Node.cpp
+@@
+           if (new_negotiation)
+           {
++            std::stringstream registration;
++            registration << "Open conflict [" << new_negotiation->first
++                         << "] registration snapshot:";
++            for (const auto p : new_negotiation->second->participants())
++            {
++              const auto plan = mirror.get_current_plan_id(p);
++              const auto version = mirror.get_current_itinerary_version(p);
++              registration << " participant=" << p
++                           << " plan="
++                           << (plan ? std::to_string(*plan) : "none")
++                           << " itinerary_version="
++                           << (version ? std::to_string(*version) : "none");
++            }
++            RCLCPP_INFO(get_logger(), "%s", registration.str().c_str());
+             new_negotiations[new_negotiation->first] = new_negotiation->second;
+           }
+         }
+-- 
+2.43.0
