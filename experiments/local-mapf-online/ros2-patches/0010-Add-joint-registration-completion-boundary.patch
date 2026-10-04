@@ -240,6 +240,8 @@ diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPla
 +      current_registration = nullptr;
 +    std::function<std::optional<GroupPlanApplication::RegistrationStamp>()>
 +      mirrored_registration = nullptr;
++    std::function<bool(rmf_traffic::Time)> registered_plan_starts_before =
++      nullptr;
      std::function<bool()> start_plan = nullptr;
 @@
      local_solving,
@@ -482,6 +484,22 @@ diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.cpp b/rmf_
 +        return local_traffic::GroupPlanApplication::RegistrationStamp{
 +          *plan, *version};
 +      },
++      [w = weak_from_this()](const rmf_traffic::Time cutoff)
++      {
++        const auto self = w.lock();
++        if (!self || !self->_pending_local_itinerary.has_value())
++          return true;
++
++        for (const auto& route : *self->_pending_local_itinerary)
++        {
++          if (route.trajectory().start_time()
++            && *route.trajectory().start_time() < cutoff)
++          {
++            return true;
++          }
++        }
++        return false;
++      },
        [w = weak_from_this(), generation = _local_generation]()
 @@
                std::vector<local_traffic::GroupPlanApplication::Participant>
@@ -533,7 +551,8 @@ diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.cpp b/rmf_
 -                  "[%zu] registrations",
 +                  "Local MAPF cycle [%lu] registration failed after [%zu] "
 +                  "writes; stationary occupancy restored",
-                   static_cast<unsigned long>(cycle), result.registered.size());
+                   static_cast<unsigned long>(cycle),
++                  registration.registered.size());
                  self->_fallback_local_group(cycle, false);
 +                return;
                }
@@ -541,6 +560,9 @@ diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.cpp b/rmf_
 +
 +              coordinator->stage_local_registration(
 +                cycle, registration.transitions);
++              auto captured_intents = std::make_shared<
++                std::vector<
++                  local_traffic::LocalJointPlanningCoordinator::Intent>>(current);
 +
 +              const auto barrier_started = self->_context->now();
 +              const auto barrier_timeout = std::chrono::seconds(2);
@@ -553,7 +575,7 @@ diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.cpp b/rmf_
 +                self->_context->node()->try_create_wall_timer(
 +                std::chrono::milliseconds(20),
 +                [w, coordinator, cycle, participants_ptr, transitions,
-+                barrier_started, barrier_timeout]()
++                captured_intents, barrier_started, barrier_timeout]()
 +                {
 +                  const auto self = w.lock();
 +                  if (!self || !coordinator->cycle_active(cycle))
@@ -561,14 +583,15 @@ diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.cpp b/rmf_
 +
 +                  self->_context->worker().schedule(
 +                    [w, coordinator, cycle, participants_ptr, transitions,
-+                    barrier_started, barrier_timeout](const auto&)
++                    captured_intents, barrier_started, barrier_timeout](
++                    const auto&)
 +                    {
 +                    const auto self = w.lock();
 +                    if (!self || !coordinator->cycle_active(cycle))
 +                      return;
 +
 +                    const auto validation = coordinator->validate(
-+                      coordinator->active_intents(),
++                      *captured_intents,
 +                      coordinator->active_intents(),
 +                      self->_context->now());
 +                    if (!validation.valid)
@@ -621,20 +644,10 @@ diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.cpp b/rmf_
 +                    const auto stale_before =
 +                      self->_context->now() - std::chrono::seconds(1);
 +                    bool stale = false;
-+                    for (const auto& p : coordinator->active_intents())
++                    for (const auto& intent : coordinator->active_intents())
 +                    {
-+                      (void)p;
-+                    }
-+                    for (const auto& pending : *participants_ptr)
-+                    {
-+                      (void)pending;
-+                    }
-+                    for (const auto& route :
-+                      self->_pending_local_itinerary.value_or(
-+                        rmf_traffic::schedule::Itinerary{}))
-+                    {
-+                      if (route.trajectory().start_time()
-+                        && *route.trajectory().start_time() < stale_before)
++                      if (!intent.registered_plan_starts_before
++                        || intent.registered_plan_starts_before(stale_before))
 +                      {
 +                        stale = true;
 +                        break;
@@ -740,14 +753,20 @@ diff --git a/rmf_fleet_adapter/test/local_traffic/test_GroupPlanApplication.cpp 
 @@
  TEST_CASE("Schedule registration failure starts no commands and restores holds")
  {
-@@
--      return GroupPlanApplication::Participant{
-+      auto current = std::make_shared<std::optional<
-+        GroupPlanApplication::RegistrationStamp>>(
-+        GroupPlanApplication::RegistrationStamp{id, 1});
-+      auto mirror = std::make_shared<std::optional<
-+        GroupPlanApplication::RegistrationStamp>>(*current);
-+      return GroupPlanApplication::Participant{
+   std::vector<std::size_t> registered;
+   std::vector<std::size_t> started;
+   std::vector<std::size_t> restored;
+   std::vector<std::size_t> stopped;
+-  std::size_t recoveries = 0;
+ 
+   auto participant = [&](const std::size_t id)
+     {
++      using Stamp = GroupPlanApplication::RegistrationStamp;
++      auto current =
++        std::make_shared<std::optional<Stamp>>(Stamp{id, 1});
++      auto mirror =
++        std::make_shared<std::optional<Stamp>>(*current);
+       return GroupPlanApplication::Participant{
          id,
 -        [&, id]()
 +        [&, id, current]()
@@ -755,20 +774,131 @@ diff --git a/rmf_fleet_adapter/test/local_traffic/test_GroupPlanApplication.cpp 
            registered.push_back(id);
 -          return id != 2;
 +          if (id == 2)
-+            return std::optional<GroupPlanApplication::RegistrationStamp>{};
-+          *current = GroupPlanApplication::RegistrationStamp{id + 10, 2};
++            return std::optional<Stamp>{};
++          *current = Stamp{id + 10, 2};
 +          return *current;
          },
 +        [current]() { return *current; },
 +        [mirror]() { return *mirror; },
          [&, id]()
+         {
+           started.push_back(id);
 @@
+         [&, id]() { restored.push_back(id); }};
+     };
+ 
 -  const auto result = GroupPlanApplication::apply(
 -    {participant(1), participant(2), participant(3)},
 -    [&]() { ++recoveries; });
 +  const auto result = GroupPlanApplication::register_all(
 +    {participant(1), participant(2), participant(3)});
+ 
+   CHECK(result.status == GroupPlanApplication::Status::registration_failed);
+   CHECK(registered == std::vector<std::size_t>{1, 2});
+   CHECK(started.empty());
+   CHECK(stopped.empty());
+   CHECK(restored == std::vector<std::size_t>{1, 2, 3});
+-  CHECK(recoveries == 0);
+ }
+ 
+ TEST_CASE("Execution start failure stops the whole group before recovery")
+ {
++  using Stamp = GroupPlanApplication::RegistrationStamp;
+   std::vector<std::size_t> registered;
+   std::vector<std::size_t> started;
+   std::vector<std::size_t> stopped;
+   std::vector<std::size_t> restored;
+   std::size_t recoveries = 0;
+ 
+   auto participant = [&](const std::size_t id)
+     {
++      auto current =
++        std::make_shared<std::optional<Stamp>>(Stamp{id, 1});
++      auto mirror =
++        std::make_shared<std::optional<Stamp>>(*current);
+       return GroupPlanApplication::Participant{
+         id,
+-        [&, id]()
++        [&, id, current]()
+         {
+           registered.push_back(id);
+-          return true;
++          *current = Stamp{id + 10, 2};
++          return *current;
+         },
++        [current]() { return *current; },
++        [mirror]() { return *mirror; },
+         [&, id]()
+         {
+           started.push_back(id);
 @@
+         [&, id]() { restored.push_back(id); }};
+     };
+ 
+-  const auto result = GroupPlanApplication::apply(
+-    {participant(1), participant(2), participant(3)},
++  auto participants =
++    std::vector<GroupPlanApplication::Participant>{
++    participant(1), participant(2), participant(3)};
++  auto registration = GroupPlanApplication::register_all(participants);
++  REQUIRE(registration.status == GroupPlanApplication::Status::success);
++  // Mirror convergence is handled by the boundary; start_all assumes ready.
++  const auto result = GroupPlanApplication::start_all(
++    participants, registration.transitions,
+     [&]() { ++recoveries; });
+ 
+   CHECK(result.status == GroupPlanApplication::Status::execution_failed);
+@@
+ TEST_CASE("Successful group application registers everyone before starting")
+ {
++  using Stamp = GroupPlanApplication::RegistrationStamp;
+   std::vector<std::string> calls;
++  std::vector<std::shared_ptr<std::optional<Stamp>>> mirrors;
+   auto participant = [&](const std::size_t id)
+     {
++      auto current =
++        std::make_shared<std::optional<Stamp>>(Stamp{id, 1});
++      auto mirror =
++        std::make_shared<std::optional<Stamp>>(*current);
++      mirrors.push_back(mirror);
+       return GroupPlanApplication::Participant{
+         id,
+-        [&, id]()
++        [&, id, current]()
+         {
+           calls.push_back("register_" + std::to_string(id));
+-          return true;
++          *current = Stamp{id + 10, 2};
++          return *current;
+         },
++        [current]() { return *current; },
++        [mirror]() { return *mirror; },
+         [&, id]()
+         {
+           calls.push_back("start_" + std::to_string(id));
+@@
+         []() {}};
+     };
+ 
+-  const auto result = GroupPlanApplication::apply(
+-    {participant(1), participant(2)}, []() {});
++  auto participants =
++    std::vector<GroupPlanApplication::Participant>{
++    participant(1), participant(2)};
++  auto registration = GroupPlanApplication::register_all(participants);
++  REQUIRE(registration.status == GroupPlanApplication::Status::success);
++  CHECK(calls == std::vector<std::string>{"register_1", "register_2"});
++  for (std::size_t i = 0; i < mirrors.size(); ++i)
++    *mirrors[i] = registration.transitions[i].current;
++  REQUIRE(GroupPlanApplication::registration_state(
++      participants, registration.transitions)
++    == GroupPlanApplication::RegistrationState::ready);
++  const auto result = GroupPlanApplication::start_all(
++    participants, registration.transitions, []() {});
+ 
+   CHECK(result.status == GroupPlanApplication::Status::success);
+   CHECK(calls == std::vector<std::string>{
+       "register_1", "register_2", "start_1", "start_2"});
  }
 +
 +TEST_CASE("Mixed registration view blocks all execution until mirror converges")
@@ -803,7 +933,7 @@ diff --git a/rmf_fleet_adapter/test/local_traffic/test_GroupPlanApplication.cpp 
 +  auto registration = GroupPlanApplication::register_all(participants);
 +  REQUIRE(registration.status == GroupPlanApplication::Status::success);
 +
-+  // Reproduce the observed schedule race: A has propagated, B is still old.
++  // Short reproduction of the race: A-new is visible while B remains old.
 +  *a_mirror = *a_local;
 +  CHECK(GroupPlanApplication::registration_state(
 +      participants, registration.transitions)
