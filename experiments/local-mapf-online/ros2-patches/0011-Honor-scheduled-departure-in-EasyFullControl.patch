@@ -1,0 +1,277 @@
+From b2c3d4e5f6000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: han30230 <han30230@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 19:10:00 +0900
+Subject: [PATCH 11/11] Honor scheduled departure in EasyFullControl
+
+ExecutePlan preserves planned waypoint times, but EasyFullControl previously
+issued each navigation callback immediately when the preceding callback
+finished. A collapsed wait only increased planned_wait_time, and that value was
+used solely by arrival_estimator. Therefore a collision-free joint plan could
+contain a deliberate bay/holding wait while the physical command stream left
+the wait early.
+
+Gate each navigation command asynchronously on its source waypoint's planned
+departure time. When a collapsed wait is folded into a command, also defer that
+command's completion until the folded wait end so a final wait cannot disappear.
+A command cancelled before its scheduled departure has never been sent to the
+robot, so cancellation invalidates the activity and timer without issuing a
+duplicate robot stop. Existing make_hold/localization/lift waits are unchanged.
+
+No solver, planning budget, or agent-count policy changes.
+---
+ rmf_fleet_adapter/src/rmf_fleet_adapter/agv/EasyFullControl.cpp | 164 +++++++++++++++++++-
+ 1 file changed, 158 insertions(+), 6 deletions(-)
+
+diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/agv/EasyFullControl.cpp b/rmf_fleet_adapter/src/rmf_fleet_adapter/agv/EasyFullControl.cpp
+--- a/rmf_fleet_adapter/src/rmf_fleet_adapter/agv/EasyFullControl.cpp
++++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/agv/EasyFullControl.cpp
+@@
+ class EasyFullControl::CommandExecution::Implementation::Data
+ {
+ public:
+@@
+   std::optional<double> speed_limit;
+   std::function<void(rmf_traffic::Duration)> arrival_estimator;
++  // A navigation command may be prepared before the schedule permits motion.
++  // These are execution constraints, not ETA corrections.
++  std::optional<rmf_traffic::Time> earliest_start = std::nullopt;
++  std::optional<rmf_traffic::Time> earliest_finish = std::nullopt;
++  rclcpp::TimerBase::SharedPtr finish_timer = nullptr;
+@@
+ void EasyFullControl::CommandExecution::Implementation::finish()
+ {
+   if (auto context = w_context.lock())
+   {
+     context->worker().schedule(
+@@
+       ](const auto&)
+       {
+         if (!ActivityIdentifier::Implementation::get(*identifier).update_fn)
+         {
+           // This activity has already finished
+           return;
+         }
+ 
++        if (data && data->earliest_finish.has_value()
++          && context->now() < *data->earliest_finish)
++        {
++          // A wait can be collapsed into a navigation command when rotation
++          // commands are skipped. Do not let an early robot callback erase the
++          // tail of that explicit wait, especially when it is the final
++          // command in the plan.
++          if (!data->finish_timer)
++          {
++            data->finish_timer = context->node()->try_create_wall_timer(
++              std::chrono::milliseconds(20),
++              [
++                w_context = context->weak_from_this(),
++                data,
++                identifier,
++                finisher
++              ]()
++              {
++                const auto context = w_context.lock();
++                if (!context)
++                  return;
++
++                context->worker().schedule(
++                  [context, data, identifier, finisher](const auto&)
++                  {
++                    if (!ActivityIdentifier::Implementation::get(
++                        *identifier).update_fn)
++                    {
++                      data->finish_timer = nullptr;
++                      return;
++                    }
++
++                    if (data->earliest_finish.has_value()
++                      && context->now() < *data->earliest_finish)
++                    {
++                      return;
++                    }
++
++                    data->finish_timer = nullptr;
++                    ActivityIdentifier::Implementation::get(
++                      *identifier).update_fn = nullptr;
++                    if (data->schedule_override.has_value())
++                    {
++                      data->release_stubbornness();
++                      RCLCPP_INFO(
++                        context->node()->get_logger(),
++                        "Requesting replan for [%s] after finishing a "
++                        "schedule override",
++                        context->requester_id().c_str());
++                      context->request_replan();
++                    }
++                    else
++                    {
++                      finisher();
++                    }
++                  });
++              });
++          }
++          return;
++        }
++
+         // Prevent this activity from doing any further updates
+         ActivityIdentifier::Implementation::get(
+           *identifier).update_fn = nullptr;
+@@
+ struct ProgressTracker : std::enable_shared_from_this<ProgressTracker>
+ {
+@@
+   std::vector<EasyFullControl::CommandExecution> reverse_queue;
+   EasyFullControl::ActivityIdentifierPtr current_identifier;
++  rclcpp::TimerBase::SharedPtr planned_start_timer;
++  bool current_started = false;
+   TriggerOnce finished;
+ 
++  void begin(EasyFullControl::CommandExecution current_activity)
++  {
++    auto& impl =
++      EasyFullControl::CommandExecution::Implementation::get(current_activity);
++    current_started = true;
++    const auto begin = impl.begin;
++    if (begin)
++      begin(std::move(current_activity));
++  }
++
+   void next()
+   {
++    planned_start_timer = nullptr;
++    current_started = false;
+     if (reverse_queue.empty())
+     {
+       current_identifier = nullptr;
+@@
+     current_activity_impl.finisher = [w_progress = weak_from_this()]()
+       {
+@@
+       };
+ 
+-
+-    const auto begin = current_activity_impl.begin;
+-    if (begin)
++    const auto context = current_activity_impl.w_context.lock();
++    const auto data = current_activity_impl.data;
++    if (context && data && data->earliest_start.has_value()
++      && context->now() < *data->earliest_start)
+     {
+-      begin(std::move(current_activity));
++      RCLCPP_INFO(
++        context->node()->get_logger(),
++        "Holding robot [%s] command until planned departure",
++        context->requester_id().c_str());
++
++      auto pending =
++        std::make_shared<EasyFullControl::CommandExecution>(
++        std::move(current_activity));
++      planned_start_timer = context->node()->try_create_wall_timer(
++        std::chrono::milliseconds(20),
++        [w_progress = weak_from_this(), pending]()
++        {
++          const auto progress = w_progress.lock();
++          if (!progress || progress->current_started)
++            return;
++
++          auto& impl =
++            EasyFullControl::CommandExecution::Implementation::get(*pending);
++          const auto context = impl.w_context.lock();
++          if (!context)
++            return;
++
++          if (!impl.identifier
++            || !EasyFullControl::ActivityIdentifier::Implementation::get(
++              *impl.identifier).update_fn)
++          {
++            progress->planned_start_timer = nullptr;
++            return;
++          }
++
++          if (impl.data && impl.data->earliest_start.has_value()
++            && context->now() < *impl.data->earliest_start)
++          {
++            return;
++          }
++
++          progress->planned_start_timer = nullptr;
++          RCLCPP_INFO(
++            context->node()->get_logger(),
++            "Releasing robot [%s] command at planned departure",
++            context->requester_id().c_str());
++          progress->begin(std::move(*pending));
++        });
++      return;
+     }
++
++    begin(std::move(current_activity));
+   }
+@@
+ void EasyCommandHandle::stop()
+ {
+   if (!this->current_progress)
+@@
+   if (!activity_identifier)
+   {
+     return;
+   }
+ 
+   /// Prevent any further specialized updates.
+   EasyFullControl::ActivityIdentifier::Implementation
+   ::get(*activity_identifier).update_fn = nullptr;
+ 
++  // A command that is still waiting for its planned departure has never been
++  // sent through NavigationRequest. Cancelling the timer is sufficient; a
++  // second robot-level stop would duplicate the stop that caused the replan.
++  if (this->current_progress->planned_start_timer
++    && !this->current_progress->current_started)
++  {
++    this->current_progress->planned_start_timer = nullptr;
++    this->current_progress = nullptr;
++    return;
++  }
++
+   this->current_progress = nullptr;
+   this->handle_stop(activity_identifier);
+ }
+@@
+     queue.push_back(
+       EasyFullControl::CommandExecution::Implementation::make(
+         context,
+@@
+           [next_arrival_estimator_, target_index,
+           target_p](rmf_traffic::Duration dt)
+           {
+             next_arrival_estimator_(target_index, dt);
+-          }
++          },
++          wp0.time(),
++          planned_wait_time > rmf_traffic::Duration(0)
++          ? std::optional<rmf_traffic::Time>(
++            waypoints.at(target_index).time())
++          : std::nullopt
+         },
+@@
+       const auto yaw_cost = std::abs(rmf_utils::wrap_to_pi(current_yaw - target_yaw));
+       if (yaw_cost > 5.0*M_PI/180.0)
+       {
+@@
+         auto cmd = EasyFullControl::CommandExecution::Implementation::make(
+             context,
+             EasyFullControl::CommandExecution::Implementation::Data{
+@@
+               [](rmf_traffic::Duration)
+               {
+                 // Don't try to adjust here, just wait until the next command
+                 // before doing schedule adjustments.
+-              }
++              },
++              first_command.data->earliest_start,
++              std::nullopt
+             },
+@@
+   this->current_progress = ProgressTracker::make(
+     queue,
+     path_finished_callback_);
+-- 
+2.43.0
