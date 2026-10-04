@@ -1,0 +1,77 @@
+From 4b1f2d3a00000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: han30230 <han30230@users.noreply.github.com>
+Date: Sun, 4 Oct 2026 18:20:00 +0900
+Subject: [PATCH 6/6] Expose mirrored itinerary registration version
+
+The local joint-plan registration boundary needs to distinguish "writer has
+called set()" from "the schedule mirror has observed the same registration".
+PlanId alone is insufficient because a participant can update the itinerary
+under the same plan. Expose the participant itinerary version already stored by
+Mirror so callers can validate the pair atomically.
+
+No planner, solver, search budget, or traffic policy is changed.
+---
+ rmf_traffic/include/rmf_traffic/schedule/Mirror.hpp |  6 ++++++
+ rmf_traffic/src/rmf_traffic/schedule/Mirror.cpp     | 12 ++++++++++++
+ rmf_traffic/test/unit/schedule/test_Mirror.cpp      |  5 +++++
+ 3 files changed, 23 insertions(+)
+
+diff --git a/rmf_traffic/include/rmf_traffic/schedule/Mirror.hpp b/rmf_traffic/include/rmf_traffic/schedule/Mirror.hpp
+--- a/rmf_traffic/include/rmf_traffic/schedule/Mirror.hpp
++++ b/rmf_traffic/include/rmf_traffic/schedule/Mirror.hpp
+@@
+   // Documentation inherited from ItineraryViewer
+   std::optional<PlanId> get_current_plan_id(
+     ParticipantId participant_id) const final;
+ 
++  /// Get the latest itinerary registration version observed by this mirror.
++  /// This is intentionally a Mirror API instead of an ItineraryViewer API
++  /// because Snapshot does not retain per-participant registration versions.
++  std::optional<ItineraryVersion> get_current_itinerary_version(
++    ParticipantId participant_id) const;
++
+   // Documentation inherited from ItineraryViewer
+   const std::vector<CheckpointId>* get_current_progress(
+     ParticipantId participant_id) const final;
+diff --git a/rmf_traffic/src/rmf_traffic/schedule/Mirror.cpp b/rmf_traffic/src/rmf_traffic/schedule/Mirror.cpp
+--- a/rmf_traffic/src/rmf_traffic/schedule/Mirror.cpp
++++ b/rmf_traffic/src/rmf_traffic/schedule/Mirror.cpp
+@@
+ std::optional<PlanId> Mirror::get_current_plan_id(
+   const ParticipantId participant_id) const
+ {
+   const auto p = _pimpl->states.find(participant_id);
+   if (p == _pimpl->states.end())
+     return std::nullopt;
+ 
+   return p->second.current_plan_id;
+ }
+ 
++//==============================================================================
++std::optional<ItineraryVersion> Mirror::get_current_itinerary_version(
++  const ParticipantId participant_id) const
++{
++  const auto p = _pimpl->states.find(participant_id);
++  if (p == _pimpl->states.end())
++    return std::nullopt;
++
++  return p->second.itinerary_version;
++}
++
+ //==============================================================================
+ const std::vector<CheckpointId>* Mirror::get_current_progress(
+   ParticipantId participant_id) const
+diff --git a/rmf_traffic/test/unit/schedule/test_Mirror.cpp b/rmf_traffic/test/unit/schedule/test_Mirror.cpp
+--- a/rmf_traffic/test/unit/schedule/test_Mirror.cpp
++++ b/rmf_traffic/test/unit/schedule/test_Mirror.cpp
+@@
+     CHECK(p0.current_plan_id() ==
+       writer->mirror().get_current_plan_id(p0.id()).value());
++    REQUIRE(
++      writer->mirror().get_current_itinerary_version(p0.id()).has_value());
++    CHECK(p0.version() ==
++      writer->mirror().get_current_itinerary_version(p0.id()).value());
+   }
+ 
+-- 
+2.43.0
