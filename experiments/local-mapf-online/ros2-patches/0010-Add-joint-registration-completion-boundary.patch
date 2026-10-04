@@ -369,12 +369,27 @@ diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/LocalJointPla
 +    if (!local.has_value() || *local != transition.current)
 +      return false;
 +
++    if (!intent->second.mirrored_registration)
++      return false;
++    const auto mirror = intent->second.mirrored_registration();
++    if (!mirror.has_value())
++      return false;
++
 +    if (committed)
 +    {
-+      if (!intent->second.mirrored_registration)
++      if (*mirror != transition.current)
 +        return false;
-+      const auto mirror = intent->second.mirrored_registration();
-+      if (!mirror.has_value() || *mirror != transition.current)
++    }
++    else
++    {
++      // While the barrier is active, only an exact previous/current mirror
++      // tuple is allowed. This is the mixed-registration state we are
++      // intentionally classifying; any third version is a real mismatch.
++      const bool mirror_is_current = *mirror == transition.current;
++      const bool mirror_is_previous =
++        transition.previous.has_value()
++        && *mirror == *transition.previous;
++      if (!mirror_is_current && !mirror_is_previous)
 +        return false;
 +    }
 +  }
