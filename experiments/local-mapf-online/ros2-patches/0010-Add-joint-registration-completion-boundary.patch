@@ -115,6 +115,12 @@ diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/GroupPlanAppl
 --- a/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/GroupPlanApplication.cpp
 +++ b/rmf_fleet_adapter/src/rmf_fleet_adapter/local_traffic/GroupPlanApplication.cpp
 @@
+ #include "GroupPlanApplication.hpp"
+ 
++#include <algorithm>
+ #include <stdexcept>
+ 
+@@
 -GroupPlanApplication::Result GroupPlanApplication::apply(
 -  const std::vector<Participant>& participants,
 -  std::function<void()> recover_after_quiescence)
@@ -750,6 +756,12 @@ diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/events/GoToPlace.cpp b/rmf_
 diff --git a/rmf_fleet_adapter/test/local_traffic/test_GroupPlanApplication.cpp b/rmf_fleet_adapter/test/local_traffic/test_GroupPlanApplication.cpp
 --- a/rmf_fleet_adapter/test/local_traffic/test_GroupPlanApplication.cpp
 +++ b/rmf_fleet_adapter/test/local_traffic/test_GroupPlanApplication.cpp
+@@
+ #include <catch2/catch_test_macros.hpp>
+ 
++#include <memory>
++#include <optional>
++
 @@
  TEST_CASE("Schedule registration failure starts no commands and restores holds")
  {
