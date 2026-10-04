@@ -39,15 +39,24 @@ shared fleet coordinator:
 4. solves with `rmf_traffic::agv::LocalConflictResolver` off the fleet worker;
 5. rejects generation, goal, cancellation, material-position, stale-report,
    past-start, or fresh-conflict mismatches;
-6. registers every schedule itinerary, then starts each `ExecutePlan` using the
-   already-registered policy;
-7. stops the group and restores stationary occupancy on partial execution
-   failure, then returns control to legacy RMF planning.
+6. registers every schedule itinerary, records the previous/current
+   `{plan_id, itinerary_version}` pair, and asynchronously waits until the
+   fleet schedule mirror reports the exact current pair for every participant;
+7. starts each `ExecutePlan` using the already-registered policy only after
+   that registration barrier succeeds;
+8. stops the group and restores stationary occupancy on timeout, validation,
+   registration, or partial execution failure before returning control to
+   legacy RMF planning.
 
-The `_respond()` negotiation path invalidates an active local cycle, requests
-stop, restores occupancy, and transfers ownership to legacy negotiation. The
-local solver is limited to four agents by both configuration and the core hard
-limit. More agents, unsupported inputs, exceptions, budget exhaustion, stale
+The `_respond()` negotiation path normally invalidates an active/local-executing
+group, requests stop, restores occupancy, and transfers ownership to legacy
+negotiation. A narrow exception now rejects a negotiation without interrupting
+the group when every referenced participant is local, every referenced plan is
+the recorded previous/current transition, at least one reference is the
+previous plan, and the staged/committed registration is still valid. Any
+external reference or current/current conflict is preserved and follows the
+normal cleanup path. The local solver is limited to four agents by both
+configuration and the core hard limit. More agents, unsupported inputs, exceptions, budget exhaustion, stale
 results, or external conflicts fall back to existing RMF behavior. “Fallback”
 means control is returned; it is not a deadlock or safety guarantee.
 
@@ -55,6 +64,38 @@ One failed local solve is now suppressed for an unchanged participant/goal set.
 The suppression key is captured when the cycle starts, so a task arriving while
 an older set is quiescing creates a new eligible set. This prevents repeated
 2/10-second solver calls from amplifying a legacy deadlock.
+
+## 2026-10-04 registration and real-wait follow-up
+
+Two additional execution-boundary patches were added without changing the
+solver, budgets, or agent-count scope:
+
+- `core-patches/0006-Expose-mirrored-itinerary-registration-version.patch`
+- `ros2-patches/0010-Add-joint-registration-completion-boundary.patch`
+- `ros2-patches/0011-Honor-scheduled-departure-in-EasyFullControl.patch`
+
+The first change addresses the sequential-registration race. Conflict creation
+is instrumented with participant `plan_id` and `itinerary_version`, and
+joint execution cannot start until the mirror has observed the exact current
+pair for all group members. The pure staged-application test contains a short
+A-new/B-old reproduction: the barrier remains waiting and starts zero commands
+until B also advances.
+
+The second change follows the planned time from `ExecutePlan` into
+`EasyFullControl`. A normal navigation callback is now held asynchronously
+until its source waypoint's scheduled departure time. Collapsed waits still
+contribute to ETA, but now also constrain physical execution; a final collapsed
+wait defers command completion until its planned end. Cancelling a command that
+has not yet been sent does not issue a duplicate robot stop.
+
+Detailed notes are under
+`results/registration-boundary-20261004/` and
+`results/scheduled-wait-execution-20261004/`.
+
+These follow-up patches have **not** been rebuilt or exercised in a fresh
+Docker/MQTT run in this managed environment. The previous investigation records
+the blocker as `Cannot open audit interface`. Therefore the old FAIL runs
+remain the latest live controls, and no new A/B task-completion claim is made.
 
 ## Core A/B result
 
@@ -95,6 +136,9 @@ origin of that first throw remains unproven.
 
 ## Verification completed
 
+The following results are the previously completed baseline through the earlier
+patch series (before core `0006` and ros2 `0010/0011`):
+
 - `rmf_traffic`: all 99 test cases / 57,886 assertions passed; local MAPF A/B
   subset passed 76 assertions.
 - New adapter units: RobotObservation 17 assertions, GroupPlanApplication 20,
@@ -104,7 +148,12 @@ origin of that first throw remains unproven.
   setup resolves a different Catch2 ABI; standalone new tests pass.
 - Actual MQTT pose telemetry and per-robot simulator logs are under `results/`.
 - Schedule registration and execution-start failure injection are covered by
-  the pure staged-application unit tests, not by an actual MQTT run.
+  the earlier pure staged-application unit tests, not by an actual MQTT run.
+
+The newly added registration-boundary and scheduled-departure tests/changes are
+present in the patch series but are not reported as passed until they are built
+in a matching RMF workspace. A fresh managed-environment Docker run was blocked
+before launch by the audit-interface restriction.
 
 Not completed as actual Docker/MQTT scenarios: task cancellation, goal change,
 deliberate report loss/delay, deliberate speed mismatch/pause, and injected
