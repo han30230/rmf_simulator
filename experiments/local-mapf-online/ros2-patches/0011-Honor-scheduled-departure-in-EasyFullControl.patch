@@ -123,6 +123,8 @@ diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/agv/EasyFullControl.cpp b/r
    std::vector<EasyFullControl::CommandExecution> reverse_queue;
    EasyFullControl::ActivityIdentifierPtr current_identifier;
 +  rclcpp::TimerBase::SharedPtr planned_start_timer;
++  std::shared_ptr<
++    EasyFullControl::CommandExecution::Implementation::Data> current_data;
 +  bool current_started = false;
    TriggerOnce finished;
  
@@ -139,6 +141,7 @@ diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/agv/EasyFullControl.cpp b/r
    void next()
    {
 +    planned_start_timer = nullptr;
++    current_data = nullptr;
 +    current_started = false;
      if (reverse_queue.empty())
      {
@@ -227,6 +230,16 @@ diff --git a/rmf_fleet_adapter/src/rmf_fleet_adapter/agv/EasyFullControl.cpp b/r
 +    && !this->current_progress->current_started)
 +  {
 +    this->current_progress->planned_start_timer = nullptr;
++    this->current_progress = nullptr;
++    return;
++  }
++
++  // If NavigationRequest already reported completion and we are only holding
++  // for an explicit collapsed wait, no robot command remains to stop.
++  if (this->current_progress->current_data
++    && this->current_progress->current_data->finish_timer)
++  {
++    this->current_progress->current_data->finish_timer = nullptr;
 +    this->current_progress = nullptr;
 +    return;
 +  }
